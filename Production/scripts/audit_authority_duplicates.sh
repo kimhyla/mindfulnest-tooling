@@ -95,5 +95,32 @@ fi
 section "I. Stitch timeline — StitcherTab DEFAULT_SLOT_DUR fallbacks (review only)"
 rg -n "DEFAULT_SLOT_DUR_MS \*" "$SB/components/StitcherTab.tsx" 2>/dev/null || true
 
+section "J. Truth Stack Layer 1 — HTTP scope wrapper"
+grep -q 'def scope_from_app' "$TOOLS/beatgen_scope.py" \
+  || fail_strict "beatgen_scope missing scope_from_app"
+grep -q '_in_beatgen_scope' "$TOOLS/production_server.py" \
+  || fail_strict "production_server missing _in_beatgen_scope"
+grep -q 'run_in_beatgen_scope' "$TOOLS/beatgen_scope.py" \
+  || fail_strict "beatgen_scope missing run_in_beatgen_scope for async workers"
+report "Layer 1 scope_from_app + HTTP/async wrappers present"
+
+section "K. Magic write authority — write_magic_delivery"
+grep -q 'def write_magic_delivery' "$TOOLS/server_handlers/background.py" \
+  || fail_strict "write_magic_delivery missing"
+grep -q 'write_magic_delivery(' "$TOOLS/server_handlers/background.py" \
+  || fail_strict "magic handlers must call write_magic_delivery"
+if grep -q 'partition verify missed; sidecar confirmed' "$TOOLS/server_handlers/background.py" 2>/dev/null; then
+  fail_strict "sidecar-only magic verify fallback regressed"
+else
+  report "magic writeback uses single authority (no sidecar-only 200)"
+fi
+
+section "L. insert-beat scope guard"
+if grep -A3 'def handle_bg_insert_beat' "$TOOLS/server_handlers/background.py" | grep -q '_assert_event_scope'; then
+  report "handle_bg_insert_beat has scope guard"
+else
+  fail_strict "handle_bg_insert_beat missing _assert_event_scope"
+fi
+
 report "audit complete"
 exit 0

@@ -40,7 +40,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | Concept | Shape | Read gate | Write path | Status | Spec |
 |---------|-------|-----------|------------|--------|------|
 | **event_scope** — authoritative `event_id` on dedicated port | derived | Client: `readAuthoritativeEventId` · Server: dedicated port pin | `syncAuthoritativeClientScope`, server `event/load` 409 | shipped | `SCOPE_CLIENT_AUTHORITY_SPEC_v1.md` |
-| **beatgen_scope_partition** — which DB/JSON owns this beat | disk | `BeatGenScope` (target) | `beatgen_scope()` context manager | partial | `TECH_SPEC_BEATGEN_TRUTH_STACK_V1.md` |
+| **beatgen_scope_partition** — which DB/JSON owns this beat | disk | `BeatGenScope` / `scope_from_app` | `beatgen_scope_ctx` on HTTP + async workers | shipped | `TECH_SPEC_BEATGEN_TRUTH_STACK_V1.md` |
 | **sqlite_sidecar_authority** — beat rows authoritative store | disk | `sqlite_authority_enabled()` | per-event `beatgen_eventN.db` | shipped | `TECH_SPEC_BEATGEN_PER_EVENT_SQLITE_V1.md` |
 | **build_sha_drift** — stale JS bundle vs server | derived | `checkBuildShaDrift` | deploy writes bundled sha | shipped | `SCOPE_CLIENT_AUTHORITY_SPEC_v1.md` |
 
@@ -54,8 +54,8 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **o3_job_busy** — block edits during generation | derived | `beat_o3_operator_busy` / `beatO3JobBusy` | terminal.json + `o3_current_job_id` lifecycle | shipped | same |
 | **kling_stitch_export_ready** — Send to Stitcher per beat | disk | `beat_kling_stitch_export_ready` / `beatKlingStitchExportReady` | `finalize_kling_delivery_clip`, `sync_kling_stitch_status_from_active_clip` | shipped | `kling_stitch_readiness.py` |
 | **still_insert_stitch_approve** — still beat export gate | explicit_approve | same contract (still branch) | `kling_o3_still_stitch_approved` | shipped | same |
-| **magic_render_visible** — magic sparkle contract | disk | `magic_render_contract` compositor kwargs + durability tests | magic render handlers | partial | `HOW_TO_MAKE_VISIBLE_MAGIC.md` |
-| **bg_export_stitcher_job** — async BG→Stitcher job truth | disk | `readBgExportBusyLatch` + poll terminal | export job API | partial | inline `BG_EXPORT_TO_STITCHER_ASYNC_V1` |
+| **magic_render_visible** — magic sparkle contract | disk | `magic_render_contract` compositor kwargs + durability tests | `write_magic_delivery` | shipped | `HOW_TO_MAKE_VISIBLE_MAGIC.md` |
+| **bg_export_stitcher_job** — async BG→Stitcher job truth | disk | `readBgExportBusyLatch` + poll terminal | export job API | shipped | inline `BG_EXPORT_TO_STITCHER_ASYNC_V1` |
 
 ### Stitcher
 

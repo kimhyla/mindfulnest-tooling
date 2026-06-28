@@ -146,7 +146,12 @@ def load_o3_beat_context(beat_id: str) -> tuple[dict, str, Path, Path]:
 
 def inject_o3_subprocess_scope_env(env: dict, app: Any) -> None:
     """Mirror HTTP handler scope in O3 subprocess env (milestone SQLite/sidecar authority)."""
-    from beatgen_scope import scope_from_current_globals, scope_to_env_json  # noqa: PLC0415
+    from beatgen_scope import scope_from_app, scope_from_current_globals, scope_to_env_json  # noqa: PLC0415
+
+    try:
+        env["MN_BEATGEN_SCOPE_JSON"] = scope_to_env_json(scope_from_app(app))
+    except Exception:
+        env["MN_BEATGEN_SCOPE_JSON"] = scope_to_env_json(scope_from_current_globals(bg))
 
     milestone_id = getattr(app, "active_milestone_id", None)
     if getattr(app, "scope_type", "event") == "milestone" and milestone_id:
@@ -169,7 +174,6 @@ def inject_o3_subprocess_scope_env(env: dict, app: Any) -> None:
                 env["MN_MILESTONE_SKELETON_REF"] = json.dumps(skel)
         except Exception:
             pass
-        env["MN_BEATGEN_SCOPE_JSON"] = scope_to_env_json(scope_from_current_globals(bg))
         return
 
     for key in (
@@ -186,4 +190,3 @@ def inject_o3_subprocess_scope_env(env: dict, app: Any) -> None:
         val = (os.environ.get(key) or "").strip()
         if val:
             env[key] = val
-    env["MN_BEATGEN_SCOPE_JSON"] = scope_to_env_json(scope_from_current_globals(bg))

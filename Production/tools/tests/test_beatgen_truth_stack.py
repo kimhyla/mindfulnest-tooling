@@ -129,7 +129,7 @@ def test_import_delivery_clip_to_beat_still_insert_source(
         scope=scope,
     )
     assert ok and beat
-    assert beat["kling_o3_status"] == "approved"
+    assert beat["kling_o3_status"] == "still_rendered"
     active_path = str(beat.get("kling_o3_video_path") or "")
     active_opt = next(
         (o for o in (beat.get("kling_o3_options") or []) if o.get("video_path") == active_path),
@@ -257,3 +257,21 @@ def test_scope_env_json_roundtrip(tmp_path: Path) -> None:
     assert restored.kind == "event_production"
     assert restored.event_id == "Event_3"
     assert restored.db_path and restored.db_path.name == "beatgen_event3.db"
+
+
+def test_scope_from_app_event_production(tmp_path: Path) -> None:
+    from beatgen_scope import scope_from_app
+
+    event_dir = tmp_path / "Event_3"
+    event_dir.mkdir()
+
+    root = event_dir
+
+    class App:
+        scope_type = "event"
+        event_dir = root
+
+    scope = scope_from_app(App())
+    assert scope.kind == "event_production"
+    assert scope.event_id == "Event_3"
+    assert scope.db_path and scope.db_path.name == "beatgen_event3.db"

@@ -133,9 +133,15 @@ def recover_kling_o3_jobs_on_startup(event_dir: Path, api_key: str | None) -> in
     if not api_key:
         return 0
     bg = _bg_module()
-    bg.mutate_sidecar_locked(
-        lambda sidecar: bg.reconcile_kling_o3_sidecar(sidecar, event_dir),
-    )
+    from beatgen_scope import beatgen_scope_ctx, build_event_production_scope  # noqa: PLC0415
+
+    scope = build_event_production_scope(event_dir)
+    with beatgen_scope_ctx(scope, bg):
+        bg.mutate_sidecar_locked(
+            lambda sidecar: bg.reconcile_kling_o3_sidecar(sidecar, event_dir),
+            scope=scope,
+            caller="recover_kling_o3_jobs_on_startup",
+        )
 
     resumed = 0
     for job in job_store.list_active_jobs(event_dir):
@@ -574,42 +580,47 @@ def handle_bg_submit_kling_o3_batch(h, body: dict) -> None:
     }
 
     def _run_job():
-        try:
-            api_key = _api_key()
-        except Exception as exc:
-            _KLING_O3_JOBS[job_id]["status"] = "failed"
-            _KLING_O3_JOBS[job_id]["error"] = str(exc)
-            job_store.finalize_job(event_dir, job_id, "failed", error=str(exc))
-            return
+        from beatgen_scope import run_in_beatgen_scope  # noqa: PLC0415
 
-        def _one(beat):
-            if not h._check_event_pin(pin, "kling_o3_beat_start"):
-                return {"beat_id": beat["beat_id"], "ok": False, "error": "event_changed"}
-            job_store.update_job_beat(event_dir, job_id, beat["beat_id"], status="processing")
+        def _body():
+            try:
+                api_key = _api_key()
+            except Exception as exc:
+                _KLING_O3_JOBS[job_id]["status"] = "failed"
+                _KLING_O3_JOBS[job_id]["error"] = str(exc)
+                job_store.finalize_job(event_dir, job_id, "failed", error=str(exc))
+                return
 
-            def _mark_processing(b: dict, _sc: dict) -> None:
-                b["kling_o3_status"] = "processing"
-                beat.update(b)
+            def _one(beat):
+                if not h._check_event_pin(pin, "kling_o3_beat_start"):
+                    return {"beat_id": beat["beat_id"], "ok": False, "error": "event_changed"}
+                job_store.update_job_beat(event_dir, job_id, beat["beat_id"], status="processing")
 
-            bg.update_beat_locked(beat["beat_id"], _mark_processing)
-            return _run_single_beat(h, pin, beat, event_dir, api_key, job_id=job_id)
+                def _mark_processing(b: dict, _sc: dict) -> None:
+                    b["kling_o3_status"] = "processing"
+                    beat.update(b)
 
-        with _cf.ThreadPoolExecutor(max_workers=max_parallel, thread_name_prefix="kling-o3") as pool:
-            futures = {pool.submit(_one, b): b["beat_id"] for b in beats_to_run}
-            for fut in _cf.as_completed(futures):
-                bid = futures[fut]
-                try:
-                    res = fut.result()
-                except Exception as exc:
-                    res = {"beat_id": bid, "ok": False, "error": str(exc)}
-                job_store.record_job_result(event_dir, job_id, bid, res)
-                _KLING_O3_JOBS[job_id]["results"][bid] = res
-                if res.get("ok"):
-                    _KLING_O3_JOBS[job_id]["done_count"] += 1
-                else:
-                    _KLING_O3_JOBS[job_id]["failed_count"] += 1
-        _KLING_O3_JOBS[job_id]["status"] = "done"
-        job_store.finalize_job(event_dir, job_id, "done")
+                bg.update_beat_locked(beat["beat_id"], _mark_processing, caller="kling_o3_batch")
+                return _run_single_beat(h, pin, beat, event_dir, api_key, job_id=job_id)
+
+            with _cf.ThreadPoolExecutor(max_workers=max_parallel, thread_name_prefix="kling-o3") as pool:
+                futures = {pool.submit(_one, b): b["beat_id"] for b in beats_to_run}
+                for fut in _cf.as_completed(futures):
+                    bid = futures[fut]
+                    try:
+                        res = fut.result()
+                    except Exception as exc:
+                        res = {"beat_id": bid, "ok": False, "error": str(exc)}
+                    job_store.record_job_result(event_dir, job_id, bid, res)
+                    _KLING_O3_JOBS[job_id]["results"][bid] = res
+                    if res.get("ok"):
+                        _KLING_O3_JOBS[job_id]["done_count"] += 1
+                    else:
+                        _KLING_O3_JOBS[job_id]["failed_count"] += 1
+            _KLING_O3_JOBS[job_id]["status"] = "done"
+            job_store.finalize_job(event_dir, job_id, "done")
+
+        run_in_beatgen_scope(h.app, bg, _body)
 
     threading.Thread(target=_run_job, daemon=True, name=f"kling-o3-{job_id}").start()
     return h._send_json(200, {
@@ -1218,7 +1229,14 @@ def _run_bg_export_to_stitcher_core(
         )
 
     try:
-        bg.mutate_sidecar_locked(_post_export_sidecar)
+        from beatgen_scope import scope_from_app  # noqa: PLC0415
+
+        export_scope = scope_from_app(h.app)
+        bg.mutate_sidecar_locked(
+            _post_export_sidecar,
+            scope=export_scope,
+            caller="export_to_stitcher_post",
+        )
     except Exception as exc:
         print(f"[BG] export-to-stitcher directus/preserve failed: {exc}", flush=True)
         directus_result.setdefault("warnings", []).append(f"sidecar persist failed: {exc}")
@@ -1263,71 +1281,78 @@ def _execute_bg_export_to_stitcher_job(
     pin["_export_job_id"] = job_id
     fd = None
     store_dir = Path(ctx.get("data_dir") or h.app.event_dir)
-    try:
-        import fcntl  # noqa: PLC0415
+    from beatgen_scope import run_in_beatgen_scope  # noqa: PLC0415
 
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    def _worker_body():
+        nonlocal fd
+        try:
+            import fcntl  # noqa: PLC0415
 
-        update_job_progress(
-            store_dir,
-            job_id,
-            status="running",
-            phase="materialize",
-            message="Preparing export clips…",
-            beat_index=0,
-            beat_total=len(ctx.get("beat_ids") or []),
-        )
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
+            fcntl.flock(fd, fcntl.LOCK_EX)
 
-        def _job_progress(
-            message: str,
-            *,
-            phase: str | None = None,
-            beat_index: int | None = None,
-            beat_total: int | None = None,
-        ) -> None:
-            kwargs: dict = {
-                "status": "running",
-                "phase": phase or "materialize",
-                "message": message,
-            }
-            if beat_index is not None:
-                kwargs["beat_index"] = beat_index
-            if beat_total is not None:
-                kwargs["beat_total"] = beat_total
-            update_job_progress(store_dir, job_id, **kwargs)
+            update_job_progress(
+                store_dir,
+                job_id,
+                status="running",
+                phase="materialize",
+                message="Preparing export clips…",
+                beat_index=0,
+                beat_total=len(ctx.get("beat_ids") or []),
+            )
 
-        result = _run_bg_export_to_stitcher_core(h, ctx, pin, progress_cb=_job_progress)
-        if result.get("ok"):
-            finalize_job(store_dir, job_id, "done", result=result)
-            return
+            def _job_progress(
+                message: str,
+                *,
+                phase: str | None = None,
+                beat_index: int | None = None,
+                beat_total: int | None = None,
+            ) -> None:
+                kwargs: dict = {
+                    "status": "running",
+                    "phase": phase or "materialize",
+                    "message": message,
+                }
+                if beat_index is not None:
+                    kwargs["beat_index"] = beat_index
+                if beat_total is not None:
+                    kwargs["beat_total"] = beat_total
+                update_job_progress(store_dir, job_id, **kwargs)
 
-        finalize_job(
-            store_dir,
-            job_id,
-            "failed",
-            error=result.get("error_message") or "Export failed",
-            error_code=result.get("error_code"),
-            result=result,
-        )
-    except Exception as exc:
-        traceback.print_exc()
-        finalize_job(
-            store_dir,
-            job_id,
-            "failed",
-            error=str(exc),
-            error_code="BG_EXPORT_STITCHER_EXCEPTION",
-        )
-    finally:
-        if fd is not None:
-            try:
-                import fcntl  # noqa: PLC0415
+            result = _run_bg_export_to_stitcher_core(h, ctx, pin, progress_cb=_job_progress)
+            if result.get("ok"):
+                finalize_job(store_dir, job_id, "done", result=result)
+                return
 
-                fcntl.flock(fd, fcntl.LOCK_UN)
-                os.close(fd)
-            except OSError:
-                pass
+            finalize_job(
+                store_dir,
+                job_id,
+                "failed",
+                error=result.get("error_message") or "Export failed",
+                error_code=result.get("error_code"),
+                result=result,
+            )
+        except Exception as exc:
+            traceback.print_exc()
+            finalize_job(
+                store_dir,
+                job_id,
+                "failed",
+                error=str(exc),
+                error_code="BG_EXPORT_STITCHER_EXCEPTION",
+            )
+        finally:
+            if fd is not None:
+                try:
+                    import fcntl  # noqa: PLC0415
+
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    bg = _bg(h)
+    run_in_beatgen_scope(h.app, bg, _worker_body)
 
 
 def handle_bg_export_to_stitcher(h, body: dict) -> None:

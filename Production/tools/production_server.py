@@ -6019,6 +6019,18 @@ class ProductionHandler(BaseHTTPRequestHandler):
             rebind_bg_paths_from_app(self.app)
         return True
 
+    def _in_beatgen_scope(self, handler, *args, **kwargs):
+        """Truth Stack Layer 1 — bind typed BeatGenScope for BG/magic sidecar mutations."""
+        from beatgen_scope import BeatGenScopeError, beatgen_scope_ctx, scope_from_app, scope_from_current_globals
+
+        bg = _bg_module()
+        try:
+            scope = scope_from_app(self.app)
+        except BeatGenScopeError:
+            scope = scope_from_current_globals(bg)
+        with beatgen_scope_ctx(scope, bg):
+            return handler(*args, **kwargs)
+
     # ---- LD-461 SCOPE_BODY_HELPER_V1 (extended in S5.5a2 with scope_video_role) ----
     def _scope_body(self, body: dict) -> dict:
         """Normalize scope keys before _assert_event_scope.
@@ -6384,7 +6396,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             if path == "/api/inject-image":
                 return self._handle_inject_image(body)
             if path == "/api/assign-image":
-                return self._handle_assign_image(body)
+                return self._in_beatgen_scope(self._handle_assign_image, body)
             # Path A++ v2 endpoint (April 18 2026)
             if path.startswith("/api/v2/beat/") and path.endswith("/patch"):
                 return self._handle_v2_patch(path, body)
@@ -6458,63 +6470,63 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        )
             # ── Beat Generator tab routes (POST) ─────────────────────────────────
             if path == "/api/bg/set-active-context":
-                return self._handle_bg_set_active_context(body)
+                return self._in_beatgen_scope(self._handle_bg_set_active_context, body)
             if path == "/api/bg/extract-beats":
-                return self._handle_bg_extract_beats(body)
+                return self._in_beatgen_scope(self._handle_bg_extract_beats, body)
             if path == "/api/bg/extract-beats/plan":
-                return self._handle_bg_extract_beats_plan(body)
+                return self._in_beatgen_scope(self._handle_bg_extract_beats_plan, body)
             if path == "/api/bg/extract-beats/approve":
-                return self._handle_bg_extract_beats_approve(body)
+                return self._in_beatgen_scope(self._handle_bg_extract_beats_approve, body)
             if path == "/api/bg/extract-beats/draft/save":
-                return self._handle_bg_extract_beats_draft_save(body)
+                return self._in_beatgen_scope(self._handle_bg_extract_beats_draft_save, body)
             if path == "/api/bg/generate-kling-prompts":
-                return self._handle_bg_generate_kling_prompts(body)
+                return self._in_beatgen_scope(self._handle_bg_generate_kling_prompts, body)
             if path == "/api/bg/inject-beats":
-                return self._handle_bg_inject_beats(body)
+                return self._in_beatgen_scope(self._handle_bg_inject_beats, body)
             if path == "/api/bg/update-beat":
-                return self._handle_bg_update_beat(body)
+                return self._in_beatgen_scope(self._handle_bg_update_beat, body)
             if path == "/api/bg/align-element-ref":
-                return self._handle_bg_align_element_ref(body)
+                return self._in_beatgen_scope(self._handle_bg_align_element_ref, body)
             if path == "/api/bg/add-element-pose":
-                return self._handle_bg_add_element_pose(body)
+                return self._in_beatgen_scope(self._handle_bg_add_element_pose, body)
             if path == "/api/bg/reorder-beats":
-                return self._handle_bg_reorder_beats(body)
+                return self._in_beatgen_scope(self._handle_bg_reorder_beats, body)
             if path == "/api/bg/delete-beat":
-                return self._handle_bg_delete_beat(body)
+                return self._in_beatgen_scope(self._handle_bg_delete_beat, body)
             if path == "/api/bg/accept-beats":
-                return self._handle_bg_accept_beats(body)
+                return self._in_beatgen_scope(self._handle_bg_accept_beats, body)
             if path == "/api/bg/export-to-stitcher":
-                return self._handle_bg_export_to_stitcher(body)
+                return self._in_beatgen_scope(self._handle_bg_export_to_stitcher, body)
             if path == "/api/bg/submit-flux-batch":
-                return self._handle_bg_submit_flux(body)
+                return self._in_beatgen_scope(self._handle_bg_submit_flux, body)
             if path == "/api/bg/submit-gpt-batch":
-                return self._handle_bg_submit_gpt_batch(body)
+                return self._in_beatgen_scope(self._handle_bg_submit_gpt_batch, body)
             if path == "/api/bg/submit-arlo-o3-voice":
-                return self._handle_bg_submit_arlo_o3_voice(body)
+                return self._in_beatgen_scope(self._handle_bg_submit_arlo_o3_voice, body)
             if path == "/api/bg/submit-kling-native-lipsync-experiment":
-                return self._handle_bg_submit_kling_native_lipsync_experiment(body)
+                return self._in_beatgen_scope(self._handle_bg_submit_kling_native_lipsync_experiment, body)
             if path == "/api/bg/o3/admin-reconcile":
-                return self._handle_bg_o3_admin_reconcile(body)
+                return self._in_beatgen_scope(self._handle_bg_o3_admin_reconcile, body)
             if path == "/api/bg/import-delivery-clip":
-                return self._handle_bg_import_delivery_clip(body)
+                return self._in_beatgen_scope(self._handle_bg_import_delivery_clip, body)
             if path == "/api/bg/select-o3-video":
-                return self._handle_bg_select_o3_video(body)
+                return self._in_beatgen_scope(self._handle_bg_select_o3_video, body)
             if path == "/api/bg/render-still-clip":
-                return self._handle_bg_render_still_clip(body)
+                return self._in_beatgen_scope(self._handle_bg_render_still_clip, body)
             if path == "/api/bg/set-pipeline":
-                return self._handle_bg_set_pipeline(body)
+                return self._in_beatgen_scope(self._handle_bg_set_pipeline, body)
             if path == "/api/bg/kling-o3-trim":
-                return self._handle_bg_kling_o3_trim(body)
+                return self._in_beatgen_scope(self._handle_bg_kling_o3_trim, body)
             if path == "/api/bg/accept-option":
-                return self._handle_bg_accept_option(body)
+                return self._in_beatgen_scope(self._handle_bg_accept_option, body)
             if path == "/api/bg/accept-lib-image":
-                return self._handle_bg_accept_lib_image(body)
+                return self._in_beatgen_scope(self._handle_bg_accept_lib_image, body)
             if path == "/api/bg/add-beat":
-                return self._handle_bg_add_beat(body)
+                return self._in_beatgen_scope(self._handle_bg_add_beat, body)
             if path == "/api/bg/insert-beat":
-                return self._handle_bg_insert_beat(body)
+                return self._in_beatgen_scope(self._handle_bg_insert_beat, body)
             if path == "/api/bg/create-group":
-                return self._handle_bg_create_group(body)
+                return self._in_beatgen_scope(self._handle_bg_create_group, body)
             if path == "/api/bg/delete-group":
                 return self._handle_bg_delete_group(body)
             if path == "/api/bg/update-group":
@@ -8485,6 +8497,14 @@ class ProductionHandler(BaseHTTPRequestHandler):
                             _beat_state["end_frame_path"] = None
                 return None
             self.app.state.mutate_video_state(video_role, _persist)
+
+            from server_handlers.background import mirror_magic_clear_to_sidecar_after_image_assign
+
+            mirror_magic_clear_to_sidecar_after_image_assign(
+                self,
+                sb_beat_id=str(beat_id),
+                video_role=str(video_role),
+            )
 
             # 3. Patch the storyboard HTML L[] entry's i: field to match
             #    (Tier 5, April 17 2026 — decision 154 ASSIGN_IMAGE_MUST_PATCH_STORYBOARD).

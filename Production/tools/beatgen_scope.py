@@ -232,6 +232,27 @@ def scope_from_current_globals(bg_module) -> BeatGenScope:
     )
 
 
+def scope_from_app(app) -> BeatGenScope:
+    """Truth Stack Layer 1 — typed scope from server-pinned app (not ambient globals)."""
+    scope_type = getattr(app, "scope_type", "event") or "event"
+    event_dir = getattr(app, "event_dir", None)
+    if scope_type == "milestone":
+        milestone_id = getattr(app, "active_milestone_id", None)
+        mdir = getattr(app, "milestone_dir", None)
+        sidecar = Path(mdir) / "beat_generator_sidecar.json" if mdir else Path("beat_generator_sidecar.json")
+        return BeatGenScope(
+            kind="milestone_arc",
+            event_id=None,
+            event_dir=Path(event_dir).expanduser().resolve() if event_dir else None,
+            milestone_id=str(milestone_id) if milestone_id else None,
+            db_path=None,
+            sidecar_authority=sidecar.expanduser().resolve(),
+        )
+    if not event_dir:
+        raise BeatGenScopeError("app.event_dir missing for event_production scope")
+    return build_event_production_scope(event_dir)
+
+
 def scope_to_env_json(scope: BeatGenScope) -> str:
     """Serialize BeatGenScope for O3 subprocess env (MN_BEATGEN_SCOPE_JSON)."""
     payload = {
@@ -307,6 +328,17 @@ def beatgen_scope_ctx(scope: BeatGenScope, bg_module) -> Iterator[BeatGenScope]:
             os.environ.pop("MN_BEATGEN_DB_PATH", None)
         else:
             os.environ["MN_BEATGEN_DB_PATH"] = prev_db
+
+
+# Truth Stack Layer 1 alias (spec naming)
+beatgen_scope = beatgen_scope_ctx
+
+
+def run_in_beatgen_scope(app, bg_module, fn, /, *args, **kwargs):
+    """Enter typed BeatGenScope for async workers and subprocess callbacks."""
+    scope = scope_from_app(app)
+    with beatgen_scope_ctx(scope, bg_module):
+        return fn(*args, **kwargs)
 
 
 def http_import_delivery_clip(

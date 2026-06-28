@@ -1187,11 +1187,23 @@ def mutate_sidecar_locked(
     *,
     timeout_s: float | None = None,
     migrate: bool = False,
+    scope=None,
+    caller: str = "mutate_sidecar_locked",
 ) -> dict:
     """Atomic read-modify-write for multi-beat / segment sidecar edits.
 
     Prefer ``update_beat_locked`` for single-beat patches (cheaper SQLite path).
+    Truth Stack Layer 1: optional ``scope`` binds partition authority for logging.
     """
+    from beatgen_scope import log_beatgen_mutation, scope_from_current_globals  # noqa: PLC0415
+
+    active_scope = scope if scope is not None else scope_from_current_globals(__import__(__name__))
+    log_beatgen_mutation(
+        operation="mutate_sidecar_locked",
+        beat_id="",
+        scope=active_scope,
+        caller=caller,
+    )
     with sidecar_file_lock(timeout_s=timeout_s):
         sidecar = read_sidecar()
         if migrate:

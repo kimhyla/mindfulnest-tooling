@@ -158,15 +158,17 @@ class MagicHandlerWiringTests(unittest.TestCase):
 
     def test_magic_writeback_registers_display_order(self):
         src = (TOOLS / "server_handlers" / "background.py").read_text()
+        self.assertIn("write_magic_delivery", src)
+        self.assertIn("MAGIC_WRITE_AUTHORITY_V1", src)
         self.assertIn("_sync_bg_partition_display_order_for_scope", src)
-        self.assertIn("sync_storyboard_partition_display_order_from_bg_segment", src)
-        for handler in ("_set_magic_still", "_set_magic_video"):
-            block = src.split(f"def {handler}", 1)[1].split("\n        scope_router.mutate_partition", 1)[0]
-            self.assertIn(
-                "_magic_partition_writeback_ensure_display_order(partition, sb_beat_id)",
-                block,
-                f"{handler} must register sb_beat_id before DISPLAY_ORDER_STRICT prune",
-            )
+        block = src.split("def write_magic_delivery", 1)[1].split("\ndef handle_clear_magic_still", 1)[0]
+        self.assertIn(
+            "_magic_partition_writeback_ensure_display_order(partition, sb_beat_id)",
+            block,
+            "write_magic_delivery must register sb_beat_id before DISPLAY_ORDER_STRICT prune",
+        )
+        self.assertIn("write_magic_delivery(", src.split("def handle_magic_still", 1)[1].split("def handle_magic_video", 1)[0])
+        self.assertIn("write_magic_delivery(", src.split("def handle_magic_video", 1)[1])
 
     def test_production_server_exposes_magic_endpoints(self):
         text = PRODUCTION_SERVER_PY.read_text()

@@ -55,4 +55,22 @@ python3 -m pytest \
   -q \
   || fail "Truth Stack pytest guards failed"
 
-echo "[beatgen-truth-stack-durability] OK — P3/P6/P7/P9 grep + pytest passed"
+grep -q 'scope_from_app' "$TOOLS/beatgen_scope.py" \
+  || fail "Layer 1: beatgen_scope must export scope_from_app"
+
+grep -q '_in_beatgen_scope' "$TOOLS/production_server.py" \
+  || fail "Layer 1: production_server must wrap BG mutations in _in_beatgen_scope"
+
+grep -q 'write_magic_delivery' "$TOOLS/server_handlers/background.py" \
+  || fail "MAGIC_WRITE_AUTHORITY_V1: write_magic_delivery missing"
+
+grep -q 'run_in_beatgen_scope' "$TOOLS/beatgen_scope.py" \
+  || fail "Layer 1: beatgen_scope must export run_in_beatgen_scope"
+
+grep -q 'run_in_beatgen_scope' "$TOOLS/server_handlers/kling_o3.py" \
+  || fail "Layer 1: kling_o3 async workers must use run_in_beatgen_scope"
+
+grep -q 'KLING_STATUS_WRITE_CACHE_V1' "$ROOT/Production/docs/TECH_SPEC_KLING_STATUS_WRITE_CACHE_v1.md" \
+  || fail "missing KLING_STATUS_WRITE_CACHE_V1 spec"
+
+echo "[beatgen-truth-stack-durability] OK — P3/P6/P7/P9 grep + Layer1 markers + pytest passed"
