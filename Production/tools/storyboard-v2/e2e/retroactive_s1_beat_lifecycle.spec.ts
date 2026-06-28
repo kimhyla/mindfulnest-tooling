@@ -14,8 +14,9 @@
 // the S5.5e §3.1 visibility table (now in StoryboardTab.tsx lines 240-246).
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
-const SERVER = 'http://localhost:5111';
+const SERVER = 'http://localhost:5200';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -60,7 +61,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
       text: 'Draft beat — no audio yet.',
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toBeVisible();
     await expect(row).toHaveAttribute('data-lifecycle', 'draft');
@@ -81,7 +82,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
       audio_file: 'audio/beat_lc_01.mp3',
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toHaveAttribute('data-lifecycle', 'audio_generated');
     // Animate visible (only state where it's shown).
@@ -108,7 +109,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
       },
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toHaveAttribute('data-lifecycle', 'animated');
     // 3 option radios shown.
@@ -138,7 +139,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
       },
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toHaveAttribute('data-lifecycle', 'selected');
     // Lipsync visible (selected + lipsync_pending only).
@@ -175,7 +176,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
       });
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toHaveAttribute('data-lifecycle', 'lipsync_pending');
     const lip = page.locator('[data-testid="beat-0-lipsync"]');
@@ -204,7 +205,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
       },
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toHaveAttribute('data-lifecycle', 'final');
     // Final marker visible with source.
@@ -243,7 +244,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
       // Note: NO selected_option, NO final, NO lipsync.
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const row = page.locator('[data-testid="beat-button-row-0"]');
     await expect(row).toHaveAttribute('data-lifecycle', 'animated');
     // Final marker MUST NOT appear without beat.final.file — proves no
@@ -282,7 +283,7 @@ test.describe('S1 — beat lifecycle state machine', () => {
       });
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const useFinal = page.locator('[data-testid="beat-0-use-as-final"]');
     await expect(useFinal).toBeVisible();
     await useFinal.click();

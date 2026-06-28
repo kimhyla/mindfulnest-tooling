@@ -10,6 +10,7 @@
 //   M7 — approved beat with active redo shows both dot and check
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -123,7 +124,7 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await page.click('[data-testid="tab-bg"]');
     await expect(page.getByTestId('bg-beat-nav')).toBeVisible({ timeout: 5_000 });
 
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await expect(page.getByTestId('bg-beat-nav')).toHaveCount(0);
 
     await page.click('[data-testid="tab-bg"]');

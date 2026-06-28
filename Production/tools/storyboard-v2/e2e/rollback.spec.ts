@@ -60,7 +60,7 @@ test.describe('rollback E2E (closes spec verification probe #12)', () => {
 
     // 2. State.json should now have the stamp under beats[beat_id].text.
     const ctx = request;
-    const stateRes = await ctx.get(`http://localhost:5111/api/v2/event/Event_1/state`);
+    const stateRes = await ctx.get(`http://localhost:5200/api/v2/event/Event_1/state`);
     const state = (await stateRes.json()) as {
       beats?: Record<string, { text?: string }>;
     };
@@ -68,7 +68,7 @@ test.describe('rollback E2E (closes spec verification probe #12)', () => {
     expect(beatText, 'state.json beat text after v59 write').toContain(stamp);
 
     // 3. Switch server to v58.
-    const switchRes = await ctx.post('http://localhost:5111/api/storyboard/switch', {
+    const switchRes = await ctx.post('http://localhost:5200/api/storyboard/switch', {
       data: { filename: 'storyboard_v58_prod.html' },
     });
     expect(switchRes.ok(), `switch to v58 failed: ${switchRes.status()}`).toBe(true);
@@ -78,7 +78,7 @@ test.describe('rollback E2E (closes spec verification probe #12)', () => {
       // changes app.storyboard_path, so the sidecar path is now
       // storyboard_v58_prod.L.json. The endpoint materializes-on-read.
       const sidecarRes = await ctx.get(
-        'http://localhost:5111/api/v2/storyboard/L.json',
+        'http://localhost:5200/api/v2/storyboard/L.json',
       );
       // Sidecar shape (verified 2026-05-02 against
       // _write_sidecar_L_json projection): a dict keyed by beat_id with
@@ -118,7 +118,7 @@ test.describe('rollback E2E (closes spec verification probe #12)', () => {
     } finally {
       // 5. Tear-down: switch back to v59 so other tests run against the
       // v59 frontend and the server doesn't stay on v58.
-      await ctx.post('http://localhost:5111/api/storyboard/switch', {
+      await ctx.post('http://localhost:5200/api/storyboard/switch', {
         data: { filename: 'storyboard_v59_prod.html' },
       });
     }

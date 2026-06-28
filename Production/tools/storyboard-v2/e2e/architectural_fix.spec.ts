@@ -545,10 +545,10 @@ test.describe('AF.2 — VideoSelector mutation channel (F-S2-002)', () => {
     await expect.poll(() => setActiveReqs.length, { timeout: 5_000 }).toBeGreaterThanOrEqual(1);
     const body = setActiveReqs[0]!.postDataJSON() as Record<string, unknown>;
     // Contract-level assertion: ALL auto-inject keys present.
+    // LD-461: scope pin is scope_event_id only — not top-level event_id.
     const keys = new Set(Object.keys(body));
     for (const k of [
-      'event_id',         // scopeKey for non-BG endpoint
-      'scope_event_id',   // always added (non-milestone)
+      'scope_event_id',
       'scope_target_video',
       'scope_video_role',
       'scope_version',

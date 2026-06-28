@@ -5,7 +5,7 @@ function readUrlActiveTab(): TabKey | null {
   if (typeof window === 'undefined') return null;
   try {
     const tab = new URLSearchParams(window.location.search).get('tab');
-    if (tab === 'storyboard') return 'bg';
+    if (tab === 'storyboard') return 'storyboard';
     if (tab && tab !== 'cropper' && TABS.some((t) => t.key === tab)) return tab as TabKey;
   } catch {
     // ignore
@@ -18,7 +18,7 @@ function readStoredActiveTab(): TabKey {
   if (fromUrl) return fromUrl;
   try {
     const raw = sessionStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
-    if (raw === 'storyboard') return 'bg';
+    if (raw === 'storyboard') return 'storyboard';
     if (raw && raw !== 'cropper' && TABS.some((t) => t.key === raw)) return raw as TabKey;
   } catch {
     // ignore

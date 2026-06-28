@@ -27,7 +27,7 @@ const FIXTURE_EVENT = 'Event_e2e_fixture';
 // F-test in this file expects to click. Re-pin server to the fixture event so
 // each test starts from a clean event-scope baseline. Absolute URL per Rule 32.
 test.beforeEach(async ({ request }) => {
-  await request.post('http://localhost:5111/api/event/load', {
+  await request.post('http://localhost:5200/api/event/load', {
     data: { event_id: FIXTURE_EVENT },
   });
 });

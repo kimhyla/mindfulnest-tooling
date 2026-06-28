@@ -2,6 +2,7 @@
 // carry event_id + scope_video_role per SCOPE_VALIDATION_V1 + LD-474.
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -54,7 +55,7 @@ test.describe('F-STORYBOARD-001 — mutation scope injection (id=120)', () => {
     });
 
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await page.locator('[data-testid="beat-0-regen-audio"]').click();
 
     await expect.poll(() => snapshotBodies.length).toBeGreaterThanOrEqual(1);
@@ -75,7 +76,7 @@ test.describe('F-STORYBOARD-001 — mutation scope injection (id=120)', () => {
     });
 
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await page.locator('[data-testid="beat-0-regen-audio"]').click();
 
     await expect.poll(() => regenBodies.length).toBeGreaterThanOrEqual(1);
@@ -98,7 +99,7 @@ test.describe('F-STORYBOARD-001 — mutation scope injection (id=120)', () => {
     });
 
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await page.locator('[data-testid="beat-0-regen-audio"]').click();
 
     await expect.poll(() => order.length).toBeGreaterThanOrEqual(2);

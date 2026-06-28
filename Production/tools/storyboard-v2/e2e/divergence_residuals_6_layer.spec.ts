@@ -19,6 +19,7 @@
 //   AND clicking [bg-delete-confirm] fires pathappPatch op=bg_delete_beat
 
 import { test, expect, type Page, type Request } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -125,7 +126,7 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
     });
 
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
 
     const dropZone = page.locator('[data-testid="beat-image-zone-0"]');
     await expect(dropZone).toBeVisible({ timeout: 5_000 });
@@ -180,7 +181,7 @@ test.describe('Track A residual #3 — BeatImageHolder assign_image drop wiring'
     });
     await mockSnapshot(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     // [CONFIRMED against archive/dropbox-resident/claude/preserve-uncommitted-divergence-20260507
     //  commit 95e4462, reconciled into main via PR #19 commit 62d8e91] CC-16
     // BeatImageHolder + .mn-storyboard-image-drop-zone CSS class now in main.

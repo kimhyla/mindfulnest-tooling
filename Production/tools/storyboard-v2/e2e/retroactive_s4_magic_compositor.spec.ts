@@ -17,8 +17,9 @@
 // contract, and (b) server endpoint contracts via direct request.
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
-const SERVER = 'http://localhost:5111';
+const SERVER = 'http://localhost:5200';
 
 async function gotoApp(page: Page): Promise<void> {
   page.on('pageerror', (err) => {
@@ -54,7 +55,7 @@ test.describe('S4 — magic compositor', () => {
       });
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const stillBtn = page.locator('[data-testid="beat-magic-still-0"]');
     await expect(stillBtn).toBeVisible();
     await expect(stillBtn).not.toBeDisabled();
@@ -75,7 +76,7 @@ test.describe('S4 — magic compositor', () => {
       });
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     const stillBtn = page.locator('[data-testid="beat-magic-still-0"]');
     await expect(stillBtn).toBeVisible();
     await expect(stillBtn).not.toBeDisabled();
@@ -106,7 +107,7 @@ test.describe('S4 — magic compositor', () => {
         return orig.call(window, url ?? '', target, features);
       }) as typeof window.open;
     });
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await page.locator('[data-testid="beat-magic-still-0"]').click();
     const openedUrls = await page.evaluate(() =>
       (window as unknown as { __mn_open_calls?: string[] }).__mn_open_calls,
@@ -171,7 +172,7 @@ test.describe('S4 — magic compositor', () => {
       });
     });
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     // magic-still renders (image_path present), but magic-video should NOT render.
     await expect(page.locator('[data-testid="beat-magic-still-0"]')).toBeVisible();
     await expect(page.locator('[data-testid="beat-magic-video-0"]')).toHaveCount(0);

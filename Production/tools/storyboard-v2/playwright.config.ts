@@ -8,6 +8,11 @@ import { defineConfig, devices } from '@playwright/test';
 // globalSetup/Teardown for fixture pinning, and `retries: 1` in CI per
 // spec §16 flake governance.
 
+// E2E fixture server uses port 5200 — outside dedicated 5111–5199 range so
+// Event_e2e_fixture is not conflated with Event_1 port math and event/load works.
+const E2E_SERVER_PORT = 5200;
+const E2E_BASE_URL = `http://localhost:${E2E_SERVER_PORT}`;
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 30_000,
@@ -25,7 +30,7 @@ export default defineConfig({
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   use: {
-    baseURL: process.env.STORYBOARD_BASE_URL ?? 'http://localhost:5111',
+    baseURL: process.env.STORYBOARD_BASE_URL ?? E2E_BASE_URL,
     headless: true,
     trace: 'on-first-retry',
     actionTimeout: 5_000,
@@ -49,8 +54,9 @@ export default defineConfig({
       'python3 ../../../Production/tools/production_server.py' +
       ' --event-dir ../../../Production/Event_e2e_fixture' +
       ' --storyboard storyboard_v59_prod.html' +
-      ' --event-id Event_e2e_fixture',
-    url: 'http://localhost:5111/api/health',
+      ' --event-id Event_e2e_fixture' +
+      ` --port ${E2E_SERVER_PORT}`,
+    url: `${E2E_BASE_URL}/api/health`,
     timeout: 30_000,
     // ALWAYS spawn fresh — never reuse, including locally. The spec's original
     // `!process.env.CI` would silently reuse Kim's local Event_1 dev server

@@ -11,9 +11,15 @@
 // Test ordering: infra smoke (Q10A counter) → R1 → R2 → R3 → R4 → R5 → +NewEvent.
 
 import { test, expect, type Page, type Request } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
+import { restoreE2eFixtureOnServer } from './fixtureRestore';
 
-const SERVER = 'http://localhost:5111';
+const SERVER = 'http://localhost:5200';
 const FIXTURE_EVENT = 'Event_e2e_fixture';
+
+test.afterAll(async ({ request }) => {
+  await restoreE2eFixtureOnServer(request);
+});
 
 async function gotoApp(page: Page): Promise<void> {
   // Capture pageerror so a bug-induced render crash surfaces in test output
@@ -35,10 +41,11 @@ async function gotoApp(page: Page): Promise<void> {
 test.describe('infra smoke', () => {
   test('infra-smoke — workflow + webServer + fixture + bundle all wire up', async ({ page }) => {
     await gotoApp(page);
-    // 5 tabs visible (storyboard / bg / cropper / stitcher / map per TabBar).
-    await expect(page.locator('[data-testid="tab-storyboard"]')).toBeVisible();
+    // Core operator tabs (Storyboard is hiddenFromBar — not in tab bar).
     await expect(page.locator('[data-testid="tab-bg"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-cropper"]')).toBeVisible();
+    await expect(page.locator('[data-testid="tab-phase-a"]')).toBeVisible();
+    await expect(page.locator('[data-testid="tab-phase-b"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-stitcher"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-map"]')).toBeVisible();
     // ScopeBoundary resolved against the fixture (not Event_1).
@@ -47,7 +54,7 @@ test.describe('infra smoke', () => {
     ).toContain(FIXTURE_EVENT);
     // Server health round-trip via in-page fetch (proves CORS + server reachable).
     const health = await page.evaluate(async () => {
-      const r = await fetch('http://localhost:5111/api/health');
+      const r = await fetch('http://localhost:5200/api/health');
       return { ok: r.ok, status: r.status };
     });
     expect(health.ok).toBe(true);
@@ -61,9 +68,22 @@ test.describe('infra smoke', () => {
 
 test.describe('R1 — scope-change re-fetch', () => {
   test('R1.1 — switching video from intro→resolution clears beats; back→restores', async ({ page }) => {
+    await page.route('**/api/video/set_active', async (r) => {
+      const reqBody = JSON.parse(r.request().postData() ?? '{}');
+      const role = reqBody.video_role ?? reqBody.scope_target_video ?? 'intro';
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          event_id: FIXTURE_EVENT,
+          active_video: role,
+        }),
+      });
+    });
     await gotoApp(page);
     // Land on Storyboard tab (default).
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await expect(page.locator('[data-testid="pane-storyboard"]')).toBeVisible();
     // Initial intro state: fixture has 3 beats. Wait for cards to render.
     await expect.poll(async () =>

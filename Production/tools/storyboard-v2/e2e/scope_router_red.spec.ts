@@ -18,8 +18,9 @@
 // mutate freely.
 
 import { test, expect, type APIRequestContext } from '@playwright/test';
+import { restoreE2eFixtureOnServer } from './fixtureRestore';
 
-const SERVER = 'http://localhost:5111';
+const SERVER = 'http://localhost:5200';
 const EVENT_ID = 'Event_e2e_fixture';
 
 // Pristine fixture invariants (asserted by global-setup; mirrored here for
@@ -35,6 +36,10 @@ async function getState(request: APIRequestContext): Promise<any> {
   }
   return r.json();
 }
+
+test.afterAll(async ({ request }) => {
+  await restoreE2eFixtureOnServer(request);
+});
 
 test.describe('K1 — _handle_beat_update_text routes via scope_router (RED until C-2)', () => {
   // GREEN as of C-2 (un-fixme'd in same commit as the K1+D5 handler fix)

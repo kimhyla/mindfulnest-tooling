@@ -66,14 +66,8 @@ export function TabBar({ activeTab }: TabBarProps) {
         // ignore
       }
     }
-    if (def?.hiddenFromBar && activeTab.value === def.key) {
-      activeTab.value = 'bg';
-      try {
-        sessionStorage.setItem(ACTIVE_TAB_STORAGE_KEY, 'bg');
-      } catch {
-        // ignore
-      }
-    }
+    // hiddenFromBar tabs (Storyboard) stay routable via ?tab=storyboard deep links
+    // and in-app navigators — only omit the tab-bar button, never kick activeTab.
   }, [isMilestone, activeTab.value]);
 
   return (

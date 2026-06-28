@@ -37,7 +37,7 @@ async function gotoApp(page: Page): Promise<void> {
 /**
  * Mock the BG read endpoints to reproduce the empty-segments condition that
  * the running production server hits when an arc has no authored segments
- * (curl http://localhost:5111/api/bg/segments?arc_number=1 → {segments: [],
+ * (curl http://localhost:5200/api/bg/segments?arc_number=1 → {segments: [],
  * arc_number: 1}).
  */
 async function mockEmptyBgEndpoints(page: Page): Promise<void> {

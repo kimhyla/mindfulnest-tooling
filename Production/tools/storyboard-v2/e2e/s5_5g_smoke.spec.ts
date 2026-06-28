@@ -32,7 +32,7 @@ const FIXTURE_EVENT = 'Event_e2e_fixture';
 // with. Re-pin server to the fixture event so each test starts from a clean
 // event-scope baseline. Absolute URL per Rule 32.
 test.beforeEach(async ({ request }) => {
-  await request.post('http://localhost:5111/api/event/load', {
+  await request.post('http://localhost:5200/api/event/load', {
     data: { event_id: FIXTURE_EVENT },
   });
 });
@@ -185,7 +185,7 @@ async function mockStitchPreviewAndBoundaries(page: Page): Promise<void> {
       contentType: 'application/json',
       body: JSON.stringify({
         ok: true,
-        preview_url: 'http://localhost:5111/api/stitch_editor/preview_file/mock_preview',
+        preview_url: 'http://localhost:5200/api/stitch_editor/preview_file/mock_preview',
         slot_durations: [30000, 50000, 100000, 30000],
         slot_start_offsets_ms: [0, 32600, 82600, 182600],
       }),

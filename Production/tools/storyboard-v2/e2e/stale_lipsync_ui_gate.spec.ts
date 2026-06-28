@@ -38,6 +38,7 @@
 //   T-4 missing  — lipsync.file_mtime missing → disabled stale button (defensive default)
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 interface MockLipsyncBeatOptions {
   lipsyncFileMtime?: number | null;   // epoch SECONDS; undefined→omit key; null→explicit null
@@ -163,7 +164,7 @@ test.describe('Stale-Lipsync UI Gate — F-STALE-LIPSYNC-UI-001', () => {
     });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
 
     const playBtn = page.locator('[data-testid="beat-0-lipsync-play"]');
     await expect(playBtn).toBeVisible();
@@ -183,7 +184,7 @@ test.describe('Stale-Lipsync UI Gate — F-STALE-LIPSYNC-UI-001', () => {
     });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
 
     const playBtn = page.locator('[data-testid="beat-0-lipsync-play"]');
     // BUG-C fix (Kim 2026-05-20): stale lipsync must STILL be playable so
@@ -205,7 +206,7 @@ test.describe('Stale-Lipsync UI Gate — F-STALE-LIPSYNC-UI-001', () => {
     });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
 
     const playBtn = page.locator('[data-testid="beat-0-lipsync-play"]');
     await expect(playBtn).toHaveCount(0);
@@ -221,7 +222,7 @@ test.describe('Stale-Lipsync UI Gate — F-STALE-LIPSYNC-UI-001', () => {
     });
     await stubMediaEndpoints(page);
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
 
     const playBtn = page.locator('[data-testid="beat-0-lipsync-play"]');
     await expect(playBtn).toBeVisible();

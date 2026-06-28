@@ -12,5 +12,9 @@ def test_lorelai_unchanged():
     assert reg.normalize_beat_speaker_for_sidecar("Lorelai") == "Lorelai"
 
 
+def test_guide_bird_canonicalizes_to_arlo():
+    assert reg.normalize_beat_speaker_for_sidecar("Guide Bird") == "Arlo"
+
+
 def test_stage_direction_preserved():
     assert reg.normalize_beat_speaker_for_sidecar("[Stage Direction]") == "[Stage Direction]"

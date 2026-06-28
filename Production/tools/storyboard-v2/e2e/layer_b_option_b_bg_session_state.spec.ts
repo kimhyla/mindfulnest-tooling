@@ -41,7 +41,7 @@ async function gotoApp(page: Page): Promise<void> {
   // Rule 32 N/A: applies to fetch() calls in production tool HTML (storyboard,
   // beat generator, cropper) per CLAUDE.md Rule 32 wording. Playwright e2e
   // test navigation uses Playwright's `baseURL` config (set to
-  // `http://localhost:5111` in playwright.config.ts) — established
+  // `http://localhost:5200` in playwright.config.ts) — established
   // convention used in 18 existing spec files. [CONFIRMED via
   // `grep -rln "page.goto('/')" Production/tools/storyboard-v2/e2e/`]
   await page.goto('/');

@@ -28,10 +28,11 @@ _PROD_ROOT: Path | None = None
 
 # Beat Gen speaker aliases → character_subjects.json key
 _SPEAKER_REGISTRY_ALIAS: dict[str, str] = {
-    "guide bird": "Chipper",
-    "chipper": "Chipper",
-    "pip": "Chipper",
-    "assistant bird": "Chipper",
+    # Bird guide — Chipper/Pip retired; canonical guide is Arlo (2026-06-13 cast).
+    "guide bird": "Arlo",
+    "chipper": "Arlo",
+    "pip": "Arlo",
+    "assistant bird": "Arlo",
     "mountain king": "The King",
     "king": "The King",
     "the king": "The King",

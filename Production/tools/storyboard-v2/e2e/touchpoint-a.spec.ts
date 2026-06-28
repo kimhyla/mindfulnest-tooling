@@ -11,7 +11,7 @@
 // (cross-event guard, snapshot endpoint, export buttons) ARE wired live.
 
 import { test, expect, request, type Page } from '@playwright/test';
-import { protectBeatText } from './helpers';
+import { protectBeatText, openStoryboardPane } from './helpers';
 
 async function gotoApp(page: Page) {
   await page.goto('/');
@@ -26,7 +26,6 @@ test.describe('§6A — read-only verification', () => {
   test('§6A.1 — page loads, header + 4 tabs + library visible', async ({ page }) => {
     await gotoApp(page);
     await expect(page.locator('[data-testid="app-subhead"]')).toContainText('Path C');
-    await expect(page.locator('[data-testid="tab-storyboard"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-bg"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-cropper"]')).toBeVisible();
     await expect(page.locator('[data-testid="tab-stitcher"]')).toBeVisible();
@@ -44,7 +43,7 @@ test.describe('§6A — read-only verification', () => {
 
   test('§6A.3 — all 4 tabs render their pane without error', async ({ page }) => {
     await gotoApp(page);
-    await page.click('[data-testid="tab-storyboard"]');
+    await openStoryboardPane(page);
     await expect(page.locator('[data-testid="pane-storyboard"]')).toBeVisible();
     await page.click('[data-testid="tab-bg"]');
     await expect(page.locator('[data-testid="pane-bg"]')).toBeVisible();
@@ -162,12 +161,12 @@ test.describe('§6B — production workflow contract', () => {
   test('§6B.5 — Accept All on Event 1 succeeds; cross-event Event_2 returns 409', async () => {
     const ctx = await request.newContext();
     // Same call, scoped to Event_1 — passes.
-    const ok = await ctx.post('http://localhost:5111/api/bg/accept-beats', {
+    const ok = await ctx.post('http://localhost:5200/api/bg/accept-beats', {
       data: { scope_event_id: 'Event_1', beats: [], segment: 0 },
     });
     expect(ok.status()).toBe(200);
     // Cross-event — 409.
-    const cross = await ctx.post('http://localhost:5111/api/bg/accept-beats', {
+    const cross = await ctx.post('http://localhost:5200/api/bg/accept-beats', {
       data: { scope_event_id: 'Event_2', beats: [], segment: 0 },
     });
     expect(cross.status()).toBe(409);

@@ -3,6 +3,7 @@
 // Bootstrap is mocked (no server mutations required).
 
 import { test, expect, type Page } from '@playwright/test';
+import { openStoryboardPane } from './helpers';
 
 const BEAT_ID = 'beat_track_b_ld';
 
@@ -112,7 +113,7 @@ async function gotoStoryboard(page: Page): Promise<void> {
   });
   await page.goto('/');
   await expect(page.locator('[data-testid="app-root"]')).toBeVisible();
-  await page.click('[data-testid="tab-storyboard"]');
+  await openStoryboardPane(page);
   await expect(page.locator('[data-testid="beat-list"]')).toBeVisible({ timeout: 10000 });
 }
 
