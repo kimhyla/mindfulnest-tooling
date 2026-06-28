@@ -2,7 +2,7 @@
 
 **Marker:** `STORYBOARD_AUTHORITY_FULL_AUDIT_2026-06-28`  
 **Scope:** Beat Gen · Storyboard · Stitcher · Magic · Scope · Truth Stack  
-**Branch baseline:** `fix/prompt-contradiction-gallery-closure` @ `96068c5` + Layer 1 / magic writeback follow-ups
+**Branch baseline:** `fix/prompt-contradiction-gallery-closure` @ `82e8eff` — Tier C complete 2026-06-28
 
 ---
 
@@ -10,17 +10,28 @@
 
 | Layer | Status | Notes |
 |-------|--------|-------|
-| **Kling / Send to Stitcher** | ✅ Shipped | Single contract; CI strict audit A–H |
+| **Kling / Send to Stitcher** | ✅ Shipped | Single contract; CI strict audit A–L |
 | **O3 job busy / gallery / prompt** | ✅ Shipped | Contract modules + client mirrors |
 | **Stitch timeline / playback / single-owner** | ✅ Shipped | Atomic dur + mux-first URL |
 | **Scope / event pin / build-sha** | ✅ Shipped | Dedicated port + client authority |
 | **Magic render (compositor)** | ✅ Shipped | `magic_render_contract` + brightness fix |
-| **Magic writeback** | 🟡 In progress | `write_magic_delivery()` consolidates still/video; clear/assign-image still parallel |
-| **BeatGenScope Layer 1** | 🟡 In progress | `scope_from_app` + HTTP `_in_beatgen_scope` on 29 BG routes; async workers / `mutate_sidecar_locked` still ambient |
-| **Data model (kling status fields)** | 🟡 Partial | Disk is export authority; redundant `kling_o3_status`/`status` remain as write-cache + still-insert branch |
-| **BG→Stitcher async bootstrap** | 🟡 Shipped guards | Durability scripts wired; live fleet deploy still flaky on Event 2 session-state timeout |
+| **Magic writeback** | ✅ Shipped | `write_magic_delivery()` — still/video/clear/assign |
+| **BeatGenScope Layer 1** | ✅ Shipped | HTTP `_in_beatgen_scope` + async scope JSON on workers |
+| **Data model (kling status fields)** | ✅ Documented | Write-cache spec; export uses disk authority |
+| **Waveform time authority** | ✅ Shipped | WTA-1/SEEK-3 — e2e green |
+| **Deploy / fleet** | ✅ Shipped | Fanout bundle + launchd cold-boot smoke |
 
-**Bottom line:** The regression class that broke Event 3 Send to Stitcher is **fixed at the architecture layer** (single authority + audit). Two large debt areas remain: **Truth Stack Layer 1 on async paths** and **finishing magic/assign-image writeback unification**. Neither is a UI patch.
+**Bottom line:** Tier C closed. Regression locks in CI. See `TIER_C_FINAL_REPORT_2026-06-28.md` and `TIER_C_OPERATOR_MATRIX_2026-06-28.md`.
+
+---
+
+## Known debt (post–Tier C — tracked, non-blocking)
+
+| ID | Issue | Status |
+|----|-------|--------|
+| OPS-ORPHAN | Orphan `kling_o3_clips` on disk without sidecar pointer | WARN in deploy smoke; ops cleanup |
+| PERF-E2 | Event_2 intro session-state ~22s after cold boot | Within 120s gate; monitor |
+| DATA-KLING-P2 | Remove redundant status reads in UI labels only | Phase 2 spec; export already disk-authoritative |
 
 ---
 
@@ -81,21 +92,13 @@
 
 ---
 
-## Verification matrix
+## Verification matrix (Tier C — 2026-06-28)
 
 | Gate | Result |
 |------|--------|
-| `audit_authority_duplicates.sh --strict-subset` | PASS A–H |
+| `audit_authority_duplicates.sh --strict-subset` | PASS A–L |
 | `verify_authority_registry_durability.sh` | PASS |
-| `verify_kling_stitch_readiness_durability.sh` | PASS |
-| Magic + truth stack pytest (post-fix) | RUN after commit |
-| Visual E2E Event 3 | Browser smoke — see session notes |
-
----
-
-## Recommended next PRs (ordered)
-
-1. **Layer 1 async** — scope JSON on every O3/Kling job; worker enters `beatgen_scope_ctx`.
-2. **Magic writeback finish** — clear + assign-image through `write_magic_delivery`; CI grep forbids inline `_set_magic_*`.
-3. **Data model Phase 2 spec** — document `kling_o3_status` as write-cache; remove export/display reads outside contract.
-4. **`mutate_sidecar_locked(scope=)`** — parity with `update_beat_locked`.
+| `verify_storyboard_session_durability.sh` | PASS |
+| GitHub CI e2e + CodeQL | PASS |
+| Visual Event_1/2/3 + milestone | PASS — operator matrix doc |
+| Fleet deploy 5111–5116 | PASS |

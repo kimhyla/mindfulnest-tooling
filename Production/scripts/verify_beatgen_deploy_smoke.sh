@@ -37,34 +37,58 @@ if [[ "${HTTP}" != "200" ]]; then
   exit 1
 fi
 
+# SERVER_LAUNCHD_SINGLE_OWNER_V1 — restart API exits for KeepAlive respawn; cold boot
+# on Event_2+ can exceed 60s (Directus warmup, sidecar reconcile). Use shared wait.
 curl -s -X POST "${BASE}/api/server/restart" >/dev/null || true
-HTTP2="000"
-for _i in $(seq 1 30); do
-  sleep 2
-  HTTP2="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/" 2>/dev/null || echo 000)"
-  if [[ "${HTTP2}" == "200" ]]; then
-    break
-  fi
-done
-
-if [[ "${HTTP2}" != "200" ]] && [[ -f "${TOOL_SERVER}" ]]; then
-  echo "WARN: :${PORT} did not recover after restart API — relaunching ${EVENT_ID} server"
-  nohup python3 "${TOOL_SERVER}" \
-    --event-dir "${DROPBOX_PROD}/${EVENT_ID}" \
-    --storyboard storyboard_v59_prod.html \
-    --event-id "${EVENT_ID}" \
-    --port "${PORT}" >> "${LOG}" 2>&1 &
-  for _i in $(seq 1 20); do
-    sleep 2
+if ! event_server_wait_http "${PORT}" "${EVENT_SERVER_COLD_BOOT_ATTEMPTS}"; then
+  EVENT_SLUG="$(python3 -c "import sys; print(''.join(sys.argv[1].split('_')).lower())" "${EVENT_ID}")"
+  LABEL="com.mindfulnest.production-server-${EVENT_SLUG}"
+  DOMAIN="gui/$(id -u)"
+  INSTALL="${SCRIPT_DIR}/install_production_server_launchagent.sh"
+  echo "WARN: :${PORT} cold boot slow after restart API — launchd kickstart ${LABEL}"
+  launchctl kickstart -k "${DOMAIN}/${LABEL}" 2>/dev/null \
+    || bash "${INSTALL}" "${EVENT_ID}" 2>/dev/null \
+    || true
+  if ! event_server_wait_http "${PORT}" "${EVENT_SERVER_COLD_BOOT_ATTEMPTS}"; then
     HTTP2="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/" 2>/dev/null || echo 000)"
-    if [[ "${HTTP2}" == "200" ]]; then
-      break
-    fi
-  done
+    echo "FATAL: server down after restart (HTTP ${HTTP2})" >&2
+    exit 1
+  fi
+fi
+HTTP2="$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/" 2>/dev/null || echo 000)"
+if [[ "${HTTP2}" != "200" ]]; then
+  echo "FATAL: server root not ready after cold boot wait (HTTP ${HTTP2})" >&2
+  exit 1
 fi
 
-if [[ "${HTTP2}" != "200" ]]; then
-  echo "FATAL: server down after restart (HTTP ${HTTP2})" >&2
+wait_intro_session_state() {
+  local attempt out
+  for attempt in $(seq 1 "${EVENT_SERVER_COLD_BOOT_ATTEMPTS}"); do
+    out="$(curl -sf --max-time 120 \
+      "${BASE}/api/bg/session-state?scope_event_id=${EVENT_ID}&scope_video_role=intro" 2>/dev/null || true)"
+    if [[ -n "${out}" ]] && python3 -c "import json,sys; json.loads(sys.argv[1])" "${out}" 2>/dev/null; then
+      printf '%s' "${out}"
+      return 0
+    fi
+    sleep "${EVENT_SERVER_WAIT_SLEEP_SECONDS}"
+  done
+  return 1
+}
+
+INTRO_STATE="$(wait_intro_session_state || true)"
+if [[ -z "${INTRO_STATE}" ]]; then
+  echo "FATAL: intro session-state empty or invalid JSON after cold boot" >&2
+  exit 1
+fi
+INTRO_BEATS="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('beats') or []))" <<<"${INTRO_STATE}")"
+INTRO_ERR="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error_message') or '')" <<<"${INTRO_STATE}")"
+echo "event intro session-state beats=${INTRO_BEATS} error=${INTRO_ERR:-none}"
+if [[ "${INTRO_BEATS}" -lt 1 ]] && [[ "${EVENT_ID}" != "Event_4" ]]; then
+  echo "FATAL: ${EVENT_ID} intro Beat Gen empty after restart" >&2
+  exit 1
+fi
+if [[ -n "${INTRO_ERR}" ]]; then
+  echo "FATAL: intro session-state error: ${INTRO_ERR}" >&2
   exit 1
 fi
 
@@ -76,20 +100,6 @@ if [[ -f "${DB}" ]]; then
     echo "FATAL: beatgen.db integrity_check failed after restart: ${INTEGRITY2}" >&2
     exit 1
   fi
-fi
-
-# Event intro session-state (dedicated port)
-INTRO_STATE="$(curl -s "${BASE}/api/bg/session-state?scope_event_id=${EVENT_ID}&scope_video_role=intro")"
-INTRO_BEATS="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('beats') or []))" <<<"${INTRO_STATE}")"
-INTRO_ERR="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error_message') or '')" <<<"${INTRO_STATE}")"
-echo "event intro session-state beats=${INTRO_BEATS} error=${INTRO_ERR:-none}"
-if [[ "${INTRO_BEATS}" -lt 1 ]] && [[ "${EVENT_ID}" != "Event_4" ]]; then
-  echo "FATAL: ${EVENT_ID} intro Beat Gen empty after restart" >&2
-  exit 1
-fi
-if [[ -n "${INTRO_ERR}" ]]; then
-  echo "FATAL: intro session-state error: ${INTRO_ERR}" >&2
-  exit 1
 fi
 
 # S3: warn on orphan kling clips (disk without sidecar pointer) — ops visibility only
@@ -128,7 +138,7 @@ for p in orphans[:5]:
 fi
 
 # Omni default — no avatar_pro on intro beats when Avatar disabled (server env pin)
-curl -sf "${BASE}/api/bg/session-state?scope_event_id=${EVENT_ID}&scope_video_role=intro" \
+curl -sf --max-time 120 "${BASE}/api/bg/session-state?scope_event_id=${EVENT_ID}&scope_video_role=intro" \
   | python3 -c "
 import json, os, sys
 d = json.load(sys.stdin)
@@ -145,7 +155,7 @@ if [[ "${PORT}" == "5112" ]]; then
     -H "Content-Type: application/json" \
     -d '{"milestone_id":"milestone1_arc1"}' || echo 000)"
   if [[ "${MS_LOAD}" == "200" ]]; then
-    STATE="$(curl -s "${BASE}/api/bg/session-state?scope_event_id=Event_2&scope_milestone_id=milestone1_arc1&scope_type=milestone&scope_video_role=full&scope_arc_number=1&scope_phase=full")"
+    STATE="$(curl -sf --max-time 120 "${BASE}/api/bg/session-state?scope_event_id=Event_2&scope_milestone_id=milestone1_arc1&scope_type=milestone&scope_video_role=full&scope_arc_number=1&scope_phase=full")"
     BEATS="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('beats') or []))" <<<"${STATE}")"
     ERR="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error_message') or '')" <<<"${STATE}")"
     echo "milestone session-state beats=${BEATS} error=${ERR:-none}"
