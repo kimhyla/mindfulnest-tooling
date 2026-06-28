@@ -34,6 +34,21 @@ declare global {
   }
 }
 
+/** CodeQL js/xss-through-dom — only allow localhost dedicated-port bookmarks. */
+function isSafeLocalStoryboardUrl(raw: string | null): boolean {
+  if (!raw) return false;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== 'http:') return false;
+    if (u.hostname !== '127.0.0.1' && u.hostname !== 'localhost') return false;
+    const port = u.port ? parseInt(u.port, 10) : 80;
+    if (!Number.isFinite(port) || port < 5111 || port > 5199) return false;
+    return u.pathname === '/' || u.pathname === '';
+  } catch {
+    return false;
+  }
+}
+
 export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
   const [resolved, setResolved] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
@@ -113,7 +128,7 @@ export function ScopeBoundary({ children, forceEventId }: ScopeBoundaryProps) {
         data-scope-pin-error={pinError}
       >
         {pinError}
-        {correctUrl ? (
+        {correctUrl && isSafeLocalStoryboardUrl(correctUrl) ? (
           <p style={{ marginTop: '0.75rem' }}>
             <a href={correctUrl} class="mn-scope-boundary-open-correct-url">
               Open {correctUrl}

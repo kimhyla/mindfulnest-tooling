@@ -8177,26 +8177,23 @@ class ProductionHandler(BaseHTTPRequestHandler):
 
     def _path_under_allowed_serve_roots(self, cand: str) -> str | None:
         """Realpath containment gate for /files?path= (CodeQL py/path-injection)."""
-        try:
-            drop_root = os.path.realpath(str(DROPBOX_ROOT))
-            repo_root = os.path.realpath(str(_MN_REPO_ROOT))
-            real_path = os.path.realpath(cand)
-            if not os.path.isfile(real_path):
-                return None
-            under_drop = real_path == drop_root or real_path.startswith(drop_root + os.sep)
-            under_repo = real_path == repo_root or real_path.startswith(repo_root + os.sep)
-            if under_drop or under_repo:
-                return real_path
-        except OSError:
-            return None
-        return None
+        from lib.path_serve_security import safe_realpath_under_serve_roots
+
+        return safe_realpath_under_serve_roots(cand)
 
     def _resolve_served_file_path(self, file_path: str) -> str | None:
         """Resolve ?path= to an on-disk file under Dropbox, tooling, or event_dir."""
+        from lib.path_serve_security import reject_path_traversal_segments
+
         if not file_path:
             return None
         if os.path.isabs(file_path):
             return self._path_under_allowed_serve_roots(file_path)
+
+        try:
+            reject_path_traversal_segments(file_path)
+        except ValueError:
+            return None
 
         candidates: list[str] = []
         candidates.append(os.path.join(str(DROPBOX_ROOT), file_path))
@@ -9305,11 +9302,13 @@ body {{padding-top:44px!important;}}
                 error_message=f"no staged file for token={token!r} name={filename!r}",
                 retry_safe=False,
             )
+        from lib.http_response_safety import safe_content_type
+
         mime, _ = mimetypes.guess_type(str(staged))
-        data = staged.read_bytes()
+        data = Path(staged).read_bytes()
         self.send_response(200)
         self._cors_headers()
-        self.send_header("Content-Type", mime or "application/octet-stream")
+        self.send_header("Content-Type", safe_content_type(mime))
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", "public, max-age=3600")
         self.end_headers()
@@ -11961,10 +11960,13 @@ body {{padding-top:44px!important;}}
 
     def _serve_mp4_with_range(self, path: Path, *, cache_immutable: bool = False) -> None:
         """Serve an MP4 file with Accept-Ranges support for browser <video> scrubbing."""
+        from lib.http_response_safety import safe_etag_from_basename
+
         file_size = path.stat().st_size
         range_header = self.headers.get("Range", "")
         ctype = "video/mp4"
         cache_control = "public, max-age=86400, immutable" if cache_immutable else "no-store"
+        etag = safe_etag_from_basename(path.name) if cache_immutable else None
 
         if range_header:
             try:
@@ -11980,11 +11982,11 @@ body {{padding-top:44px!important;}}
                 self.send_header("Content-Length", str(length))
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Cache-Control", cache_control)
-                if cache_immutable:
-                    self.send_header("ETag", f'"{path.name}"')
+                if etag:
+                    self.send_header("ETag", etag)
                 self._cors_headers()
                 self.end_headers()
-                with open(path, "rb") as f:
+                with open(os.path.realpath(str(path)), "rb") as f:
                     f.seek(start)
                     self.wfile.write(f.read(length))
             except Exception:
@@ -11994,8 +11996,8 @@ body {{padding-top:44px!important;}}
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Accept-Ranges", "bytes")
                 self.send_header("Cache-Control", cache_control)
-                if cache_immutable:
-                    self.send_header("ETag", f'"{path.name}"')
+                if etag:
+                    self.send_header("ETag", etag)
                 self._cors_headers()
                 self.end_headers()
                 self.wfile.write(body)
@@ -12006,8 +12008,8 @@ body {{padding-top:44px!important;}}
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", cache_control)
-            if cache_immutable:
-                self.send_header("ETag", f'"{path.name}"')
+            if etag:
+                self.send_header("ETag", etag)
             self._cors_headers()
             self.end_headers()
             self.wfile.write(body)

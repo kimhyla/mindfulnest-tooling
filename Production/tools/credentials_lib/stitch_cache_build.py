@@ -40,7 +40,7 @@ def stitch_cache_build_lock(cache_dir: Path):
     cache_dir.mkdir(parents=True, exist_ok=True)
     lock_path = cache_dir / ".lock"
     with _thread_lock_for(cache_dir):
-        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
         try:
             try:
                 fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

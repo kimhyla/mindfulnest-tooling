@@ -52,6 +52,12 @@ def resolve_watercolor_path(
     if not key or not isinstance(key, str):
         raise ValueError(f"key must be non-empty string, got {key!r}")
     key = urllib.parse.unquote(key)
+    # CodeQL py/path-injection — keys are library slugs or basenames only.
+    if "/" in key or "\\" in key or ".." in key or "\x00" in key:
+        raise ValueError(f"invalid watercolor key: {key!r}")
+    key = Path(key).name
+    if not key:
+        raise ValueError("invalid watercolor key")
     lib = Path(library_dir)
     if not lib.is_dir():
         raise FileNotFoundError(f"watercolor library dir missing: {lib}")

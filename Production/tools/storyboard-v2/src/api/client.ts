@@ -27,7 +27,7 @@ import {
   shouldInjectMilestoneScope,
 } from '../state/scope';
 import { confirmServerMilestoneScope } from '../state/milestoneScopeGate';
-import { clientMayPinServerTo, isDedicatedPortForEvent, noteClientPinnedEvent, readUrlEventId } from '../state/scopeAuthority';
+import { clientMayPinServerTo, isDedicatedPortForEvent, noteClientPinnedEvent, readUrlEventId, readDedicatedPortEventId } from '../state/scopeAuthority';
 import { syncAuthoritativeClientScope, readAuthoritativeEventId } from '../state/resolveAuthoritativeClientScope';
 import { isClientBundleStale, CLIENT_BUNDLE_STALE_MESSAGE } from '../state/buildShaDrift';
 import { scopeReady } from '../state/scopeReady';
@@ -311,6 +311,10 @@ export async function healServerScopeIfAuthorized(scope: Scope): Promise<boolean
 
   // SCOPE_CLIENT_AUTHORITY_V1 — dedicated port: URL/port event is truth; sync without event/load.
   if (authoritative && isDedicatedPortForEvent(authoritative)) {
+    const portEvent = readDedicatedPortEventId();
+    if (portEvent !== authoritative) {
+      return false;
+    }
     if (await syncAuthoritativeClientScope(scope, 'dedicated-port-heal')) {
       return true;
     }

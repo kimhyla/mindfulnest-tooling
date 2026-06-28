@@ -152,7 +152,7 @@ def provision_dedicated_event_server(
         )
 
     lock_path = _provision_lock_path(port)
-    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         if _event_http_ready(port, eid):

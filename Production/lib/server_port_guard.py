@@ -275,7 +275,7 @@ def port_bindable(port: int, retries: int = 10, delay: float = 1.0) -> bool:
 @contextmanager
 def port_startup_lock(port: int) -> Iterator[None]:
     path = lock_path(port)
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield

@@ -92,9 +92,14 @@ def build_staging_public_url(public_base: str, token: str, filename: str) -> str
 
 
 def resolve_staged_file(event_dir: Path, token: str, filename: str) -> Path | None:
-    staged = staging_dir(event_dir, token) / _safe_filename(filename)
+    from lib.path_serve_security import require_basename_under_dir
+
+    safe_token = _safe_segment(token)
+    safe_name = _safe_filename(filename)
+    parent = staging_dir(event_dir, safe_token)
+    staged = require_basename_under_dir(safe_name, parent)
     if staged.is_file():
-        return staged
+        return Path(os.path.realpath(str(staged)))
     return None
 
 
