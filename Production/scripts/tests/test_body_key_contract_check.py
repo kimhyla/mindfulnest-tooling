@@ -234,6 +234,32 @@ def test_unanalyzable_call_flagged(tmp_path):
     assert "UNANALYZABLE_CLIENT_CALL" in kinds
 
 
+def test_beatgen_scope_wrapper_route_pairs_handler(tmp_path):
+    """Layer 1 scope wrapper passes handler ref without call parens."""
+    root = _scaffold(
+        tmp_path,
+        server_py=textwrap.dedent("""\
+            class Handler:
+                def do_POST(self):
+                    path = '?'
+                    body = {}
+                    if path == "/api/bg/update-beat":
+                        return self._in_beatgen_scope(self._handle_bg_update_beat, body)
+
+                def _handle_bg_update_beat(self, body):
+                    x = body.get("kling_o3_prompt")
+        """),
+        endpoints_ts=_endpoints({"bg_update_beat": "/api/bg/update-beat"}),
+        tsx={
+            "Use.tsx": (
+                "pathappPatch(scope, 'bg_update_beat', { kling_o3_prompt: 'hi' });"
+            ),
+        },
+    )
+    rc, report = _run(root)
+    assert rc == 0, report
+
+
 def test_no_client_callers_endpoint_is_silent(tmp_path):
     """Endpoints with zero client callers (admin, internal) should NOT be
     flagged as SERVER_EXTRA on every key — that would be noise."""

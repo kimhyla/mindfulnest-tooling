@@ -11358,7 +11358,7 @@ def reconcile_sqlite_segment_beats_from_json_mirror(event_dir: str | Path) -> di
         nonlocal report
         report = merge_missing_segment_beats_from_json_mirror(sidecar, mirror_path, evt)
         if not report:
-            from Production.lib.production_snapshot import LATEST_DIR_NAME, snapshot_root
+            from lib.production_snapshot import LATEST_DIR_NAME, snapshot_root
 
             snap_path = (
                 snapshot_root(_PROD_DIR) / LATEST_DIR_NAME / "global" / "beat_generator_state.json"

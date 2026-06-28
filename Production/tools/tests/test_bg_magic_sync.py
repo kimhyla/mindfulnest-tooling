@@ -308,8 +308,9 @@ def test_resolve_bg_magic_canonical_kind_still_when_no_o3_video():
     }) == "still"
 
 
-def test_sync_partition_display_order_survives_magic_writeback_prune():
+def test_sync_partition_display_order_survives_magic_writeback_prune(monkeypatch):
     """BG_PARTITION_DISPLAY_ORDER_SYNC_V1 — empty display_order must not drop magic_*."""
+    monkeypatch.setenv("PRODUCTION_SERVER_SINGLE_MACHINE", "1")
     from production_server import StateManager
 
     sidecar = {
