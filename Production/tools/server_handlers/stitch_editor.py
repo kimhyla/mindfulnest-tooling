@@ -162,6 +162,15 @@ STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1 = "STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1"
 # STITCH_SINGLE_OWNER_V1 — stitch_state.json job slot is sole authority after export;
 # load_job must not persist pipeline disk hydrate (assembled/*.mp4).
 STITCH_SINGLE_OWNER_V1 = "STITCH_SINGLE_OWNER_V1"
+# STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1 — mux/ambient bake completes on export/hydrate only;
+# load_job GET must never run ffmpeg repair.
+STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1 = "STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1"
+_PLAYBACK_BAKE_OPTIONAL_SKIPS = frozenset({
+    "speech_only",
+    "no_video",
+    "job_missing",
+    "handler_incomplete",
+})
 STITCH_ASSEMBLED_SLOT_GLOBS: dict[str, tuple[str, ...]] = {
     "intro": ("intro_*.mp4", "intro_kling_o3_*.mp4"),
     "phase_a": ("phase_a_*.mp4", "phase_a_stitched_*.mp4"),
@@ -1640,6 +1649,182 @@ def _assembled_disk_video_rel(h, event_id: str, slot_key: str) -> str | None:
         return None
 
 
+EVENT_STITCH_JOB_BOOTSTRAP_V1 = "EVENT_STITCH_JOB_BOOTSTRAP_V1"
+_NUMBERED_EVENT_ID_RE = re.compile(r"^Event_\d+$")
+
+
+def is_numbered_event_id(event_id: str) -> bool:
+    """True for Event_1 … Event_89 (dedicated-port numbered events)."""
+    return bool(_NUMBERED_EVENT_ID_RE.match((event_id or "").strip()))
+
+
+def stitch_bootstrap_shim_for_app(app):
+    """Minimal handler surface for stitch bootstrap at server startup (no HTTP handler yet)."""
+
+    class _StitchBootstrapShim:
+        def __init__(self, app):
+            self.app = app
+
+        def _stitch_project_root(self) -> Path:
+            return self.app.event_dir.resolve().parent.parent
+
+        def _stitch_resolve_path(self, raw: str) -> str:
+            root = self._stitch_project_root()
+            p = Path(raw)
+            resolved = str((p if p.is_absolute() else root / p).resolve())
+            root_s = str(root)
+            if not (resolved == root_s or resolved.startswith(root_s + os.sep)):
+                raise ValueError(f"path outside project root: {raw!r}")
+            return resolved
+
+    return _StitchBootstrapShim(app)
+
+
+def _playback_artifact_bake_is_mandatory(report: dict) -> bool:
+    if report.get("ok"):
+        return False
+    skip = (report.get("skipped") or "").strip()
+    return skip not in _PLAYBACK_BAKE_OPTIONAL_SKIPS
+
+
+def _require_playback_artifacts_on_write(slot_key: str, report: dict) -> None:
+    if not _playback_artifact_bake_is_mandatory(report):
+        return
+    err = report.get("error") or report.get("skipped") or "unknown"
+    raise ValueError(
+        f"{slot_key}: playback artifact bake required at write time failed ({err}) "
+        f"[{STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1}]",
+    )
+
+
+def _repair_stitch_job_playback_artifacts_on_write(
+    h,
+    job_name: str,
+    stitch_store,
+) -> list[str]:
+    """Write-path heal for slots with video but missing mux/ambient artifacts."""
+    from server_handlers.stitch_media_artifacts import stitch_slot_needs_playback_artifact_bake  # noqa: PLC0415
+
+    repaired: list[str] = []
+    state = stitch_store.read_state() or {}
+    job = (state.get("jobs") or {}).get(job_name)
+    if not isinstance(job, dict):
+        return repaired
+    slots = job.get("slots") or {}
+    if not isinstance(slots, dict):
+        return repaired
+    for slot_key, slot in list(slots.items()):
+        if not isinstance(slot, dict):
+            continue
+        if not stitch_slot_needs_playback_artifact_bake(h, slot):
+            continue
+        rep = ensure_stitch_slot_playback_artifacts_on_export(
+            h,
+            job_name,
+            slot_key,
+            stitch_store=stitch_store,
+        )
+        if rep.get("ok"):
+            repaired.append(str(slot_key))
+        else:
+            print(
+                f"[stitch] write-path playback repair failed "
+                f"{job_name}/{slot_key}: {rep}",
+                flush=True,
+            )
+    return repaired
+
+
+def ensure_event_stitch_job_registered(
+    h,
+    event_id: str,
+    *,
+    hydrate_from_disk: bool = True,
+) -> dict:
+    """Ensure ``{event_id}_stitch`` exists in global stitch state (EVENT_STITCH_JOB_BOOTSTRAP_V1).
+
+    Idempotent: migrates legacy auto_/phase_* jobs, creates empty canonical slots,
+    optionally hydrates empty slots from on-disk exports when the server is pinned
+    to the same event. Persists only when something changes.
+    """
+    event_id = (event_id or "").strip()
+    if not is_numbered_event_id(event_id):
+        return {
+            "ok": True,
+            "skipped": True,
+            "reason": "not_numbered_event",
+            "code": EVENT_STITCH_JOB_BOOTSTRAP_V1,
+        }
+
+    job_name = stitch_event_job_name(event_id)
+    stitch_store = stitch_state_store_for_job(h, job_name)
+    report: dict = {
+        "ok": True,
+        "code": EVENT_STITCH_JOB_BOOTSTRAP_V1,
+        "event_id": event_id,
+        "job_name": job_name,
+        "created": False,
+        "migrated": False,
+        "hydrated": False,
+        "changed": False,
+    }
+    pinned_event = getattr(getattr(h, "app", None), "event_dir", None)
+    pinned_name = pinned_event.name if pinned_event is not None else ""
+    do_hydrate = bool(
+        hydrate_from_disk
+        and pinned_name == event_id
+    )
+
+    def bootstrap(state: dict) -> None:
+        existed_before = isinstance((state.get("jobs") or {}).get(job_name), dict)
+        migrated = stitch_migrate_legacy_to_canonical(state, event_id)
+        report["migrated"] = bool(migrated)
+        jobs = state.setdefault("jobs", {})
+        job = jobs.get(job_name)
+        slot_keys_added = False
+        if not isinstance(job, dict):
+            jobs[job_name] = {
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "slots": {slot_key: {} for slot_key in STITCH_SLOT_ORDER},
+                "transitions": [],
+            }
+            slot_keys_added = True
+        else:
+            slots = job.setdefault("slots", {})
+            if not isinstance(slots, dict):
+                job["slots"] = {slot_key: {} for slot_key in STITCH_SLOT_ORDER}
+                slot_keys_added = True
+            else:
+                for slot_key in STITCH_SLOT_ORDER:
+                    if slot_key not in slots:
+                        slots[slot_key] = {}
+                        slot_keys_added = True
+        if not existed_before:
+            report["created"] = True
+        changed = bool(migrated or slot_keys_added or not existed_before)
+        if do_hydrate and hydrate_stitch_canonical_slots_from_disk(h, state, event_id):
+            report["hydrated"] = True
+            changed = True
+        report["changed"] = changed
+        if changed:
+            job_ref = jobs.get(job_name)
+            if isinstance(job_ref, dict):
+                job_ref["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+    stitch_store.mutate_state(bootstrap)
+    if do_hydrate:
+        repaired = _repair_stitch_job_playback_artifacts_on_write(
+            h,
+            job_name,
+            stitch_store,
+        )
+        if repaired:
+            report["playback_artifacts_repaired"] = repaired
+            report["write_time_playback_code"] = STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1
+    return report
+
+
 def hydrate_stitch_canonical_slots_from_disk(h, state: dict, event_id: str) -> bool:
     """Fill empty canonical stitch slots from newest on-disk exports (all events).
 
@@ -1675,6 +1860,9 @@ def hydrate_stitch_canonical_slots_from_disk(h, state: dict, event_id: str) -> b
         slot["source"] = STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1
         sync_stitch_slot_video_dur_ms(h, slot, force=True)
         apply_stitch_slot_default_ambient_preset(slot_key, slot)
+        if slot_key in STITCH_SLOT_CANONICAL_DEFAULT_SFX:
+            ensure_stitch_slot_canonical_default_sfx_cues(h, slot_key, slot)
+        normalize_slot_audio_mix_levels(slot)
         changed = True
 
     if changed:
@@ -1894,6 +2082,7 @@ def stitch_upsert_event_slot(
         slot_key,
         stitch_store=stitch_store,
     )
+    _require_playback_artifacts_on_write(slot_key, playback_artifacts)
     if playback_artifacts.get("ok"):
         export_warnings = list(export_warnings or [])
         kind = playback_artifacts.get("kind")
@@ -2209,7 +2398,6 @@ def handle_stitch_load_job(h, name: str)-> None:
 
     from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
         attach_stitch_slot_derived_media_urls,
-        stitch_slot_needs_playback_artifact_bake,
         validate_stitch_slot_media_artifacts,
     )
     from server_handlers.stitch_media_sig import STITCH_LOAD_JOB_FAST_V1  # noqa: PLC0415
@@ -2217,11 +2405,34 @@ def handle_stitch_load_job(h, name: str)-> None:
     state = stitch_store.read_state()
     job = state.get("jobs", {}).get(name)
     job_persisted = isinstance(job, dict)
+    payload_boot: dict | None = None
     if job is None and milestone_job:
         job = {
             "slots": {"standalone": {}},
             "transitions": [],
         }
+    elif job is None and _EVENT_STITCH_JOB_RE.match(name):
+        event_id = name[: -len("_stitch")]
+        boot = ensure_event_stitch_job_registered(
+            h,
+            event_id,
+            hydrate_from_disk=False,
+        )
+        state = stitch_store.read_state() or {}
+        job = state.get("jobs", {}).get(name)
+        job_persisted = isinstance(job, dict)
+        if job is None:
+            return h._send_error_v59(
+                       404,
+                       error_code="GENERIC_ERROR",
+                       error_message=f"Job not found: {name!r}",
+                       retry_safe=False,
+                   )
+        if boot.get("changed"):
+            payload_boot = {
+                "event_stitch_job_bootstrap": boot,
+                "bootstrap_code": EVENT_STITCH_JOB_BOOTSTRAP_V1,
+            }
     elif job is None:
         return h._send_error_v59(
                    404,
@@ -2242,7 +2453,6 @@ def handle_stitch_load_job(h, name: str)-> None:
     defaults_changed = False
     artifact_warnings: list[str] = []
     artifacts_healed = False
-    playback_bake_report: dict[str, dict] = {}
     live_slots = (job.get("slots") if isinstance(job, dict) else None)
     if isinstance(live_slots, dict):
         normalize_job_slots_audio(live_slots)
@@ -2288,34 +2498,6 @@ def handle_stitch_load_job(h, name: str)-> None:
                 _persist_stitch_job_healed_slots(state, name, live_slots)
 
             stitch_store.mutate_state(persist_mux_clears)
-
-        playback_bake_report = {}
-        if job_persisted:
-            for slot_key, slot in list(live_slots.items()):
-                if not isinstance(slot, dict):
-                    continue
-                if not stitch_slot_needs_playback_artifact_bake(h, slot):
-                    continue
-                rep = ensure_stitch_slot_playback_artifacts(
-                    h,
-                    name,
-                    slot_key,
-                    stitch_store=stitch_store,
-                    trigger="load_job",
-                )
-                if rep.get("ok"):
-                    playback_bake_report[slot_key] = rep
-                    artifacts_healed = True
-            if playback_bake_report:
-                fresh_state = stitch_store.read_state() or {}
-                fresh_job = (fresh_state.get("jobs") or {}).get(name)
-                if isinstance(fresh_job, dict):
-                    job = fresh_job
-                    live_slots = job.get("slots") or {}
-                    if isinstance(live_slots, dict):
-                        for slot in live_slots.values():
-                            if isinstance(slot, dict):
-                                attach_stitch_slot_derived_media_urls(h, slot)
 
     response_job = copy.deepcopy(job) if isinstance(job, dict) else job
     if isinstance(response_job, dict) and isinstance(live_slots, dict):
@@ -2366,9 +2548,9 @@ def handle_stitch_load_job(h, name: str)-> None:
         "load_job_code": STITCH_LOAD_JOB_FAST_V1,
         "single_owner_code": STITCH_SINGLE_OWNER_V1,
     }
-    if playback_bake_report:
-        payload["playback_artifacts_baked"] = playback_bake_report
-        payload["load_job_playback_bake_code"] = STITCH_LOAD_JOB_PLAYBACK_BAKE_V1
+    if payload_boot:
+        payload.update(payload_boot)
+    payload["write_time_playback_code"] = STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1
     if milestone_job and not job_persisted:
         payload["ephemeral_milestone_job"] = True
     from server_handlers.stitch_scope import STITCH_SCOPE_PARTITION_V1  # noqa: PLC0415
@@ -2565,7 +2747,7 @@ def ensure_stitch_slot_playback_artifacts(
     stitch_store=None,
     trigger: str = "export",
 ) -> dict:
-    """Bake mux (SFX slots) or ambient mix — export upsert and load_job auto-heal."""
+    """Bake mux (SFX slots) or ambient mix — export upsert and bootstrap hydrate only."""
     from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
         _stitch_slot_has_ambient,
         _stitch_slot_has_sfx,

@@ -4368,8 +4368,32 @@ def perform_server_restart(server, app, reason: str = "api") -> None:
             _restart_lock.release()
 
 
+def _wait_sync_inflight_drain(app, *, timeout_s: float = 330.0, poll_s: float = 0.5) -> bool:
+    """Wait for @with_pin_and_drain sync handlers (e.g. magic_video ~300s) before shutdown."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        with app._sync_inflight_lock:
+            pending = sorted(app._sync_inflight)
+        if not pending:
+            return True
+        print(
+            f"[restart] waiting for {len(pending)} sync handler(s): {pending[:4]}",
+            flush=True,
+        )
+        time.sleep(poll_s)
+    with app._sync_inflight_lock:
+        remaining = sorted(app._sync_inflight)
+    print(
+        f"[restart] WARN sync inflight did not drain within {timeout_s:.0f}s: {remaining}",
+        flush=True,
+    )
+    return False
+
+
 def _perform_server_restart_locked(server, app, reason: str = "api") -> None:
     print(f"[restart] reason={reason} — shutting down HTTP server...")
+    app.accept_new_jobs = False
+    _wait_sync_inflight_drain(app)
     try:
         import beat_generator as _bg
 

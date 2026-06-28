@@ -53,3 +53,5 @@ def test_arlo_wizard_desk_prompt_frozen_bg():
     assert "TRIPOD LOCK" in ARLO_WIZARD_DESK_PROMPT
     assert "Arlo" in ARLO_WIZARD_DESK_PROMPT
     assert "static camera" in ARLO_WIZARD_DESK_PROMPT.lower()
+    assert "no Chinese characters" in ARLO_WIZARD_DESK_PROMPT
+    assert "PROHIBIT:" in ARLO_WIZARD_DESK_PROMPT

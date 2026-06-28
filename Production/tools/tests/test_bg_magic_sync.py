@@ -1,5 +1,6 @@
-"""BG magic sync — storyboard partition ↔ Beat Gen sidecar."""
 from __future__ import annotations
+
+from pathlib import Path
 
 import beat_generator as bg
 
@@ -305,6 +306,44 @@ def test_resolve_bg_magic_canonical_kind_still_when_no_o3_video():
         "kling_o3_status": "draft",
         "magic_still_path": "magic_still_beat_21.mp4",
     }) == "still"
+
+
+def test_sync_partition_display_order_survives_magic_writeback_prune():
+    """BG_PARTITION_DISPLAY_ORDER_SYNC_V1 — empty display_order must not drop magic_*."""
+    from production_server import StateManager
+
+    sidecar = {
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_3_post": {
+                        "beats": [
+                            {"beat_id": "bg_arc1_event3_post_beat_01", "dialogue_text": "gems"},
+                            {"beat_id": "bg_arc1_event3_post_beat_02", "dialogue_text": "more"},
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        event_dir = Path(tmp) / "Event_3"
+        event_dir.mkdir()
+        sm = StateManager(event_dir, "Event_3")
+        synced = bg.sync_storyboard_partition_display_order_from_bg_segment(
+            sm, "resolution", sidecar, 1, "3", "post",
+        )
+        assert synced == ["beat_01", "beat_02"]
+
+        def _set_magic(partition: dict) -> None:
+            partition["beats"]["beat_01"]["magic_video_path"] = "magic_video_test.mp4"
+
+        sm.mutate_video_state("resolution", _set_magic)
+        state = sm.read_state()
+        res = (state.get("videos") or {}).get("resolution") or {}
+        assert res.get("display_order") == ["beat_01", "beat_02"]
+        assert res["beats"]["beat_01"]["magic_video_path"] == "magic_video_test.mp4"
 
 
 def test_merge_storyboard_syncs_audio_from_display_order_beat(tmp_path):

@@ -36,6 +36,16 @@ SPARKLE_FULL_BELOW_LUM = 85.0
 MIXED_PATH_BRIGHT_FRAC_MIN = 0.10
 MIXED_PATH_PEAK_LUM_MIN = 175.0
 
+# Faceted rune gems (Event 3 nest): path mean stays on dark moss, bright_frac < 25%,
+# peak 145–170 (below mixed guard 175) — dark crystal facets get sparkle → blocky squares.
+CRYSTAL_FACET_PEAK_LUM_MIN = 145.0
+CRYSTAL_FACET_PEAK_LUM_MAX = 170.0
+CRYSTAL_FACET_MEAN_LUM_MAX = 90.0
+CRYSTAL_FACET_AMB_MIX = 165.0
+CRYSTAL_FACET_AMB_GAIN_MULT = 1.75
+# Sparkle gate uses max lum in this pixel radius (faceted gem dark facets sit beside bright ones).
+SPARKLE_LOCAL_LUM_RADIUS = 5
+
 # Golden oracle — approved beat 1 resolution magic (never overwrite this file).
 GOLDEN_BEAT01_REL = "Production/Event_1/magic_video_beat_01_20260605-211951.mp4"
 GOLDEN_BEAT01_SOURCE_REL = (
@@ -95,9 +105,30 @@ def bright_stone_ambient_from_lums(lums: list[float]) -> bool:
     return (above / len(lums)) >= BRIGHT_STONE_PATH_FRACTION
 
 
-def mixed_path_sparkle_guard_from_lums(lums: list[float]) -> bool:
-    """True when path crosses bright hotspots (face, glass, stone) but not full bright-stone."""
+def crystal_facet_ambient_from_lums(lums: list[float]) -> bool:
+    """Faceted rune gems on dark nest — sparkle dots read as blocky white squares.
+
+    Path draw style must not matter: a careful trace on dark facets only can drop
+    bright_frac below any fixed threshold while peak still crosses gem highlights.
+    """
     if not lums or bright_stone_ambient_from_lums(lums):
+        return False
+    peak = max(lums)
+    mean = sum(lums) / len(lums)
+    return (
+        CRYSTAL_FACET_PEAK_LUM_MIN <= peak < CRYSTAL_FACET_PEAK_LUM_MAX
+        and mean <= CRYSTAL_FACET_MEAN_LUM_MAX
+    )
+
+
+def sparkle_luminance_for_particle(px_lum: float, local_max_lum: float) -> float:
+    """Effective lum for sparkle gate — faceted surfaces use neighborhood peak, not point sample."""
+    return max(px_lum, local_max_lum)
+
+
+def mixed_path_sparkle_guard_from_lums(lums: list[float]) -> bool:
+    """True when path crosses bright hotspots (face, glass) but not full bright-stone."""
+    if not lums or bright_stone_ambient_from_lums(lums) or crystal_facet_ambient_from_lums(lums):
         return False
     bright = sum(1 for x in lums if x > BRIGHT_STONE_LUM_THRESHOLD)
     frac = bright / len(lums)

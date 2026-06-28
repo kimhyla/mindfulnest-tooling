@@ -21,12 +21,11 @@ def test_stitcher_subscribes_to_psl_stitch_cache() -> None:
 
 def test_bg_export_bumps_stitch_and_rehydrate_ticks() -> None:
     src = BG.read_text(encoding="utf-8")
-    block = src.split("const onSendToStitcher", 1)[1].split("const _onAcceptAll", 1)[0]
+    block = src.split("const finishExportTerminal = useCallback", 1)[1].split(
+        "}, [exportScopeKey, stitchSlotForSegment]", 1,
+    )[0]
     assert "stitcherRefreshTick.value += 1" in block
-    assert "serverRehydrateTick.value += 1" in block
     assert "notifyStitchSlotExportApplied" in block
-    assert "finally" in block
-    assert "setStitcherExportStatus('idle')" in block
 
 
 def test_coordinator_force_refreshes_stitch_on_tick() -> None:

@@ -17,13 +17,14 @@ export function resolveO3PlaybackDurationS(
   return Math.max(src, loaded);
 }
 
-/** Export/persist timeline: server ffprobe on canonical option.video_path. */
+/** Export/persist timeline: server ffprobe, never shorter than what the operator sees. */
 export function resolveO3ExportDurationS(
   sourceDurationS: number | null | undefined,
   playbackDurationS: number,
 ): number {
-  if (sourceDurationS != null && sourceDurationS > 0) return sourceDurationS;
-  return playbackDurationS > 0 ? playbackDurationS : 0;
+  const src = sourceDurationS != null && sourceDurationS > 0 ? sourceDurationS : 0;
+  const playback = playbackDurationS > 0 ? playbackDurationS : 0;
+  return Math.max(src, playback);
 }
 
 /** Clamp keep handles into [0, duration] with ≥ minKeepS kept (fixes stale keepEnd > duration). */

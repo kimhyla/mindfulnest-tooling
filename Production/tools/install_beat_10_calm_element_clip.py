@@ -65,9 +65,13 @@ def main() -> int:
         raise SystemExit(f"Beat not found: {BEAT_ID}")
 
     beat["kling_o3_generation"] = 6
-    beat["kling_o3_video_path"] = str(delivery)
-    beat["kling_o3_status"] = "approved"
-    beat["status"] = "approved"
+    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+    align_beat_active_delivery_clip(
+        beat,
+        str(delivery),
+        mark_voice_fix_approved=True,
+    )
     beat["kling_o3_completed_at"] = now
     beat["kling_o3_mode"] = "o3_element_native_voice"
     beat["kling_o3_voice_fix_status"] = "approved"

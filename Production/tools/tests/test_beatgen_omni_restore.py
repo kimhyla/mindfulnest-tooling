@@ -89,3 +89,5 @@ def test_phase_b_module_unchanged():
     text = mod.read_text(encoding="utf-8")
     assert "PHASE_B_LIPSYNC_METHOD_AVATAR" in text
     assert "resolve_phase_b_cedric_still" in text
+    assert "AVATAR_PRO_PROHIBIT" in text
+    assert "no Chinese characters" in text

@@ -326,7 +326,7 @@ def validate_stitch_slot_media_artifacts(
         pinned_path = (slot.get("ambient_mix_video_path") or "").strip()
         pinned_mtime = int(slot.get("ambient_mix_video_mtime_ms") or 0)
         current_mtime_ms = 0
-        if not fast and current_video_path and hasattr(h, "_stitch_resolve_path"):
+        if current_video_path and hasattr(h, "_stitch_resolve_path"):
             try:
                 current_mtime_ms = _video_mtime_ms(
                     str(h._stitch_resolve_path(current_video_path)),
@@ -334,8 +334,19 @@ def validate_stitch_slot_media_artifacts(
             except (ValueError, TypeError, OSError):
                 current_mtime_ms = 0
         if not pinned_path:
-            ambient_lineage_stale = True
-            warnings.append("ambient mix missing lineage pins — cleared")
+            if (
+                fast
+                and stored_ambient_sig == current_ambient_sig
+                and stored_ambient_sig
+                and _artifact_cache_file_present(cache_dir, "ambient_mix", ambient_hash)
+                and current_video_path
+            ):
+                slot["ambient_mix_video_path"] = current_video_path
+                if current_mtime_ms:
+                    slot["ambient_mix_video_mtime_ms"] = current_mtime_ms
+            else:
+                ambient_lineage_stale = True
+                warnings.append("ambient mix missing lineage pins — cleared")
         elif pinned_path != current_video_path:
             ambient_lineage_stale = True
             warnings.append("ambient mix built for different video_path — cleared")
@@ -372,7 +383,7 @@ def validate_stitch_slot_media_artifacts(
         mux_video_path = (slot.get("mux_video_path") or "").strip()
         mux_video_mtime_ms = int(slot.get("mux_video_mtime_ms") or 0)
         current_video_mtime_ms = 0
-        if not fast and current_video_path and hasattr(h, "_stitch_resolve_path"):
+        if current_video_path and hasattr(h, "_stitch_resolve_path"):
             try:
                 current_video_mtime_ms = _video_mtime_ms(
                     str(h._stitch_resolve_path(current_video_path)),
@@ -381,10 +392,21 @@ def validate_stitch_slot_media_artifacts(
                 current_video_mtime_ms = 0
 
         if not mux_video_path:
-            mux_lineage_stale = True
-            warnings.append(
-                f"mux preview missing {STITCH_MUX_VIDEO_LINEAGE_V1} pins — cleared",
-            )
+            if (
+                fast
+                and stored_mix_sig == current_mix_sig
+                and stored_mix_sig
+                and _artifact_cache_file_present(cache_dir, "preview", mux_hash)
+                and current_video_path
+            ):
+                slot["mux_video_path"] = current_video_path
+                if current_video_mtime_ms:
+                    slot["mux_video_mtime_ms"] = current_video_mtime_ms
+            else:
+                mux_lineage_stale = True
+                warnings.append(
+                    f"mux preview missing {STITCH_MUX_VIDEO_LINEAGE_V1} pins — cleared",
+                )
         elif mux_video_path != current_video_path:
             mux_lineage_stale = True
             warnings.append(

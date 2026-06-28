@@ -16,7 +16,8 @@ def test_load_job_uses_fast_validation_marker() -> None:
         "\ndef handle_stitch_serve_module_final", 1,
     )[0]
     assert "STITCH_LOAD_JOB_FAST_V1" in block
-    assert "STITCH_LOAD_JOB_PLAYBACK_BAKE_V1" in block
+    assert "STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1" in block
+    assert "STITCH_LOAD_JOB_PLAYBACK_BAKE_V1" not in block
     assert "validate_stitch_slot_media_artifacts(h, slot, fast=True)" in block
     assert "ensure_job_slot_defaults(h, live_slots, fast=True)" in block
     assert "probe_video=False" in block

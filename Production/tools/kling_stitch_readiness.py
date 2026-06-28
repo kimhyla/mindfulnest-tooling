@@ -12,7 +12,7 @@ Root cause of the 2026-06 regression:
   - Client and server both hard-coded ``kling_o3_status === 'approved'`` instead of this module.
 
 All server export gates and client Send-to-Stitcher must call ``beat_kling_stitch_export_ready``.
-All paths that pin an active delivery clip must call ``sync_kling_stitch_status_from_active_clip``.
+All paths that pin an active delivery clip must call ``finalize_kling_delivery_clip`` or ``align_beat_active_delivery_clip``.
 """
 from __future__ import annotations
 
@@ -101,3 +101,47 @@ def finalize_kling_delivery_clip(
     else:
         beat["kling_o3_status"] = "approved"
         beat["status"] = "approved"
+
+
+def align_beat_active_delivery_clip(
+    beat: dict,
+    video_path: str | Path | None = None,
+    *,
+    mark_voice_fix_approved: bool = False,
+    clear_voice_fix_error: bool = False,
+) -> bool:
+    """Promote on-disk delivery to active pointer — single write path for heal/reconcile/pipelines."""
+    vp = str(video_path or beat.get("kling_o3_video_path") or "").strip()
+    if not vp or not Path(vp).is_file():
+        return False
+    finalize_kling_delivery_clip(beat, vp)
+    if mark_voice_fix_approved:
+        beat["kling_o3_voice_fix_status"] = "approved"
+    if clear_voice_fix_error:
+        for key in (
+            "kling_o3_voice_fix_error",
+            "kling_o3_voice_fix_error_code",
+            "kling_o3_voice_fix_ui_job_id",
+            "kling_o3_voice_fix_job_pid",
+            "kling_o3_voice_fix_phase",
+        ):
+            beat.pop(key, None)
+    return True
+
+
+def active_delivery_sidecar_fields(
+    video_path: str | Path,
+    *,
+    mark_voice_fix_approved: bool = False,
+) -> dict[str, str]:
+    """Sidecar field bundle for pipeline finalize — use instead of inline approved writes."""
+    beat: dict = {}
+    align_beat_active_delivery_clip(
+        beat,
+        video_path,
+        mark_voice_fix_approved=mark_voice_fix_approved,
+    )
+    keys = ("kling_o3_video_path", "kling_o3_status", "status")
+    if mark_voice_fix_approved:
+        keys = (*keys, "kling_o3_voice_fix_status")
+    return {k: str(beat[k]) for k in keys if k in beat}

@@ -32,6 +32,7 @@ if str(PROD) not in sys.path:
     sys.path.insert(0, str(PROD))
 
 import beat_generator as bg_sidecar  # noqa: E402
+from kling_stitch_readiness import active_delivery_sidecar_fields  # noqa: E402
 from video_delivery import encode_delivery_video  # noqa: E402
 
 
@@ -394,12 +395,9 @@ def run_pipeline_from_intent(
     final = {
         "kling_o3_prompt": str(prompt_block.get("verbatim") or ""),
         "o3_prompt_box_law": True,
-        "kling_o3_video_path": str(delivery),
-        "kling_o3_status": "approved",
-        "status": "approved",
+        **active_delivery_sidecar_fields(delivery, mark_voice_fix_approved=True),
         "kling_o3_completed_at": now,
         "kling_o3_mode": "o3_element_native_voice",
-        "kling_o3_voice_fix_status": "approved",
         "kling_o3_voice_fix_phase": "finalize",
         "kling_o3_voice_fix_completed_at": now,
         "kling_o3_voice_fix_output_duration_s": round(dur, 3),
@@ -792,12 +790,9 @@ def run_pipeline(
     ], text=True).strip())
 
     final = {
-        "kling_o3_video_path": str(delivery),
-        "kling_o3_status": "approved",
-        "status": "approved",
+        **active_delivery_sidecar_fields(delivery, mark_voice_fix_approved=True),
         "kling_o3_completed_at": now,
         "kling_o3_mode": "o3_element_native_voice",
-        "kling_o3_voice_fix_status": "approved",
         "kling_o3_voice_fix_phase": "finalize",
         "kling_o3_voice_fix_completed_at": now,
         "kling_o3_voice_fix_output_profile": {

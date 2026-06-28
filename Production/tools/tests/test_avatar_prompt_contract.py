@@ -70,5 +70,16 @@ def test_avatar_prompt_contract_matches_live_milestone_sidecar():
 def test_avatar_prompt_module_exports_prohibit_constant():
     src = (TOOLS / "beat_avatar_lipsync.py").read_text(encoding="utf-8")
     assert "AVATAR_PRO_PROHIBIT" in src
-    assert "no Chinese characters" in src
+    assert "from phase_b_avatar_lipsync import AVATAR_PRO_PROHIBIT" in src
     assert "KLING_O3_LIGHTING_LOCK" not in src.split("def build_avatar_beat_prompt", 1)[1].split("\ndef ", 1)[0]
+    phase_b = (TOOLS / "phase_b_avatar_lipsync.py").read_text(encoding="utf-8")
+    assert "no Chinese characters" in phase_b
+
+
+def test_phase_b_static_prompt_shares_avatar_pro_prohibit():
+    from phase_b_avatar_lipsync import AVATAR_PRO_PROHIBIT, PHASE_B_BACKGROUND_IDLE_LOCK, STATIC_BG_PROMPT
+
+    assert AVATAR_PRO_PROHIBIT in STATIC_BG_PROMPT
+    assert PHASE_B_BACKGROUND_IDLE_LOCK in STATIC_BG_PROMPT
+    assert "no Chinese characters" in STATIC_BG_PROMPT
+    assert "BACKGROUND IDLE LOCK" in STATIC_BG_PROMPT

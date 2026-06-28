@@ -190,6 +190,9 @@ def test_bg_cut_overlay_defers_persist_until_apply_cut_button():
     assert "lastAutoPreviewRef.current === sig && previewUrl" in bg_tab
     assert "normalizeO3KeepWindow" in overlay
     assert "resolveO3PlaybackDurationS" in overlay
+    assert "Math.max(src, playback)" in overlay
+    assert "trimTimelineDurationS = playbackDurationS" in bg_tab
+    assert "loadedDuration == null" in bg_tab
     assert "resolveO3PlaybackDurationS" in bg_tab
 
 
@@ -203,7 +206,17 @@ def test_normalize_o3_keep_window_clamps_stale_end_past_duration():
         / "bg"
         / "BgO3CutOverlay.tsx"
     ).read_text(encoding="utf-8")
+    bg_tab = (
+        Path(__file__).resolve().parent.parent
+        / "storyboard-v2"
+        / "src"
+        / "components"
+        / "BgTab.tsx"
+    ).read_text(encoding="utf-8")
     assert "normalizeO3KeepWindow" in overlay
     # Stale keepEnd=13.625 with export dur=6.064 must clamp to 6.064, keep start=0.8 valid.
     assert "endCap = Math.min" in overlay
     assert "resolveO3PlaybackDurationS" in overlay
+    assert "Math.max(src, playback)" in overlay
+    assert "trimTimelineDurationS = playbackDurationS" in bg_tab
+    assert "loadedDuration == null" in bg_tab

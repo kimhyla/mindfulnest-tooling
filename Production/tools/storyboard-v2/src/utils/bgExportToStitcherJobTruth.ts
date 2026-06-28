@@ -27,6 +27,7 @@ export interface BgExportPollResult {
     video_path?: string;
     duration_s?: number;
     video_dur_ms?: number;
+    beat_boundaries?: unknown[];
     warnings?: string[];
     beat_count?: number;
     error_code?: string;

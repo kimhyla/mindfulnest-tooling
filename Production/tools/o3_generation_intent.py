@@ -944,9 +944,13 @@ def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
             if not heal_o3_beat_after_aborted_attempt(beat):
                 video = str(beat.get("kling_o3_video_path") or "")
                 if video and Path(video).is_file():
-                    beat["kling_o3_status"] = "approved"
-                    beat["status"] = "approved"
-                    beat["kling_o3_voice_fix_status"] = "approved"
+                    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+                    align_beat_active_delivery_clip(
+                        beat,
+                        video,
+                        mark_voice_fix_approved=True,
+                    )
             beat["kling_o3_voice_fix_error"] = O3_JOB_LOST_FAILURE_MESSAGE
         closed += 1
     return closed

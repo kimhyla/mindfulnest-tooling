@@ -29,6 +29,13 @@ export function o3JobBlocksStitchExport(b: KlingStitchReadinessBeat): boolean {
   return o3JobBlocksExport(b);
 }
 
+/** True when beat has an active delivery clip path (not a stitch-export gate). */
+export function beatHasActiveO3DeliveryClip(b: KlingStitchReadinessBeat): boolean {
+  if (!b.kling_o3_video_path) return false;
+  if (b.kling_o3_video_path_exists === false) return false;
+  return true;
+}
+
 /** Must match ``beat_kling_stitch_export_ready`` in kling_stitch_readiness.py */
 export function beatKlingStitchExportReady(b: KlingStitchReadinessBeat): boolean {
   if (b.magic_still_path && b.magic_still_path_exists !== false) {

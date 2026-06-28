@@ -60,7 +60,6 @@ export interface BgBeat {
   kling_o3_prompt_still?: string;
   o3_prompt_box_law?: boolean;
   kling_o3_video_path?: string;
-  kling_o3_magic_video_source_path?: string;
   kling_o3_video_path_exists?: boolean;
   kling_o3_selected_at?: string;
   kling_o3_selection_pipeline_mismatch?: boolean;
@@ -74,6 +73,8 @@ export interface BgBeat {
   kling_o3_trim_start?: number;
   kling_o3_trim_back?: number | null;
   kling_o3_trim_end?: number | null;
+  /** Trim/cut WYSIWYG path for magic-on-video path picker (server-enriched). */
+  kling_o3_magic_video_source_path?: string;
   kling_o3_cut_start_s?: number;
   kling_o3_cut_end_s?: number;
   kling_o3_voice_fix_ui_job_id?: string | null;

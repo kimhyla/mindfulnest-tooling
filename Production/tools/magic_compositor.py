@@ -90,8 +90,13 @@ from magic_render_contract import (
     BRIGHT_STONE_AMB_GAIN_MULT,
     BRIGHT_STONE_AMB_MIX,
     BRIGHT_STONE_LUM_THRESHOLD,
+    CRYSTAL_FACET_AMB_MIX,
+    CRYSTAL_FACET_AMB_GAIN_MULT,
+    SPARKLE_LOCAL_LUM_RADIUS,
     bright_stone_ambient_from_lums,
+    crystal_facet_ambient_from_lums,
     mixed_path_sparkle_guard_from_lums,
+    sparkle_luminance_for_particle,
     sparkle_strength_for_bg_lum,
 )
 
@@ -429,7 +434,12 @@ class MagicCompositor:
             lums.append(0.299 * r + 0.587 * g + 0.114 * b)
         self._path_bg_lum = float(np.mean(lums))
         bright_frac = sum(1 for x in lums if x > BRIGHT_STONE_LUM_THRESHOLD) / len(lums)
-        mode = "bright_stone" if bright_stone_ambient_from_lums(lums) else "standard"
+        if bright_stone_ambient_from_lums(lums):
+            mode = "bright_stone"
+        elif crystal_facet_ambient_from_lums(lums):
+            mode = "crystal_facet"
+        else:
+            mode = "standard"
         print(
             f"  Path bg luminosity (video frame): mean={self._path_bg_lum:.0f}/255 "
             f"bright_frac={bright_frac:.2f} → {mode}",
@@ -441,6 +451,17 @@ class MagicCompositor:
             return 0.0
         r, g, b = self._bg_lum_sample[py, px]
         return 0.299 * r + 0.587 * g + 0.114 * b
+
+    def _local_max_luminance(self, px: int, py: int, *, radius=None) -> float:
+        """Neighborhood peak lum — dark gem facets beside bright ones must not get sparkles."""
+        if self._bg_lum_sample is None:
+            return self._pixel_luminance(px, py)
+        r = SPARKLE_LOCAL_LUM_RADIUS if radius is None else radius
+        y0, y1 = max(0, py - r), min(self.H, py + r + 1)
+        x0, x1 = max(0, px - r), min(self.W, px + r + 1)
+        patch = self._bg_lum_sample[y0:y1, x0:x1]
+        lum_map = 0.299 * patch[:, :, 0] + 0.587 * patch[:, :, 1] + 0.114 * patch[:, :, 2]
+        return float(np.max(lum_map))
 
     def _bright_stone_ambient(self) -> bool:
         """Widen ambient pool when a meaningful share of the path crosses bright stone."""
@@ -454,6 +475,18 @@ class MagicCompositor:
             py = min(self.H - 1, max(0, int(fy * self.H)))
             lums.append(self._pixel_luminance(px, py))
         return bright_stone_ambient_from_lums(lums)
+
+    def _crystal_facet_ambient(self) -> bool:
+        if self._bg_lum_sample is None:
+            return False
+        lums = []
+        for i in range(20):
+            t = i / 19
+            fx, fy = self._path_at(t)
+            px = min(self.W - 1, max(0, int(fx * self.W)))
+            py = min(self.H - 1, max(0, int(fy * self.H)))
+            lums.append(self._pixel_luminance(px, py))
+        return crystal_facet_ambient_from_lums(lums)
 
     def _mixed_path_sparkle_guard(self) -> bool:
         if self._bg_lum_sample is None:
@@ -515,17 +548,22 @@ class MagicCompositor:
 
         g = self._gain
         bright_ambient = self._bright_stone_ambient()
+        crystal_facet = self._crystal_facet_ambient()
         mixed_guard = self._mixed_path_sparkle_guard()
         amb_blur_yx = list(BRIGHT_STONE_AMB_BLUR_YX) if bright_ambient else s["ambient_blur_yx"]
         amb_mix = BRIGHT_STONE_AMB_MIX if bright_ambient else s["ambient_mix"]
         amb_gain_mult = BRIGHT_STONE_AMB_GAIN_MULT if bright_ambient else 1.0
-        if mixed_guard and not bright_ambient:
+        if crystal_facet and not bright_ambient:
+            amb_blur_yx = list(BRIGHT_STONE_AMB_BLUR_YX)
+            amb_mix = CRYSTAL_FACET_AMB_MIX
+            amb_gain_mult = CRYSTAL_FACET_AMB_GAIN_MULT
+        elif mixed_guard and not bright_ambient:
             # Softer ambient pool on mixed paths (character + ground) — less harsh on fur.
             amb_blur_yx = list(BRIGHT_STONE_AMB_BLUR_YX)
             amb_mix = max(s["ambient_mix"], BRIGHT_STONE_AMB_MIX * 0.55)
             amb_gain_mult = max(1.0, BRIGHT_STONE_AMB_GAIN_MULT * 0.75)
-        # Full bright-stone OR mixed face/stone crossings: ambient river only, no sparkle dots.
-        suppress_all_sparkle = bright_ambient or mixed_guard
+        # Full bright-stone / crystal facet / mixed: ambient river only, no sparkle dots.
+        suppress_all_sparkle = bright_ambient or crystal_facet or mixed_guard
 
         sp_acc  = np.zeros((H, W, 3), dtype=np.float32)
         amb_acc = np.zeros((H, W, 3), dtype=np.float32)
@@ -549,8 +587,12 @@ class MagicCompositor:
 
             if not suppress_all_sparkle:
                 px_lum = self._pixel_luminance(px, py)
-                sparkle_scale = sparkle_strength_for_bg_lum(
+                sparkle_lum = sparkle_luminance_for_particle(
                     px_lum,
+                    self._local_max_luminance(px, py),
+                )
+                sparkle_scale = sparkle_strength_for_bg_lum(
+                    sparkle_lum,
                     bright_stone_mode=False,
                 )
                 if sparkle_scale > 0.01:
@@ -562,8 +604,12 @@ class MagicCompositor:
                         sp_acc[y0:y1, x0:x1, c] += col[c] * val / 255.0
 
             av = alpha * s["ambient_gain"] * g * amb_gain_mult
-            if bright_ambient or mixed_guard:
-                px_lum = self._pixel_luminance(px, py)
+            px_lum = self._pixel_luminance(px, py)
+            if crystal_facet and not bright_ambient:
+                if px_lum > 125:
+                    amb_scale = max(0.0, min(1.0, (185.0 - px_lum) / 60.0))
+                    av *= amb_scale
+            elif bright_ambient or mixed_guard:
                 if px_lum > BRIGHT_STONE_LUM_THRESHOLD:
                     amb_scale = max(0.0, min(1.0, (170.0 - px_lum) / 40.0))
                     av *= amb_scale

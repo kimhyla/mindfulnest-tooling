@@ -67,6 +67,7 @@ import {
   stitchExportBlockTooltip,
 } from '../utils/bgStitchExport';
 import {
+  beatHasActiveO3DeliveryClip,
   KLING_STITCH_READINESS_V1,
   stillBeatNeedsStitchApprove as stillBeatNeedsStitchApproveContract,
 } from '../utils/klingStitchReadiness';
@@ -578,7 +579,7 @@ function buildFixedO3OptionSlots(
     }
   }
   const activeListed = activeO3Path && slots.some((s) => s?.video_path === activeO3Path);
-  if (beat.kling_o3_status === 'approved' && activeO3Path && !activeListed) {
+  if (beatHasActiveO3DeliveryClip(beat) && activeO3Path && !activeListed) {
     const activeOpt = o3History.find((o) => o.video_path === activeO3Path);
     const emptyIdx = slots.findIndex((s) => s == null);
     if (emptyIdx >= 0) {
@@ -648,7 +649,7 @@ function resolveO3FailureBanner(
     effectiveGenerationMode(beat, eventId) === 'voice_first'
     && lipsyncHostReady === true
     && isStaleLipsyncHostingFailure(err)
-    && beat.kling_o3_status === 'approved'
+    && beatHasActiveO3DeliveryClip(beat)
     && isUserSelectableO3Video(beat.kling_o3_video_path)
   ) {
     return null;

@@ -59,13 +59,40 @@ rg -n "kling_o3_status\s*===?\s*['\"]approved['\"]" "$SB" \
   --glob '!**/klingStitchReadiness.ts' \
   --glob '!**/bgStitchExport.ts' 2>/dev/null || true
 
-section "F. Informational — server write paths still setting kling_o3_status directly"
-rg -n 'beat\["kling_o3_status"\]\s*=\s*"approved"' "$TOOLS" \
+section "F. Server direct kling_o3_status=approved writes (must use kling_stitch_readiness)"
+OFFENDERS=$(rg -n 'beat\["kling_o3_status"\]\s*=\s*"approved"' "$TOOLS" \
   --glob '*.py' \
   --glob '!**/kling_stitch_readiness.py' \
-  --glob '!**/tests/**' 2>/dev/null | head -20 || true
+  --glob '!**/tests/**' \
+  --glob '!**/install_*.py' 2>/dev/null || true)
+if [[ -n "$OFFENDERS" ]]; then
+  echo "$OFFENDERS"
+  fail_strict "direct kling_o3_status=approved write outside kling_stitch_readiness.py"
+else
+  report "no stray server approved writes"
+fi
 
-section "G. Stitch timeline — StitcherTab DEFAULT_SLOT_DUR fallbacks (review only)"
+section "G. Pipeline dict literals — must use active_delivery_sidecar_fields"
+FIND_G=$(rg -n '"kling_o3_status":\s*"approved"' "$TOOLS" \
+  --glob '*.py' \
+  --glob '!**/kling_stitch_readiness.py' \
+  --glob '!**/tests/**' \
+  --glob '!**/install_*.py' 2>/dev/null || true)
+if [[ -n "$FIND_G" ]]; then
+  echo "$FIND_G"
+  fail_strict "inline kling_o3_status approved dict literal outside contract"
+else
+  report "pipeline finalize uses active_delivery_sidecar_fields"
+fi
+
+section "H. Client O3 submit latch — must use beatHasActiveO3DeliveryClip"
+if grep -q "kling_o3_status === 'approved'" "$SB/o3JobStatusContract.ts" 2>/dev/null; then
+  fail_strict "o3JobStatusContract still gates submit latch on kling_o3_status"
+else
+  report "o3JobStatusContract uses active delivery clip authority"
+fi
+
+section "I. Stitch timeline — StitcherTab DEFAULT_SLOT_DUR fallbacks (review only)"
 rg -n "DEFAULT_SLOT_DUR_MS \*" "$SB/components/StitcherTab.tsx" 2>/dev/null || true
 
 report "audit complete"

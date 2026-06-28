@@ -679,6 +679,73 @@ def _persist_magic_fields_to_bg_sidecar(
         print(f"[BG] magic sidecar persist failed beat={request_beat_id}: {exc}", flush=True)
 
 
+def _sync_bg_partition_display_order_for_scope(h, video_role: str) -> None:
+    """BG_PARTITION_DISPLAY_ORDER_SYNC_V1 — partition display_order from BG segment rows."""
+    try:
+        arc, evt, phase = _resolve_bg_segment_for_scope(h.app.event_id, video_role)
+        bg = _bg_module()
+        sidecar = bg.read_sidecar()
+        synced = bg.sync_storyboard_partition_display_order_from_bg_segment(
+            h.app.state,
+            video_role,
+            sidecar,
+            arc,
+            str(evt),
+            phase,
+        )
+        if synced:
+            print(
+                f"[BG] synced videos.{video_role}.display_order from segment "
+                f"arc={arc} event={evt} phase={phase} beats={len(synced)}",
+                flush=True,
+            )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[BG] WARN partition display_order sync skipped: {exc}", flush=True)
+
+
+def _video_role_for_bg_phase(phase: str) -> str:
+    for role, ph in _BG_PHASE_MAP.items():
+        if ph == phase:
+            return role
+    return "resolution"
+
+
+def _magic_sidecar_field_matches(
+    h,
+    *,
+    request_beat_id: str,
+    video_role: str,
+    field: str,
+    expected: str,
+) -> bool:
+    """Read-back on Beat Gen sidecar when partition verify fails."""
+    try:
+        bg = _bg_module()
+        arc, evt, phase = _resolve_bg_segment_for_scope(h.app.event_id, video_role)
+        sidecar = bg.read_sidecar()
+        _, beat_obj = bg.find_beat(sidecar, request_beat_id)
+        if not beat_obj:
+            seg = bg.get_seg_entry(sidecar, arc, str(evt), phase)
+            for row in seg.get("beats") or []:
+                if row.get("beat_id") == request_beat_id:
+                    beat_obj = row
+                    break
+        return bool(beat_obj) and beat_obj.get(field) == expected
+    except Exception:
+        return False
+
+
+def _magic_partition_writeback_ensure_display_order(partition: dict, sb_beat_id: str) -> None:
+    """DISPLAY_ORDER_STRICT_V1: display_order=[] prunes every beats[bid] post-mutate.
+
+    Beat Gen resolution partitions often have display_order=[] until extract-beats
+    seeds storyboard rows; magic writeback must register sb_beat_id before prune runs.
+    """
+    pdo = partition.get("display_order")
+    if isinstance(pdo, list) and sb_beat_id not in pdo:
+        pdo.append(sb_beat_id)
+
+
 _MAGIC_STILL_CLEAR_FIELDS = (
     "magic_still_path",
     "magic_manual_path",
@@ -952,10 +1019,24 @@ def handle_magic_still(h, body: dict)-> None:
         production_state=_production_state,
         video_role=_video_role_body,
     ) or beat_id
+    _sync_bg_partition_display_order_for_scope(h, _video_role_body)
+    _production_state = h.app.state.read_state()
+    sb_beat_id = _bg_module().storyboard_beat_id_for_bg_beat(
+        beat_id,
+        sidecar=_sidecar_for_map,
+        production_state=_production_state,
+        video_role=_video_role_body,
+    ) or beat_id
+    magic_sidecar_fields = {
+        "magic_still_path": magic_filename,
+        "magic_manual_path": clean_path,
+        **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
+    }
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
         def _set_magic_still(partition: dict) -> None:
+            _magic_partition_writeback_ensure_display_order(partition, sb_beat_id)
             beats = partition.setdefault("beats", {})
             beat = beats.setdefault(sb_beat_id, {})
             beat["magic_still_path"] = magic_filename
@@ -998,7 +1079,27 @@ def handle_magic_still(h, body: dict)-> None:
                 print(f"[magic_still] state writeback verified: videos.{_video_role_written}.beats.{sb_beat_id}.magic_still_path={magic_filename}", flush=True)
             else:
                 print(f"[magic_still] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{sb_beat_id}.magic_still_path={magic_filename!r}, got {_beat_after.get('magic_still_path')!r}", flush=True)
-                return h._send_error_v59(
+                _persist_magic_fields_to_bg_sidecar(
+                    h,
+                    request_beat_id=beat_id,
+                    video_role=_video_role_written,
+                    fields=magic_sidecar_fields,
+                )
+                if _magic_sidecar_field_matches(
+                    h,
+                    request_beat_id=beat_id,
+                    video_role=_video_role_written,
+                    field="magic_still_path",
+                    expected=magic_filename,
+                ):
+                    partition_written = _video_role_written
+                    print(
+                        f"[magic_still] partition verify missed; sidecar confirmed "
+                        f"magic_still_path={magic_filename}",
+                        flush=True,
+                    )
+                else:
+                    return h._send_error_v59(
                            500,
                            error_code="STATE_WRITEBACK_VERIFY_FAILED",
                            error_message="magic_still_path was not persisted at the expected partition",
@@ -1025,11 +1126,7 @@ def handle_magic_still(h, body: dict)-> None:
             h,
             request_beat_id=beat_id,
             video_role=_video_role_written,
-            fields={
-                "magic_still_path": magic_filename,
-                "magic_manual_path": clean_path,
-                **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
-            },
+            fields=magic_sidecar_fields,
         )
         _persist_magic_scene_registry(
             h,
@@ -1147,6 +1244,29 @@ def handle_magic_video(h, body: dict)-> None:
                    error_message=str(exc),
                    retry_safe=False,
                )
+
+    # MAGIC_VIDEO_TRIM_CUT_SOURCE_V1 — composite on trimmed/cut O3 clip (not raw delivery).
+    try:
+        bg_trim = _bg_module()
+        sidecar_trim = bg_trim.read_sidecar()
+        _, bg_beat_trim = bg_trim.find_beat(sidecar_trim, beat_id)
+        if bg_beat_trim is not None:
+            resolved_src = bg_trim.resolve_magic_video_source_path(
+                bg_beat_trim,
+                h.app.event_dir,
+                ffmpeg_src,
+            )
+            resolved_str = str(resolved_src)
+            if os.path.realpath(resolved_str) != os.path.realpath(ffmpeg_src):
+                print(
+                    f"[magic_video] trim/cut source {Path(resolved_str).name} beat={beat_id}",
+                    flush=True,
+                )
+                ffmpeg_src = require_media_under_project(
+                    resolved_str, extensions=VIDEO_EXTENSIONS,
+                )
+    except Exception as exc:
+        print(f"[magic_video] trim/cut resolve skipped for {beat_id}: {exc}", flush=True)
 
     safe_ffmpeg_src = os.path.realpath(ffmpeg_src)
 
@@ -1544,10 +1664,24 @@ def handle_magic_video(h, body: dict)-> None:
         production_state=_production_state,
         video_role=_video_role_body,
     ) or beat_id
+    _sync_bg_partition_display_order_for_scope(h, _video_role_body)
+    _production_state = h.app.state.read_state()
+    sb_beat_id = _bg_module().storyboard_beat_id_for_bg_beat(
+        beat_id,
+        sidecar=_sidecar_for_map,
+        production_state=_production_state,
+        video_role=_video_role_body,
+    ) or beat_id
+    magic_sidecar_fields = {
+        "magic_video_path": magic_filename,
+        "magic_manual_path": clean_path,
+        **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
+    }
     try:
         scope = scope_router.resolve(body, h.app.event_dir.name)
 
         def _set_magic_video(partition: dict) -> None:
+            _magic_partition_writeback_ensure_display_order(partition, sb_beat_id)
             beats = partition.setdefault("beats", {})
             beat = beats.setdefault(sb_beat_id, {})
             beat["magic_video_path"] = magic_filename
@@ -1586,7 +1720,27 @@ def handle_magic_video(h, body: dict)-> None:
                 print(f"[magic_video] state writeback verified: videos.{_video_role_written}.beats.{sb_beat_id}.magic_video_path={magic_filename}", flush=True)
             else:
                 print(f"[magic_video] STATE_WRITEBACK_VERIFY_FAILED: expected videos.{_video_role_written}.beats.{sb_beat_id}.magic_video_path={magic_filename!r}, got {_beat_after.get('magic_video_path')!r}", flush=True)
-                return h._send_error_v59(
+                _persist_magic_fields_to_bg_sidecar(
+                    h,
+                    request_beat_id=beat_id,
+                    video_role=_video_role_written,
+                    fields=magic_sidecar_fields,
+                )
+                if _magic_sidecar_field_matches(
+                    h,
+                    request_beat_id=beat_id,
+                    video_role=_video_role_written,
+                    field="magic_video_path",
+                    expected=magic_filename,
+                ):
+                    partition_written = _video_role_written
+                    print(
+                        f"[magic_video] partition verify missed; sidecar confirmed "
+                        f"magic_video_path={magic_filename}",
+                        flush=True,
+                    )
+                else:
+                    return h._send_error_v59(
                            500,
                            error_code="STATE_WRITEBACK_VERIFY_FAILED",
                            error_message="magic_video_path was not persisted at the expected partition",
@@ -1612,11 +1766,7 @@ def handle_magic_video(h, body: dict)-> None:
             h,
             request_beat_id=beat_id,
             video_role=_video_role_written,
-            fields={
-                "magic_video_path": magic_filename,
-                "magic_manual_path": clean_path,
-                **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
-            },
+            fields=magic_sidecar_fields,
         )
         _persist_magic_scene_registry(
             h,
@@ -2991,6 +3141,7 @@ def handle_bg_extract_beats_approve(h, body: dict) -> None:
         f"[BG] extract-beats/approve arc={arc_number} event={event_id} phase={phase} "
         f"beats={len(beats)} force={force}"
     )
+    _sync_bg_partition_display_order_for_scope(h, _video_role_for_bg_phase(phase))
     author_warnings = list(author_result.get("author_warnings") or [])
     return h._send_json(200, {
         "ok": True,
@@ -3140,6 +3291,7 @@ def handle_bg_extract_beats_draft_save(h, body: dict) -> None:
         f"beats={len(draft.get('beats_plan') or [])}",
         flush=True,
     )
+    _sync_bg_partition_display_order_for_scope(h, _video_role_for_bg_phase(phase))
     return h._send_json(200, {
         "ok": True,
         "story_summary": draft.get("story_summary") or "",
@@ -5908,9 +6060,13 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
                 if video_path and Path(video_path).is_file() and (
                     voice_fix == "approved" or kling_status == "approved"
                 ):
-                    beat["kling_o3_status"] = "approved"
-                    beat["status"] = "approved"
-                    beat["kling_o3_voice_fix_status"] = "approved"
+                    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+                    align_beat_active_delivery_clip(
+                        beat,
+                        video_path,
+                        mark_voice_fix_approved=True,
+                    )
                 changed += 1
             else:
                 from o3_generation_intent import heal_o3_beat_after_aborted_attempt
@@ -5937,10 +6093,13 @@ def reconcile_stuck_o3_voice_beats(sidecar: dict) -> int:
             video_path = str((log_result or {}).get("video") or "")
             if log_result and video_path and Path(video_path).is_file() and is_element_job:
                 now = datetime.now(timezone.utc).isoformat()
-                beat["kling_o3_video_path"] = video_path
-                beat["kling_o3_status"] = "approved"
-                beat["status"] = "approved"
-                beat["kling_o3_voice_fix_status"] = "approved"
+                from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+                align_beat_active_delivery_clip(
+                    beat,
+                    video_path,
+                    mark_voice_fix_approved=True,
+                )
                 beat["kling_o3_voice_fix_phase"] = "finalize"
                 beat["kling_o3_voice_fix_completed_at"] = now
                 beat["kling_o3_completed_at"] = beat.get("kling_o3_completed_at") or now
@@ -7173,9 +7332,7 @@ def _apply_o3_video_selection(
     from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
 
     if bg.beat_is_still_insert(beat):
-        beat["kling_o3_video_path"] = video_path
-        beat["kling_o3_status"] = "approved"
-        beat["status"] = "approved"
+        finalize_kling_delivery_clip(beat, video_path, still_insert=True)
         beat["kling_o3_still_stitch_approved"] = True
         beat["kling_o3_still_stitch_approved_at"] = now
     else:

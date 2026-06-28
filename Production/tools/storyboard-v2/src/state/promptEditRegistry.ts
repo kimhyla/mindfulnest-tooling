@@ -184,15 +184,37 @@ export function applyO3GalleryFieldsFromPoll<T extends {
 /** Session refresh + poll — preserve operator ref boxes from clobbering. */
 export function preserveRefBoxesOnServerBeatMerge<T extends {
   beat_id: string;
-  reference_image?: { abs_path?: string } | null;
-  bg_ref_image?: { abs_path?: string } | null;
+  reference_image?: { abs_path?: string; thumb_b64?: string; key?: string } | null;
+  bg_ref_image?: { abs_path?: string; thumb_b64?: string; key?: string } | null;
   reference_image_locked?: boolean;
   bg_ref_image_locked?: boolean;
+  _derived?: {
+    char_ref_display?: { abs_path?: string; thumb_b64?: string; key?: string } | null;
+    bg_ref_display?: { abs_path?: string; thumb_b64?: string; key?: string } | null;
+    still_scene_display?: { abs_path?: string; thumb_b64?: string; key?: string } | null;
+    option_slots?: unknown;
+  };
 }>(currentBeats: T[], serverBeats: T[]): T[] {
   const byId = new Map(currentBeats.map((b) => [b.beat_id, b]));
   return serverBeats.map((serverBeat) => {
     const local = byId.get(serverBeat.beat_id);
     if (!local) return serverBeat;
-    return preserveLockedRefsOnO3PollMerge(local, serverBeat);
+    let merged = preserveLockedRefsOnO3PollMerge(local, serverBeat);
+    const localDerived = local._derived;
+    const serverDerived = merged._derived;
+    if (localDerived && serverDerived) {
+      merged = {
+        ...merged,
+        _derived: {
+          ...localDerived,
+          ...serverDerived,
+          char_ref_display: serverDerived.char_ref_display ?? localDerived.char_ref_display,
+          bg_ref_display: serverDerived.bg_ref_display ?? localDerived.bg_ref_display,
+          still_scene_display: serverDerived.still_scene_display ?? localDerived.still_scene_display,
+          option_slots: serverDerived.option_slots ?? localDerived.option_slots,
+        },
+      };
+    }
+    return merged;
   });
 }

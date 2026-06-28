@@ -2156,9 +2156,10 @@ def hydrate_intro_canonical_mirror_beat(
     tail_str = str(tail.resolve())
     now = datetime.now(timezone.utc).isoformat()
     beat["kling_o3_video_path"] = tail_str
-    beat["kling_o3_status"] = "approved"
+    from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
+
+    finalize_kling_delivery_clip(beat, tail_str)
     beat["canonical_intro_tail"] = True
-    beat["status"] = "video_ready"
     assign_kling_o3_option_to_slot(
         beat,
         0,
@@ -11188,8 +11189,9 @@ def rehydrate_segment_beats_from_o3_artifacts(
         if char_ref and os.path.isfile(char_ref):
             beat["reference_image"] = {"abs_path": char_ref, "source": "o3_artifact_rehydrate"}
         if row.get("video_path"):
-            beat["kling_o3_status"] = "approved"
-            beat["kling_o3_video_path"] = row["video_path"]
+            from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
+
+            finalize_kling_delivery_clip(beat, row["video_path"])
         beats.append(beat)
     existing_ids = {b["beat_id"] for b in beats}
     beats.extend(_still_insert_beats_from_clips(event_dir, arc_number, event_id, phase, existing_ids))
@@ -12097,12 +12099,14 @@ def restore_active_kling_o3_after_failed_redo(beat: dict) -> bool:
     if not video_path or not Path(video_path).is_file():
         return False
     beat["kling_o3_video_path"] = video_path
-    beat["kling_o3_status"] = "approved"
-    beat["status"] = "approved"
-    beat["kling_o3_voice_fix_status"] = "approved"
-    beat.pop("kling_o3_voice_fix_error", None)
-    beat.pop("kling_o3_voice_fix_error_code", None)
-    beat.pop("kling_o3_voice_fix_phase", None)
+    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+    align_beat_active_delivery_clip(
+        beat,
+        video_path,
+        mark_voice_fix_approved=True,
+        clear_voice_fix_error=True,
+    )
     for opt in options:
         opt["active"] = opt.get("video_path") == video_path
     beat["kling_o3_options"] = options
@@ -12238,8 +12242,9 @@ def import_delivery_clip_to_beat(
         sync_o3_selection_pipeline_fields(beat, sidecar)
         persist_o3_disk_enrich_on_beat(beat, resolved_event_dir)
         if beat_is_still_insert(beat) and make_active:
-            beat["kling_o3_status"] = "approved"
-            beat["status"] = "approved"
+            from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
+
+            finalize_kling_delivery_clip(beat, str(dest_path.resolve()))
 
     return update_beat_locked(
         beat_id,
@@ -12536,13 +12541,14 @@ def preview_orphan_o3_delivery_on_beat(
         for opt in beat.get("kling_o3_options") or []:
             if isinstance(opt, dict):
                 opt["active"] = str(opt.get("video_path") or "") == active_path
-    beat["kling_o3_status"] = "approved"
-    beat["status"] = "approved"
-    beat["kling_o3_voice_fix_status"] = "approved"
-    beat.pop("kling_o3_voice_fix_error", None)
-    beat.pop("kling_o3_voice_fix_error_code", None)
-    beat.pop("kling_o3_voice_fix_ui_job_id", None)
-    beat.pop("kling_o3_voice_fix_job_pid", None)
+    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+    align_beat_active_delivery_clip(
+        beat,
+        delivery_path,
+        mark_voice_fix_approved=True,
+        clear_voice_fix_error=True,
+    )
     job_attempt = (os.environ.get("MN_O3_ATTEMPT_ID") or "").strip()
     if job_attempt:
         beat["kling_o3_voice_fix_attempt_id"] = job_attempt

@@ -7,17 +7,10 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from phase_b_avatar_lipsync import AVATAR_USD_PER_SEC, estimate_avatar_pro_usd
+from phase_b_avatar_lipsync import AVATAR_PRO_PROHIBIT, AVATAR_USD_PER_SEC, estimate_avatar_pro_usd
 
 KLING_O3_MODE_AVATAR = "o3_avatar_pro_v1"
 O3_OPTION_SOURCE_AVATAR = "kling_o3_avatar_pro"
-
-# Element O3 + Phase B anti-artifact contract — Avatar Pro gets one still, not @Image2.
-AVATAR_PRO_PROHIBIT = (
-    "PROHIBIT: no text, no subtitles, no captions, no lower-third graphics, no watermarks, "
-    "no logos, no foreign characters, no Chinese characters, no on-screen writing, "
-    "no second character, no humans, no extra limbs, no background hallucinations."
-)
 
 _CONTINUITY_PARA = re.compile(r"^\s*Continuity:", re.IGNORECASE)
 _CONTINUITY_BODY = re.compile(

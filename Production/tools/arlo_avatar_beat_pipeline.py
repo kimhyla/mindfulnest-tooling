@@ -17,6 +17,7 @@ if str(HERE) not in sys.path:
 
 import beat_generator as bg_sidecar  # noqa: E402
 import kling_character_registry as reg  # noqa: E402
+from kling_stitch_readiness import active_delivery_sidecar_fields  # noqa: E402
 from arlo_o3_voice_pipeline import (  # noqa: E402
     _clean_bg_text,
     _delivery_video,
@@ -419,9 +420,7 @@ def run_pipeline(beat_id: str, *, sharpen: bool = True, attempt_id: str | None =
         "kid_facing_gate": "LD-296 delivery encode",
     }
     final_fields = {
-        "kling_o3_video_path": str(active),
-        "kling_o3_status": "approved",
-        "status": "approved",
+        **active_delivery_sidecar_fields(active, mark_voice_fix_approved=True),
         "kling_o3_mode": KLING_O3_MODE_AVATAR,
         "kling_o3_generate_mode": generate_mode,
         "o3_generate_mode": generate_mode,
@@ -429,7 +428,6 @@ def run_pipeline(beat_id: str, *, sharpen: bool = True, attempt_id: str | None =
         "kling_o3_completed_at": completed,
         "kling_o3_generation": avatar_generation,
         "kling_o3_actual_duration_s": round(out_dur, 3),
-        "kling_o3_voice_fix_status": "approved",
         "kling_o3_voice_fix_phase": "finalize",
         "kling_o3_voice_fix_completed_at": completed,
         "kling_o3_voice_fix_result": result,

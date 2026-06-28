@@ -24,6 +24,8 @@ class StitchSingleOwnerSourceGuards(unittest.TestCase):
         self.assertNotIn("persist_milestone_hydrate", block)
         self.assertNotIn("bootstrap_milestone_job", block)
         self.assertNotIn("hydrate_stitch_canonical_slots_from_disk(h, state, event_id)", block)
+        self.assertNotIn('trigger="load_job"', block)
+        self.assertIn("STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1", block)
 
     def test_hydrate_helpers_retained_for_export_migration(self) -> None:
         src = Path(se.__file__).read_text(encoding="utf-8")

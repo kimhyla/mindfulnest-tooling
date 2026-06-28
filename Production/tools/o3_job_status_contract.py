@@ -101,10 +101,13 @@ def clear_o3_pointer_if_terminal(beat: dict, event_dir: Path | None) -> bool:
             if not heal_o3_beat_after_aborted_attempt(beat):
                 video = str(beat.get("kling_o3_video_path") or "")
                 if video and Path(video).is_file():
-                    from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
+                    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
 
-                    finalize_kling_delivery_clip(beat, video)
-                    beat["kling_o3_voice_fix_status"] = "approved"
+                    align_beat_active_delivery_clip(
+                        beat,
+                        video,
+                        mark_voice_fix_approved=True,
+                    )
     return had_pointer
 
 

@@ -520,9 +520,17 @@ def _upsert_o3_option(beat: dict, *, video_path: str, label: str, active: bool, 
 
 def _restore_prior_video_state(beat: dict, *, prior_video: str | None, prior_status: str | None, prior_beat_status: str | None) -> None:
     if prior_video:
-        beat["kling_o3_video_path"] = str(prior_video)
-        beat["kling_o3_status"] = "approved" if prior_status in {"approved", "visual_running", "visual_ready"} else (prior_status or "approved")
-        beat["status"] = "approved" if (prior_beat_status or "").endswith("_running") or prior_status == "approved" else (prior_beat_status or "approved")
+        from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+        if Path(str(prior_video)).is_file():
+            align_beat_active_delivery_clip(beat, prior_video, mark_voice_fix_approved=True)
+        else:
+            beat["kling_o3_video_path"] = str(prior_video)
+            if prior_status:
+                beat["kling_o3_status"] = prior_status
+        if prior_beat_status and not str(prior_beat_status).endswith("_running"):
+            if prior_status not in ("approved", "visual_running", "visual_ready"):
+                beat["status"] = prior_beat_status
     else:
         beat["status"] = "arlo_lipsync_failed"
         beat["kling_o3_status"] = "failed"
@@ -663,15 +671,21 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     print(json.dumps({"phase": "o3_poll", "beat_id": beat_id, "task_id": o3_task}), flush=True)
     o3_result = kling_poll_fresh(o3_task, keys["wavespeed"], timeout_s=900)
     if (o3_result.get("status") or "").lower() != "completed":
-        persist({
-            "status": "approved" if prior_video else "arlo_o3_failed",
-            "kling_o3_status": "approved" if prior_video else "failed",
+        from kling_stitch_readiness import active_delivery_sidecar_fields  # noqa: PLC0415
+
+        fail_fields = {
             "kling_o3_voice_fix_status": "failed_o3",
             "kling_o3_voice_fix_error_code": "O3_FAILED",
             "kling_o3_voice_fix_error": json.dumps(o3_result)[:1000],
             "kling_o3_error": json.dumps(o3_result)[:1000],
             "kling_o3_voice_fix_completed_at": datetime.now(timezone.utc).isoformat(),
-        }, remove=("kling_o3_voice_fix_ui_job_id",))
+        }
+        if prior_video:
+            fail_fields.update(active_delivery_sidecar_fields(prior_video))
+        else:
+            fail_fields["status"] = "arlo_o3_failed"
+            fail_fields["kling_o3_status"] = "failed"
+        persist(fail_fields, remove=("kling_o3_voice_fix_ui_job_id",))
         raise RuntimeError(f"O3 failed: {o3_result}")
 
     client = LipSyncClient(keys["wavespeed"])
@@ -779,13 +793,12 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         "-of", "default=noprint_wrappers=1:nokey=1", str(active),
     ], text=True).strip())
     now = datetime.now(timezone.utc).isoformat()
+    from kling_stitch_readiness import active_delivery_sidecar_fields  # noqa: PLC0415
+
     final_fields = {
-        "kling_o3_video_path": str(active),
-        "kling_o3_status": "approved",
-        "status": "approved",
+        **active_delivery_sidecar_fields(active, mark_voice_fix_approved=True),
         "kling_o3_mode": "o3_voice_first_lipsync",
         "kling_o3_completed_at": now,
-        "kling_o3_voice_fix_status": "approved",
         "kling_o3_voice_fix_phase": "finalize",
         "kling_o3_voice_fix_lipsync_transport": lipsync_transport,
         "kling_o3_voice_fix_completed_at": now,

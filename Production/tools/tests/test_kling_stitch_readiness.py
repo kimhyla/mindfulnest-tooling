@@ -99,6 +99,18 @@ class KlingStitchReadinessTests(unittest.TestCase):
         self.assertIn("data-kling-stitch-readiness-v1", text)
         self.assertNotIn("Approve Kling clip", text)
 
+    def test_align_active_delivery_clip(self):
+        import tempfile
+        from kling_stitch_readiness import align_beat_active_delivery_clip
+
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = Path(tmp) / "out.mp4"
+            clip.write_bytes(b"x")
+            beat = {"beat_id": "b1", "pipeline": "kling_o3_omni"}
+            self.assertTrue(align_beat_active_delivery_clip(beat, str(clip), mark_voice_fix_approved=True))
+            self.assertEqual(beat["kling_o3_status"], "approved")
+            self.assertEqual(beat["kling_o3_voice_fix_status"], "approved")
+
     def test_auto_pin_delegates_to_stitch_contract(self):
         import tempfile
         from beat_generator import auto_pin_approved_kling_o3_delivery

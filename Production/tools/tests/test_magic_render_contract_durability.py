@@ -47,6 +47,28 @@ def _handler_code_without_comments(fn_name: str) -> str:
     return "\n".join(lines)
 
 
+def _gem_roi_diff(comp: np.ndarray, bg: np.ndarray) -> np.ndarray:
+    diff = np.abs(comp.astype(float) - bg)
+    gem = diff[int(720 * 0.48) : int(720 * 0.72), int(1280 * 0.68) : int(1280 * 0.88)]
+    if gem.ndim == 3:
+        gem = gem.max(axis=2)
+    return gem
+
+
+def _isolated_bright_pixels(gem_diff: np.ndarray, *, thresh: float = 200.0) -> int:
+    """Blocky sparkle dots: bright pixels with few bright neighbors."""
+    mask = gem_diff > thresh
+    h, w = mask.shape
+    iso = 0
+    for y in range(1, h - 1):
+        for x in range(1, w - 1):
+            if mask[y, x]:
+                nb = int(mask[y - 1 : y + 2, x - 1 : x + 2].sum()) - 1
+                if nb < 4:
+                    iso += 1
+    return iso
+
+
 class MagicRenderContractConstantsTests(unittest.TestCase):
     def test_contract_version_is_frozen_marker(self):
         self.assertEqual(mrc.MAGIC_RENDER_CONTRACT_VERSION, "LD-469-VISIBLE-MAGIC-V2")
@@ -134,6 +156,18 @@ class MagicHandlerWiringTests(unittest.TestCase):
         for bad in mrc.FORBIDDEN_HANDLER_PATTERNS:
             self.assertNotIn(bad, code, f"forbidden {bad} in handle_magic_video")
 
+    def test_magic_writeback_registers_display_order(self):
+        src = (TOOLS / "server_handlers" / "background.py").read_text()
+        self.assertIn("_sync_bg_partition_display_order_for_scope", src)
+        self.assertIn("sync_storyboard_partition_display_order_from_bg_segment", src)
+        for handler in ("_set_magic_still", "_set_magic_video"):
+            block = src.split(f"def {handler}", 1)[1].split("\n        scope_router.mutate_partition", 1)[0]
+            self.assertIn(
+                "_magic_partition_writeback_ensure_display_order(partition, sb_beat_id)",
+                block,
+                f"{handler} must register sb_beat_id before DISPLAY_ORDER_STRICT prune",
+            )
+
     def test_production_server_exposes_magic_endpoints(self):
         text = PRODUCTION_SERVER_PY.read_text()
         self.assertIn("_handle_magic_still", text)
@@ -171,6 +205,110 @@ class MagicBrightStoneBehaviorTests(unittest.TestCase):
                 76.9, 79.3, 215.8, 79.9, 21.4, 45.2, 115.2, 170.2, 184.2, 200.9]
         self.assertFalse(mrc.bright_stone_ambient_from_lums(lums))
         self.assertTrue(mrc.mixed_path_sparkle_guard_from_lums(lums))
+
+    def test_sparkle_luminance_uses_local_max(self):
+        self.assertEqual(mrc.sparkle_luminance_for_particle(40.0, 150.0), 150.0)
+        self.assertEqual(mrc.sparkle_strength_for_bg_lum(150.0, bright_stone_mode=False), 0.0)
+
+    def test_event3_nest_gem_path_suppresses_blocky_sparkle(self):
+        """Event 3 resolution beat 1 — rune gem path: soft ambient river, no white squares."""
+        e3_src = (
+            DROPBOX
+            / "Production/Event_3/kling_o3_clips/"
+            "bg_arc1_event3_post_beat_01_g3_delivery.mp4"
+        )
+        if not e3_src.is_file():
+            self.skipTest("Event 3 beat 1 source missing")
+        # Eight-point path on bottom-right red rune gem (operator-drawn approximate).
+        path = [
+            (0.72, 0.58), (0.74, 0.56), (0.76, 0.55), (0.78, 0.56),
+            (0.79, 0.58), (0.78, 0.62), (0.76, 0.63), (0.74, 0.61),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            src_png = tmp_p / "src.png"
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(e3_src), "-frames:v", "1", str(src_png)],
+                capture_output=True,
+                check=True,
+            )
+            bg = np.array(Image.open(src_png).convert("RGB").resize((1280, 720))).astype(np.float32)
+            black = tmp_p / "black.png"
+            Image.new("RGB", (1280, 720), (0, 0, 0)).save(black)
+            mc = MagicCompositor(
+                background_path=str(black),
+                path_pts=path,
+                style="tessa_ori",
+                duration=4.5,
+                fps=24,
+                seed=42,
+                output_dir=tmp,
+                label="e3b1gem",
+                path_interp="polyline",
+                path_authored_against={"width": 1280, "height": 720},
+            )
+            mc._gain = 1.0
+            mc.set_path_luminance_from_array(bg)
+            self.assertTrue(mc._crystal_facet_ambient())
+            frame_idx = int(3 / 4.5 * (mc.n_frames - 1))
+            trail = mc._make_trail(frame_idx)
+            comp = composite_screen_rgb(bg, trail)
+            gem = _gem_roi_diff(comp, bg)
+            iso = _isolated_bright_pixels(gem)
+            self.assertLess(iso, 100, f"blocky sparkle pixels={iso}")
+            self.assertGreater(float(trail.max()), 80.0, "ambient river must remain visible")
+            self.assertGreater(float(gem.mean()), 8.0, "gem ROI must read visibly brighter")
+
+    def test_event3_operator_redraw_path_crystal_facet(self):
+        """Kim 2026-06-27 redraw: bright_frac=0.05 must still hit crystal_facet (not standard)."""
+        e3_src = (
+            DROPBOX
+            / "Production/Event_3/kling_o3_clips/"
+            "bg_arc1_event3_post_beat_01_g3_delivery.mp4"
+        )
+        if not e3_src.is_file():
+            self.skipTest("Event 3 beat 1 source missing")
+        path = [
+            (0.776, 0.484), (0.81, 0.586), (0.813, 0.738), (0.767, 0.833),
+            (0.691, 0.812), (0.665, 0.711), (0.69, 0.597), (0.775, 0.482),
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_p = Path(tmp)
+            src_png = tmp_p / "src.png"
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(e3_src), "-frames:v", "1", str(src_png)],
+                capture_output=True,
+                check=True,
+            )
+            bg = np.array(Image.open(src_png).convert("RGB").resize((1280, 720))).astype(np.float32)
+            black = tmp_p / "black.png"
+            Image.new("RGB", (1280, 720), (0, 0, 0)).save(black)
+            mc = MagicCompositor(
+                background_path=str(black),
+                path_pts=path,
+                style="tessa_ori",
+                duration=4.5,
+                fps=24,
+                seed=42,
+                output_dir=tmp,
+                label="e3b1redraw",
+                path_interp="polyline",
+                path_authored_against={"width": 1280, "height": 720},
+            )
+            mc._gain = 1.0
+            mc.set_path_luminance_from_array(bg)
+            self.assertTrue(
+                mc._crystal_facet_ambient(),
+                "operator redraw must not fall back to standard sparkle mode",
+            )
+            frame_idx = int(3 / 4.5 * (mc.n_frames - 1))
+            trail = mc._make_trail(frame_idx)
+            comp = composite_screen_rgb(bg, trail)
+            gem = _gem_roi_diff(comp, bg)
+            iso = _isolated_bright_pixels(gem)
+            self.assertLess(iso, 50, f"blocky sparkle pixels={iso}")
+            self.assertGreater(float(gem.mean()), 8.0, "operator redraw must read visibly brighter")
+            self.assertGreater(float(trail.max()), 80.0, "ambient river must remain visible")
 
     def test_mixed_path_suppresses_sparkle_layer(self):
         """Event 2–style mixed paths: guard fires; render is ambient-only (no sparkle acc)."""

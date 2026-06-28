@@ -100,3 +100,51 @@ def test_export_uses_trim_when_active(tmp_path: Path):
             dest = bg._kling_o3_export_clip_path(beat, tmp_path, scratch)
     assert "export_trim" in dest.name
     mat.assert_called_once()
+
+
+def test_magic_video_source_uses_trim_when_active(tmp_path: Path):
+    clip = tmp_path / "source.mp4"
+    clip.write_bytes(b"x")
+    beat = {
+        "beat_id": "bg_arc1_event2_post_beat_01",
+        "kling_o3_generation": 2,
+        "kling_o3_video_path": str(clip),
+        "kling_o3_trim_start": 0.0,
+        "kling_o3_trim_back": 6.0,
+    }
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    with patch.object(bg, "_ffprobe_duration", return_value=10.0):
+        with patch.object(bg, "materialize_kling_o3_trimmed_clip") as mat:
+            mat.side_effect = lambda beat, dest, **kw: dest
+            dest = bg.resolve_magic_video_source_path(beat, tmp_path, clip, scratch_dir=scratch)
+    assert "export_trim" in dest.name
+    mat.assert_called_once()
+
+
+def test_magic_video_source_unchanged_for_non_o3_path(tmp_path: Path):
+    clip = tmp_path / "source.mp4"
+    other = tmp_path / "other.mp4"
+    clip.write_bytes(b"x")
+    other.write_bytes(b"y")
+    beat = {
+        "beat_id": "bg_test",
+        "kling_o3_video_path": str(clip),
+        "kling_o3_trim_back": 2.0,
+    }
+    with patch.object(bg, "_ffprobe_duration", return_value=5.0):
+        dest = bg.resolve_magic_video_source_path(beat, tmp_path, other)
+    assert dest.resolve() == other.resolve()
+
+
+def test_enrich_magic_video_source_path_trim(tmp_path: Path):
+    beat = {
+        "beat_id": "bg_arc1_event3_post_beat_01",
+        "kling_o3_generation": 4,
+        "kling_o3_video_path": str(tmp_path / "delivery.mp4"),
+        "kling_o3_trim_back": 6.0,
+    }
+    (tmp_path / "delivery.mp4").write_bytes(b"x")
+    bg.enrich_beat_magic_video_source_path(beat, tmp_path)
+    assert beat["kling_o3_magic_video_source_path"].endswith("_ui_preview.mp4")
+    assert "_kling_o3_trim_scratch" in beat["kling_o3_magic_video_source_path"]
