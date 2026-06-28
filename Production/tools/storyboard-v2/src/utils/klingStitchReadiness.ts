@@ -24,6 +24,11 @@ function o3JobBlocksExport(b: KlingStitchReadinessBeat): boolean {
   return Boolean(b.job_busy || b.o3_current_job_id);
 }
 
+/** Exported for bgStitchExport block labels — must stay aligned with server busy gate. */
+export function o3JobBlocksStitchExport(b: KlingStitchReadinessBeat): boolean {
+  return o3JobBlocksExport(b);
+}
+
 /** Must match ``beat_kling_stitch_export_ready`` in kling_stitch_readiness.py */
 export function beatKlingStitchExportReady(b: KlingStitchReadinessBeat): boolean {
   if (b.magic_still_path && b.magic_still_path_exists !== false) {

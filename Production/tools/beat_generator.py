@@ -13399,10 +13399,10 @@ def pin_kling_o3_beat(beat: dict, event_dir: str | Path) -> tuple[bool, str | No
 
 
 def auto_pin_approved_kling_o3_delivery(beat: dict, event_dir: str | Path) -> bool:
-    """Pin the current approved delivery so a later redo cannot lose the only good copy."""
-    if str(beat.get("kling_o3_status") or "") != "approved":
-        return False
-    if not beat.get("kling_o3_video_path"):
+    """Pin the current stitch-ready delivery so a later redo cannot lose the only good copy."""
+    from kling_stitch_readiness import beat_kling_stitch_export_ready  # noqa: PLC0415
+
+    if not beat_kling_stitch_export_ready(beat, event_dir):
         return False
     ok, _err = pin_kling_o3_beat(beat, event_dir)
     return ok

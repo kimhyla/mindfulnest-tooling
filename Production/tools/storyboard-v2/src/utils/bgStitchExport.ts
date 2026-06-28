@@ -2,6 +2,7 @@
 
 import {
   beatKlingStitchExportReady,
+  o3JobBlocksStitchExport,
   stillBeatNeedsStitchApprove,
   type KlingStitchReadinessBeat,
 } from './klingStitchReadiness';
@@ -27,7 +28,7 @@ export function beatStitchExportBlockLabel(b: BgBeatStitchFields): string | null
   if (stillBeatNeedsStitchApprove(b)) {
     return 'Approve still clip';
   }
-  if (b.job_busy || b.o3_current_job_id) {
+  if (o3JobBlocksStitchExport(b)) {
     return 'Wait for Kling job to finish';
   }
   return 'Submit Kling or add magic on still';

@@ -669,8 +669,13 @@ def handle_bg_approve_kling_o3(h, body: dict) -> None:
         )
 
     def _approve(b: dict, _sc: dict) -> None:
-        b["status"] = "approved"
-        b["kling_o3_status"] = "approved"
+        from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
+
+        vp = str(b.get("kling_o3_video_path") or "")
+        if bg.beat_is_still_insert(b):
+            b["kling_o3_still_stitch_approved"] = True
+            b["kling_o3_still_stitch_approved_at"] = datetime.now(timezone.utc).isoformat()
+        finalize_kling_delivery_clip(b, vp)
 
     bg.update_beat_locked(beat_id, _approve)
     return h._send_json(200, {"ok": True, "beat_id": beat_id})
@@ -1140,6 +1145,27 @@ def _run_bg_export_to_stitcher_core(
             "code": STITCH_SLOT_VIDEO_LINEAGE_V1,
             "warnings": export_warnings,
             "video_path": video_rel,
+        }
+
+    from server_handlers.stitch_editor import (  # noqa: PLC0415
+        STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1,
+        _playback_artifact_bake_is_mandatory,
+    )
+
+    if _playback_artifact_bake_is_mandatory(playback_artifacts or {}):
+        return {
+            "ok": False,
+            "error_code": "STITCH_PLAYBACK_ARTIFACT_BAKE_FAILED",
+            "error_message": (
+                playback_artifacts.get("error")
+                or playback_artifacts.get("skipped")
+                or f"{slot_key}: playback artifact bake failed"
+            ),
+            "retry_safe": True,
+            "code": STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1,
+            "warnings": export_warnings,
+            "video_path": video_rel,
+            "playback_artifacts": playback_artifacts,
         }
 
     from bg_directus_register import (  # noqa: PLC0415

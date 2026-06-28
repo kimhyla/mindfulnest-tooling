@@ -419,6 +419,8 @@ function isStillInsertPromptText(text?: string | null): boolean {
 /** Prompt-box is law — mode-specific: still vs O3 (voice_first + element_native share O3). */
 function beatPromptText(beat?: BgBeat | null, eventId?: string): string {
   if (!beat) return '';
+  const fromDerived = (beat._derived?.display_prompt ?? beat.display_prompt ?? '').trim();
+  if (fromDerived) return fromDerived;
   const mode = effectiveGenerationMode(beat, eventId);
   if (mode === 'still_insert') {
     const still = (beat.kling_o3_prompt_still ?? '').trim();

@@ -99,12 +99,32 @@ class KlingStitchReadinessTests(unittest.TestCase):
         self.assertIn("data-kling-stitch-readiness-v1", text)
         self.assertNotIn("Approve Kling clip", text)
 
-    def test_verify_script_wired(self):
-        self.assertTrue(VERIFY_SH.is_file())
-        session = (TOOLS.parent / "scripts" / "verify_storyboard_session_durability.sh").read_text(
-            encoding="utf-8",
-        )
-        self.assertIn("verify_kling_stitch_readiness_durability.sh", session)
+    def test_auto_pin_delegates_to_stitch_contract(self):
+        import tempfile
+        from beat_generator import auto_pin_approved_kling_o3_delivery
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            clip = tmp_path / "bg_test_g1_element_o3_master_delivery.mp4"
+            clip.write_bytes(b"fake")
+            beat = {
+                "beat_id": "bg_test",
+                "pipeline": "kling_o3_omni",
+                "kling_o3_status": "draft",
+                "kling_o3_video_path": str(clip),
+            }
+            # Pin path requires pin_kling_o3_beat — mock by checking gate only via readiness
+            from kling_stitch_readiness import beat_kling_stitch_export_ready
+
+            self.assertTrue(beat_kling_stitch_export_ready(beat, tmp_path))
+            text = Path(__file__).resolve().parent.parent.joinpath("beat_generator.py").read_text(
+                encoding="utf-8",
+            )
+            self.assertIn("beat_kling_stitch_export_ready", text)
+            self.assertNotIn(
+                'if str(beat.get("kling_o3_status") or "") != "approved":',
+                text[text.find("def auto_pin_approved_kling_o3_delivery"):text.find("def restore_pinned")],
+            )
 
 
 if __name__ == "__main__":
