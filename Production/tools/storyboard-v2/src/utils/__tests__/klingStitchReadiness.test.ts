@@ -4,6 +4,7 @@ import {
   beatKlingStitchExportReady,
   stillBeatNeedsStitchApprove,
 } from '../klingStitchReadiness';
+import { beatIsStitchApproved } from '../bgBeatNavStatus';
 
 describe('KLING_STITCH_READINESS_V1', () => {
   it('exports contract marker', () => {
@@ -33,5 +34,15 @@ describe('KLING_STITCH_READINESS_V1', () => {
       kling_o3_video_path: '/clips/beat.mp4',
       job_busy: true,
     })).toBe(false);
+  });
+
+  it('nav checkmark uses stitch readiness not raw enum', () => {
+    const clipBeat = {
+      kling_o3_status: 'draft',
+      kling_o3_video_path: '/clips/beat.mp4',
+      kling_o3_video_path_exists: true,
+    };
+    expect(beatIsStitchApproved(clipBeat)).toBe(true);
+    expect(beatIsStitchApproved({ kling_o3_status: 'approved' })).toBe(false);
   });
 });

@@ -6,8 +6,8 @@
 //   M3 — tab switch: Storyboard → Beat Gen restores nav + jump still works
 //   M4 — beat list swap (simulates event/segment reload): nav re-labels, jump works
 //   M5 — active O3 job on beat 2 shows red dot only on that row
-//   M6 — approved beat shows green checkmark
-//   M7 — approved beat with active redo shows both dot and check
+//   M6 — active delivery clip shows green checkmark (status enum may be draft)
+//   M7 — active redo job shows dot only (busy blocks stitch-ready check)
 
 import { test, expect, type Page } from '@playwright/test';
 import { openStoryboardPane } from './helpers';
@@ -206,12 +206,16 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await expect(page.getByTestId('bg-beat-nav-dot-2')).toHaveCount(0);
   });
 
-  test('M6 — approved beat shows checkmark', async ({ page }) => {
+  test('M6 — active delivery clip shows checkmark', async ({ page }) => {
     await mockSnapshot(page);
     await mockSegments(page);
     await mockSessionWithBeats(page, [
-      makeBeat('beat_ready', 'Not approved yet.'),
-      makeBeat('beat_approved', 'Approved beat.', { kling_o3_status: 'approved' }),
+      makeBeat('beat_ready', 'Not ready yet.'),
+      makeBeat('beat_with_clip', 'Clip on disk.', {
+        kling_o3_status: 'draft',
+        kling_o3_video_path: '/tmp/fake_delivery.mp4',
+        kling_o3_video_path_exists: true,
+      }),
     ]);
 
     await gotoApp(page);
@@ -223,12 +227,14 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await expect(page.getByTestId('bg-beat-nav-dot-1')).toHaveCount(0);
   });
 
-  test('M7 — approved beat with active redo shows dot and check', async ({ page }) => {
+  test('M7 — active redo job shows dot only (no check while busy)', async ({ page }) => {
     await mockSnapshot(page);
     await mockSegments(page);
     await mockSessionWithBeats(page, [
-      makeBeat('beat_redo', 'Approved but regenerating.', {
+      makeBeat('beat_redo', 'Regenerating with clip on disk.', {
         kling_o3_status: 'approved',
+        kling_o3_video_path: '/tmp/fake_delivery.mp4',
+        kling_o3_video_path_exists: true,
         job_busy: true,
         o3_current_job_id: 'job-nav-redo-1',
       }),
@@ -237,6 +243,6 @@ test.describe('BG_BEAT_JUMP_NAV_V1 — beat jump navigation', () => {
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
     await expect(page.getByTestId('bg-beat-nav-dot-0')).toHaveCount(1);
-    await expect(page.getByTestId('bg-beat-nav-check-0')).toHaveCount(1);
+    await expect(page.getByTestId('bg-beat-nav-check-0')).toHaveCount(0);
   });
 });

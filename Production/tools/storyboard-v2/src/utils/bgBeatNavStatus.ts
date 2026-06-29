@@ -1,6 +1,10 @@
 /** BG_BEAT_JUMP_NAV_V1 — read-only nav badges (active job dot + approved check). */
 
 import { beatO3JobBusy, type O3JobBeatFields } from '../o3JobStatusContract';
+import {
+  beatKlingStitchExportReady,
+  type KlingStitchReadinessBeat,
+} from './klingStitchReadiness';
 
 export type BeatNavJobContext = {
   activeJobId: string | null;
@@ -11,7 +15,7 @@ export type BeatNavJobContext = {
   gptBatchSubmitPending?: Readonly<Record<string, boolean>>;
 };
 
-export type BeatNavStatusFields = BeatNavStatusFieldsBase & O3JobBeatFields;
+export type BeatNavStatusFields = BeatNavStatusFieldsBase & O3JobBeatFields & KlingStitchReadinessBeat;
 
 type BeatNavStatusFieldsBase = {
   beat_id: string;
@@ -129,7 +133,7 @@ export function beatHasActiveStillBatchJob(
 }
 
 export function beatIsStitchApproved(beat: BeatNavStatusFields): boolean {
-  return (beat.kling_o3_status ?? '').toLowerCase() === 'approved';
+  return beatKlingStitchExportReady(beat);
 }
 
 /** Mirrors BeatGenCard busy — pipeline-specific job truth (no O3 latch bleed on still_insert). */

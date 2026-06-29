@@ -73,10 +73,6 @@ import {
   KLING_STITCH_READINESS_V1,
   stillBeatNeedsStitchApprove as stillBeatNeedsStitchApproveContract,
 } from '../utils/klingStitchReadiness';
-import {
-  BG_KLING_CLIP_APPROVE_CONTRACT_V1,
-  klingBeatNeedsClipApprove,
-} from '../utils/bgKlingClipApprove';
 import { lintKlingO3PromptContradictions } from '../utils/promptContradictionLint';
 import {
   notifyStitchSlotExportApplied,
@@ -473,10 +469,6 @@ function resolveStillStitchApproveOptionKey(beat: BgBeat): string | null {
 
 function stillBeatNeedsStitchApprove(beat: BgBeat): boolean {
   return stillBeatNeedsStitchApproveContract(beat);
-}
-
-function klingBeatNeedsClipApproveForBeat(beat: BgBeat): boolean {
-  return klingBeatNeedsClipApprove(beat, { stillInsert: isStillInsertBeat(beat) });
 }
 
 function resolveActiveO3OptionKey(beat: BgBeat): string | null {
@@ -3146,7 +3138,6 @@ export function BgTab() {
                 isStillInsertBeat(b) ? { draftOnly: true } : undefined,
               )}
               onApproveStill={(optionKey) => onSelectO3Video(b.beat_id, optionKey, { stillApprove: true })}
-              onApproveKling={(optionKey) => onSelectO3Video(b.beat_id, optionKey)}
               onApplyO3Cut={(slotIndex, trimStartS, trimBackS, opts) => onApplyO3Cut(b.beat_id, slotIndex, trimStartS, trimBackS, opts)}
               onApplyO3Trim={(trimStart, trimBack, clear) => onApplyO3Trim(b.beat_id, trimStart, trimBack, clear)}
               onSetReplaceSlot={(slotIndex) => onSetReplaceSlot(b.beat_id, slotIndex)}
@@ -3612,7 +3603,6 @@ interface BeatGenCardProps {
   onAccept: (optionKey: string) => void;
   onSelectO3Video: (optionKey: string) => void;
   onApproveStill: (optionKey: string) => void;
-  onApproveKling: (optionKey: string) => void;
   onApplyO3Cut: (
     slotIndex: number,
     trimStartS: number,
@@ -3667,7 +3657,7 @@ function BeatGenCard({
   onDelete, onUpdateText, onUpdateSpeaker, onSetGenerationMode,
   onBeginGenerateSubmit, onAbortGenerateSubmit,
   onGenerate, onAccept,
-  onSelectO3Video, onApproveStill, onApproveKling, onApplyO3Cut, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
+  onSelectO3Video, onApproveStill, onApplyO3Cut, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
   onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
   canMoveUp, canMoveDown, reorderBusy, onMoveUp, onMoveDown,
@@ -3734,10 +3724,6 @@ function BeatGenCard({
   const stillNeedsStitchApprove = stillBeatNeedsStitchApprove(beat);
   const stillApproveOptionKey = stillNeedsStitchApprove
     ? resolveStillStitchApproveOptionKey(beat)
-    : null;
-  const klingNeedsClipApprove = klingBeatNeedsClipApproveForBeat(beat);
-  const klingApproveOptionKey = klingNeedsClipApprove
-    ? resolveActiveO3OptionKey(beat)
     : null;
   const elementCharRefOk = beatElementCharRefOk(beat);
   const elementCharRefErr = beatElementCharRefError(beat);
@@ -4127,27 +4113,6 @@ function BeatGenCard({
         </div>
       ) : null}
 
-      {klingNeedsClipApprove && klingApproveOptionKey ? (
-        <div
-          class="mn-bg-still-approve-banner mn-bg-kling-approve-banner"
-          data-testid={`bg-kling-approve-banner-${index}`}
-          data-bg-kling-clip-approve-v1={BG_KLING_CLIP_APPROVE_CONTRACT_V1}
-        >
-          <p class="mn-dim">
-            Kling clip is in the slot — review the video, trim if needed, then approve
-            this beat for the green checkmark and <strong>Send Beat Gen to Stitcher</strong>.
-          </p>
-          <button
-            type="button"
-            class="mn-btn mn-btn-primary"
-            data-testid={`bg-kling-approve-banner-btn-${index}`}
-            onClick={() => onApproveKling(klingApproveOptionKey)}
-          >
-            Approve this beat
-          </button>
-        </div>
-      ) : null}
-
       <BeatMagicButtons
         index={index}
         beatId={beat.beat_id}
@@ -4241,7 +4206,6 @@ function BeatGenCard({
             klingO3Status={beat.kling_o3_status ?? null}
             videoCacheKey={`${opt?.key ?? i}|${opt?.video_path ?? ''}|${beat.kling_o3_selected_at ?? beat.beat_id}`}
             onApproveStill={(optionKey) => onApproveStill(optionKey)}
-            onApproveKling={(optionKey) => onApproveKling(optionKey)}
             cutStartS={opt?.cut_start_s ?? 0}
             cutEndS={opt?.cut_end_s ?? 0}
             trimStartS={opt?.trim_start_s ?? 0}
@@ -4579,14 +4543,13 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
   klingO3Status?: string | null;
   videoCacheKey?: string;
   onApproveStill?: (optionKey: string) => void;
-  onApproveKling?: (optionKey: string) => void;
 }
 
 function BgOptionTile({
   beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh, onPatchOptionTile,
   cutStartS: _cutStartS, cutEndS: _cutEndS, trimStartS = 0, trimBackS = 0, onApplyO3Cut, trimStart, trimBack, onApplyO3Trim,
   replaceSelected, onSetReplaceSlot, showReplaceOnRegen,
-  overrideVideoUrl, stillInsert, klingO3Status, videoCacheKey, onApproveStill, onApproveKling,
+  overrideVideoUrl, stillInsert, klingO3Status, videoCacheKey, onApproveStill,
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
@@ -4719,7 +4682,6 @@ function BgOptionTile({
   const isStitchApproved = klingO3Status === 'approved';
   const hasClipVideo = !!option.video_path;
   const isStillDraft = !!stillInsert && hasClipVideo && !isStitchApproved;
-  const klingNeedsApprove = !stillInsert && hasClipVideo && !isStitchApproved && selected;
   const optionLabel = displayO3OptionLabel(option)
     || (isStitchApproved
     ? 'approved O3 video'
@@ -5489,19 +5451,6 @@ function BgOptionTile({
               }}
             >
               Approve still for stitch
-            </button>
-          ) : null}
-          {klingNeedsApprove && onApproveKling ? (
-            <button
-              type="button"
-              class="mn-btn mn-btn-small mn-btn-primary"
-              data-testid={`bg-approve-kling-${beatIndex}-${optionIndex}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onApproveKling(resolveO3OptionKey(option, beatId, optionIndex));
-              }}
-            >
-              Approve this beat
             </button>
           ) : null}
         </>
