@@ -6,6 +6,10 @@
  * omits cues or a patch is in flight (mirrors STITCH_SAVE_REFRESH_LOCAL_CUES_V1).
  */
 import type { WatercolorCue } from '../components/phase/WaveformTimeline';
+import {
+  mergeOperatorArrayOnHydrate,
+  type OperatorEditMergeOptions,
+} from './operatorEditMerge.ts';
 
 export const PHASE_WATERCOLOR_CUE_AUTHORITY_V1 = 'PHASE_WATERCOLOR_CUE_AUTHORITY_V1';
 
@@ -38,24 +42,12 @@ export function parseWatercolorCuesFromEventState(
   }
 }
 
-export interface MergeWatercolorCuesOptions {
-  /** While true, never clobber local cues from a concurrent refresh. */
-  patchInFlight: boolean;
-}
+export interface MergeWatercolorCuesOptions extends OperatorEditMergeOptions {}
 
-/**
- * Hydration merge — precedence:
- * 1. patch in flight → keep local
- * 2. server returned cues array (incl. empty) → server wins when not in flight
- * 3. server omitted field → keep local (fixes refreshAll blind-wipe)
- */
 export function mergeWatercolorCuesOnHydrate(
   localCues: readonly WatercolorCue[],
   serverCues: WatercolorCue[] | undefined,
   opts: MergeWatercolorCuesOptions,
 ): WatercolorCue[] {
-  if (opts.patchInFlight) return [...localCues];
-  if (serverCues !== undefined) return serverCues;
-  if (localCues.length > 0) return [...localCues];
-  return [];
+  return mergeOperatorArrayOnHydrate(localCues, serverCues, opts);
 }

@@ -41,6 +41,8 @@ import {
 import { serverRehydrateTick } from '../../state/refreshSignals';
 import { SERVER_REHYDRATE_EVENT } from '../../state/serverRehydrate';
 import { usePhaseWatercolorCues } from '../../hooks/usePhaseWatercolorCues';
+import { usePhaseStemCut } from '../../hooks/usePhaseStemCut';
+import { useProtectedPromptField } from '../../hooks/useProtectedPromptField';
 import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
 import { WatercolorAnimOverlay } from './WatercolorAnimOverlay';
 import { CuePopover } from './CuePopover';
@@ -277,7 +279,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [watercolors, setWatercolors] = useState<WatercolorItem[]>([]);
   const [baseClips, setBaseClips] = useState<BaseClipItem[]>([]);
   const [stateSlice, setStateSlice] = useState<PhaseStateSlice>({});
-  const [scriptDraft, setScriptDraft] = useState<string>('');
   const [suggesting, setSuggesting] = useState(false);
   const [therapeuticBrief, setTherapeuticBrief] = useState<TherapeuticBrief | null>(null);
   const [showBrief, setShowBrief] = useState(false);
@@ -309,6 +310,28 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     onPatchError: setStatusMsg,
   });
 
+  const scriptField = useProtectedPromptField({
+    fieldId: `phase_${phase}_script_${activeScope.value.event_id}`,
+    externalText: stateSlice.script ?? '',
+    onSave: async (text) => {
+      const field = `phase_${phase}_script`;
+      const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
+        field,
+        value: text,
+      });
+      if (res.ok) {
+        setStateSlice((s) => ({ ...s, script: text }));
+      }
+      return res.ok;
+    },
+  });
+
+  const stemCut = usePhaseStemCut({
+    phase,
+    scope: activeScope.value,
+    onPatchError: setStatusMsg,
+  });
+
   const refreshAll = async (): Promise<boolean> => {
     const [wc, bc, st, ap] = await Promise.all([
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
@@ -320,8 +343,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     if (st.ok && st.data) {
       nextSlice = pickPhaseSlice(st.data, phase);
       watercolorCues.adoptFromEventState(st.data);
+      stemCut.adoptFromEventState(st.data);
       setStateSlice(nextSlice);
-      if (nextSlice.script) setScriptDraft(nextSlice.script);
     } else if (!st.ok) {
       setStatusMsg(
         `⚠ Could not load Phase ${phase.toUpperCase()} state (HTTP ${st.status || 'network'}). `
@@ -464,7 +487,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         tokens_out?: number;
       };
       if (data.script) {
-        setScriptDraft(data.script);
+        scriptField.setText(data.script);
+        setStateSlice((s) => ({ ...s, script: data.script! }));
         setStatusMsg(
           `✓ Script suggested (${data.tokens_in ?? '?'} in / ${data.tokens_out ?? '?'} out tokens)`,
         );
@@ -549,14 +573,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   const onClearStemCutSelection = async () => {
     setBusyAction('clear_cut');
-    await persistStemCut(0, 0);
+    await stemCut.persistStemCut(0, 0);
     setBusyAction(null);
     setStatusMsg('Cut selection cleared — drag gold handles to mark a new region.');
   };
 
   const onApplyStemCut = async () => {
-    const cutStart = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
-    const cutEnd = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
+    const cutStart = stemCut.stemCutStartMs;
+    const cutEnd = stemCut.stemCutEndMs;
     if (cutEnd <= cutStart + 250) {
       setStatusMsg('Drag the amber handles to mark the section to remove, then Apply Cut.');
       return;
@@ -572,12 +596,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         `✓ Stem cut applied${data?.duration_s ? ` (${data.duration_s.toFixed(1)}s)` : ''} — send for lipsync when ready.`,
       );
       setStemTrimMode(false);
-      setStateSlice((s) => {
-        const next = { ...s };
-        delete next.voice_stem_cut_start_s;
-        delete next.voice_stem_cut_end_s;
-        return next;
-      });
+      stemCut.clearLocalCut();
       await refreshAll();
     } else {
       const data = res.data as { hint?: string; error_message?: string } | undefined;
@@ -808,33 +827,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setPopoverAnchor(null);
   };
 
-  const persistStemCut = async (cutStartMs: number, cutEndMs: number) => {
-    const startS = Math.round(cutStartMs) / 1000;
-    const endS = Math.round(cutEndMs) / 1000;
-    setStateSlice((s) => ({
-      ...s,
-      voice_stem_cut_start_s: startS,
-      voice_stem_cut_end_s: endS,
-    }));
-    const startField = `phase_${phase}_voice_stem_cut_start_s`;
-    const endField = `phase_${phase}_voice_stem_cut_end_s`;
-    const legacyStart = `phase_${phase}_voice_stem_trim_start_s`;
-    const legacyBack = `phase_${phase}_voice_stem_trim_back_s`;
-    const [startRes, endRes] = await Promise.all([
-      pathappPatch(activeScope.value, 'v2_module_patch', { field: startField, value: startS }),
-      pathappPatch(activeScope.value, 'v2_module_patch', { field: endField, value: endS }),
-      pathappPatch(activeScope.value, 'v2_module_patch', { field: legacyStart, value: 0 }),
-      pathappPatch(activeScope.value, 'v2_module_patch', { field: legacyBack, value: 0 }),
-    ]);
-    if (!startRes.ok || !endRes.ok) {
-      setStatusMsg(
-        `✗ stem cut patch failed (HTTP ${startRes.status}/${endRes.status})`,
-      );
-    }
-  };
-
   const onStemCutChange = (cutStartMs: number, cutEndMs: number) => {
-    void persistStemCut(cutStartMs, cutEndMs);
+    void stemCut.persistStemCut(cutStartMs, cutEndMs);
   };
 
   const onCuePopoverClose = () => {
@@ -897,52 +891,32 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setTimeout(() => setSaveBtnLabel('Save Script'), 2000);
   };
 
-  const onScriptBlur = async () => {
+  const onSaveScript = async () => {
     const currentServer = stateSlice.script ?? '';
-    if (scriptDraft === currentServer) {
+    const draft = scriptField.getText();
+    if (draft === currentServer) {
       flashSaveBtn('✓ Already saved');
       return;
     }
     flashSaveBtn('Saving…');
-    const field = `phase_${phase}_script`;
-    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
-      field,
-      value: scriptDraft,
-    });
-    if (res.ok) {
-      setStateSlice((s) => ({ ...s, script: scriptDraft }));
+    const ok = await scriptField.flushSave();
+    if (ok) {
       flashSaveBtn('✓ Saved');
       setStatusMsg('✓ Script saved');
     } else {
-      flashSaveBtn(`✗ Error ${res.status}`);
-      setStatusMsg(`✗ Script save HTTP ${res.status}: ${res.error ?? ''}`);
+      flashSaveBtn('✗ Error');
     }
   };
 
-  // ── Voice stem (Phase E) — Cursor v8 Q5: misnamed regen_audio writes voice_stem files.
   const onGenerateStem = async () => {
     setBusyAction('stem');
-    // Save scriptDraft to server BEFORE generating — prevents refreshAll() from
-    // overwriting the textarea with the stale server version (race: blur-save and
-    // refreshAll compete; generation wins and resets scriptDraft to old script).
-    const currentServer = stateSlice.script ?? '';
-    if (scriptDraft !== currentServer) {
-      setStatusMsg('Saving script…');
-      const field = `phase_${phase}_script`;
-      const saveRes = await pathappPatch(activeScope.value, 'v2_module_patch', {
-        field,
-        value: scriptDraft,
-      });
-      if (saveRes.ok) {
-        setStateSlice((s) => ({ ...s, script: scriptDraft }));
-      }
-      // Continue even if save fails — generation uses scriptDraft directly.
-    }
+    await scriptField.flushSave();
+    const script = scriptField.getText();
     setStatusMsg('Generating stem from script…');
     const regenEp = phase === 'a' ? 'phase_a_regen_audio' : 'phase_b_regen_audio';
     const res = await pathappPatch(activeScope.value, regenEp, {
       phase,
-      script: scriptDraft,
+      script,
     });
     setBusyAction(null);
     if (res.ok) {
@@ -984,12 +958,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         ? { name: lipsyncFile, label: 'lipsync', kind: 'lipsync' }
         : null;
   const canEditStemCut = Boolean(stemTrimMode && stateSlice.voice_stem_file);
-  const stemCutStartMs = Math.round((stateSlice.voice_stem_cut_start_s ?? 0) * 1000);
-  const stemCutEndMs = Math.round((stateSlice.voice_stem_cut_end_s ?? 0) * 1000);
+  const stemCutStartMs = stemCut.stemCutStartMs;
+  const stemCutEndMs = stemCut.stemCutEndMs;
   const showRejectLipsync =
     Boolean(lipsyncFile) &&
     !lipsyncInFlight;
-  const hasStemCut = stemCutEndMs > stemCutStartMs + 250;
+  const hasStemCut = stemCut.hasStemCut;
   const terminalLipsyncBanner = phaseLipsyncTerminalBanner(stateSlice.lipsync_status);
   const displayStatusMsg =
     lipsyncInFlight && !statusMsg?.startsWith('✗')
@@ -1012,6 +986,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       data-testid={`phase-producer-${phase}`}
       data-phase-producer-ab="PHASE_PRODUCER_AB_V1"
       data-phase-watercolor-cue-authority="PHASE_WATERCOLOR_CUE_AUTHORITY_V1"
+      data-operator-edit-authority="OPERATOR_EDIT_AUTHORITY_V1"
       data-phase-watercolor-overlay="PHASE_WATERCOLOR_OVERLAY_V1"
       {...(phase === 'a' ? { 'data-phase-a-single-player': 'PHASE_A_SINGLE_PLAYER_V1' } : {})}
     >
@@ -1087,10 +1062,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         <textarea
           class="mn-phase-script-editor"
           data-testid={`phase-${phase}-script-editor`}
+          ref={scriptField.textareaRef}
           rows={8}
-          value={scriptDraft}
-          onInput={(e: Event) => setScriptDraft((e.target as HTMLTextAreaElement).value)}
-          onBlur={onScriptBlur}
+          onFocus={scriptField.onFocus}
+          onInput={scriptField.onInput}
+          onBlur={() => {
+            scriptField.onBlur();
+            void onSaveScript();
+          }}
           placeholder={`Phase ${phase.toUpperCase()} script…`}
         />
         {/* Explicit save — onBlur only fires on focus-leave; this lets Kim
@@ -1101,7 +1080,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             type="button"
             class="mn-btn"
             data-testid={`phase-${phase}-save-script-btn`}
-            onClick={onScriptBlur}
+            onClick={() => void onSaveScript()}
             disabled={saveBtnLabel === 'Saving…'}
           >
             {saveBtnLabel}

@@ -19,8 +19,8 @@ grep -q 'PHASE_WATERCOLOR_CUE_AUTHORITY_V1' "$AUTH" \
   || fail "phaseWatercolorCuesAuthority missing marker"
 grep -q 'usePhaseWatercolorCues' "$PRODUCER" \
   || fail "PhaseProducer must use usePhaseWatercolorCues hook"
-grep -q 'mergeWatercolorCuesOnHydrate' "$AUTH" \
-  || fail "missing mergeWatercolorCuesOnHydrate"
+grep -q 'operatorEditMerge' "$AUTH" \
+  || fail "phaseWatercolorCuesAuthority must delegate to operatorEditMerge"
 grep -q 'adoptFromEventState' "$HOOK" \
   || fail "hook must expose adoptFromEventState"
 if grep -q 'stateSlice\.watercolor_cues' "$PRODUCER"; then

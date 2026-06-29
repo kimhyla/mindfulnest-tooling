@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 AUTHORITY_REGISTRY_V1 = "STORYBOARD_AUTHORITY_REGISTRY_V1"
+OPERATOR_EDIT_AUTHORITY_V1 = "OPERATOR_EDIT_AUTHORITY_V1"
 AUTHORITY_REGISTRY_DOC = "Production/docs/STORYBOARD_AUTHORITY_REGISTRY_v1.md"
+OPERATOR_EDIT_SPEC_DOC = "Production/docs/TECH_SPEC_OPERATOR_EDIT_AUTHORITY_V1.md"
 
 AuthorityStatus = Literal["shipped", "partial", "debt"]
 
@@ -41,6 +43,20 @@ class AuthorityConcept:
     spec_doc: str | None = None
     forbidden_client_gates: tuple[ForbiddenClientGate, ...] = field(default_factory=tuple)
     server_delegation: tuple[tuple[str, str], ...] = field(default_factory=tuple)
+    notes: str = ""
+
+
+@dataclass(frozen=True)
+class OperatorEditSurface:
+    """Client hydration vs optimistic edit — Tier D operator surfaces (all tabs/events)."""
+
+    id: str
+    status: AuthorityStatus
+    marker: str
+    tab: str
+    client_module: str
+    client_read: str
+    spec_doc: str = OPERATOR_EDIT_SPEC_DOC
     notes: str = ""
 
 
@@ -240,6 +256,129 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         spec_doc="Production/docs/TIER_D_OPERATOR_EDIT_SURFACES_v1.md",
         notes="Client hook owns optimistic geometry; server JSON is durable store. Hydrate merge preserves local when field omitted or patch in flight.",
     ),
+    AuthorityConcept(
+        id="phase_stem_cut_geometry",
+        status="shipped",
+        marker="PHASE_STEM_CUT_AUTHORITY_V1",
+        question="Which stem cut handles drive Phase A/B waveform during edit + refresh?",
+        authority_shape="disk",
+        server_module="production_server.py",
+        server_read="phase_*_voice_stem_cut_*_s",
+        server_write="v2_module_patch phase_*_voice_stem_cut_*_s",
+        client_module="storyboard-v2/src/hooks/usePhaseStemCut.ts",
+        client_read="mergeOperatorFieldOnHydrate",
+        spec_doc=OPERATOR_EDIT_SPEC_DOC,
+        notes="usePhaseStemCut owns cut geometry; mergeOperatorFieldOnHydrate on hydrate omit.",
+    ),
+    AuthorityConcept(
+        id="phase_script_draft",
+        status="shipped",
+        marker="OPERATOR_EDIT_AUTHORITY_V1",
+        question="Which text owns Phase A/B script textarea during poll/focus refresh?",
+        authority_shape="disk",
+        server_module="production_server.py",
+        server_read="phase_*_script",
+        server_write="v2_module_patch phase_*_script",
+        client_module="storyboard-v2/src/hooks/useProtectedPromptField.ts",
+        client_read="useProtectedPromptField",
+        spec_doc=OPERATOR_EDIT_SPEC_DOC,
+        notes="Uncontrolled textarea + promptEditRegistry; refreshAll must not clobber draft.",
+    ),
+)
+
+
+OPERATOR_EDIT_SURFACES: tuple[OperatorEditSurface, ...] = (
+    OperatorEditSurface(
+        id="phase_watercolor_cue_geometry",
+        status="shipped",
+        marker="PHASE_WATERCOLOR_CUE_AUTHORITY_V1",
+        tab="phase_a|phase_b",
+        client_module="storyboard-v2/src/hooks/usePhaseWatercolorCues.ts",
+        client_read="mergeWatercolorCuesOnHydrate",
+    ),
+    OperatorEditSurface(
+        id="phase_stem_cut_geometry",
+        status="shipped",
+        marker="PHASE_STEM_CUT_AUTHORITY_V1",
+        tab="phase_a|phase_b",
+        client_module="storyboard-v2/src/hooks/usePhaseStemCut.ts",
+        client_read="mergeOperatorFieldOnHydrate",
+    ),
+    OperatorEditSurface(
+        id="phase_script_draft",
+        status="shipped",
+        marker="OPERATOR_EDIT_AUTHORITY_V1",
+        tab="phase_a|phase_b",
+        client_module="storyboard-v2/src/hooks/useProtectedPromptField.ts",
+        client_read="useProtectedPromptField",
+        notes="PhaseProducer script textarea — all events via scope.event_id fieldId.",
+    ),
+    OperatorEditSurface(
+        id="stitch_sfx_cue_geometry",
+        status="shipped",
+        marker="STITCH_SAVE_REFRESH_LOCAL_CUES_V1",
+        tab="stitcher",
+        client_module="storyboard-v2/src/utils/stitchSlotDurableMerge.ts",
+        client_read="mergeStitchJobSlotsClientPatch",
+    ),
+    OperatorEditSurface(
+        id="stitch_slot_durable_fields",
+        status="shipped",
+        marker="STITCH_SAVE_SLOT_DURABLE_MERGE_V1",
+        tab="stitcher",
+        client_module="storyboard-v2/src/utils/stitchSlotDurableMerge.ts",
+        client_read="mergeStitchSlotClientPatch",
+    ),
+    OperatorEditSurface(
+        id="bg_beat_prompt_field",
+        status="shipped",
+        marker="OPERATOR_EDIT_AUTHORITY_V1",
+        tab="beat_gen",
+        client_module="storyboard-v2/src/hooks/useProtectedPromptField.ts",
+        client_read="useProtectedPromptField",
+        notes="Per beat_id across all milestone partitions.",
+    ),
+    OperatorEditSurface(
+        id="bg_beat_ref_boxes",
+        status="shipped",
+        marker="OPERATOR_EDIT_AUTHORITY_V1",
+        tab="beat_gen",
+        client_module="storyboard-v2/src/state/promptEditRegistry.ts",
+        client_read="preserveRefBoxesOnServerBeatMerge",
+    ),
+    OperatorEditSurface(
+        id="phase_ambient_preset",
+        status="partial",
+        marker="OPERATOR_EDIT_AUTHORITY_V1",
+        tab="phase_b",
+        client_module="storyboard-v2/src/components/phase/PhaseProducer.tsx",
+        client_read="onPickAmbientPreset",
+        notes="P2 — optimistic select + merge on refresh omit.",
+    ),
+    OperatorEditSurface(
+        id="stitch_ambient_bed_selection",
+        status="partial",
+        marker="OPERATOR_EDIT_AUTHORITY_V1",
+        tab="stitcher",
+        client_module="storyboard-v2/src/components/StitcherTab.tsx",
+        client_read="local snapshot on save refresh",
+    ),
+    OperatorEditSurface(
+        id="storyboard_dialogue_cell",
+        status="partial",
+        marker="OPERATOR_EDIT_AUTHORITY_V1",
+        tab="storyboard",
+        client_module="storyboard-v2/src/components/StoryboardTab.tsx",
+        client_read="contenteditable uncontrolled",
+    ),
+    OperatorEditSurface(
+        id="phase_base_clip_picker",
+        status="debt",
+        marker="OPERATOR_EDIT_AUTHORITY_V1",
+        tab="phase_a|phase_b",
+        client_module="storyboard-v2/src/components/phase/PhaseProducer.tsx",
+        client_read="selectedBaseClip + refreshAll",
+    ),
 )
 
 
@@ -249,3 +388,7 @@ def shipped_concepts() -> tuple[AuthorityConcept, ...]:
 
 def concept_ids() -> tuple[str, ...]:
     return tuple(c.id for c in CONCEPTS)
+
+
+def operator_edit_surface_ids() -> tuple[str, ...]:
+    return tuple(s.id for s in OPERATOR_EDIT_SURFACES)

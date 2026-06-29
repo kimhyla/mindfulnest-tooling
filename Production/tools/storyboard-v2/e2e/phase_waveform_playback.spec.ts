@@ -329,7 +329,8 @@ test.describe('PHASE_WATERCOLOR_CUE_AUTHORITY_V1 — hydrate merge', () => {
     await page.waitForTimeout(300);
 
     await expect(cue).toBeVisible();
-    await expect(cue).toHaveAttribute('data-duration-ms', /[4-9]\d{3,}/);
+    const durationMs = Number(await cue.getAttribute('data-duration-ms'));
+    expect(durationMs).toBeGreaterThanOrEqual(4000);
   });
 });
 

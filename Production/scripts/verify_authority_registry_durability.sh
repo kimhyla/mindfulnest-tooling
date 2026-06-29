@@ -95,6 +95,8 @@ grep -q 'verify_authority_registry_durability' "$SCRIPTS/verify_storyboard_sessi
   || fail "session durability must call verify_authority_registry_durability (this script)"
 grep -q 'verify_phase_watercolor_cue_authority_durability' "$SCRIPTS/verify_storyboard_session_durability.sh" \
   || fail "session durability must call verify_phase_watercolor_cue_authority_durability"
+grep -q 'verify_operator_edit_surfaces_durability' "$SCRIPTS/verify_storyboard_session_durability.sh" \
+  || fail "session durability must call verify_operator_edit_surfaces_durability"
 
 GUARD="$SCRIPTS/check_storyboard_critical_features.sh"
 grep -q 'KLING_STITCH_READINESS' "$GUARD" \

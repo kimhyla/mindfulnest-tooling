@@ -1,8 +1,9 @@
 # Tier D — Operator Edit Surfaces (2026-06-29)
 
 **Marker:** `TIER_D_OPERATOR_EDIT_SURFACES_V1`  
-**Status:** In progress — Phase B watercolor cues **shipped**; remaining rows tracked below  
-**Parent:** Tier C closed server/export authority; Tier D closes **client hydration vs optimistic edit** authority.
+**Status:** In progress — Phase A/B P0+P1 surfaces **shipped**; P2/P3 tracked below  
+**Canonical spec:** `Production/docs/TECH_SPEC_OPERATOR_EDIT_AUTHORITY_V1.md` (`OPERATOR_EDIT_AUTHORITY_V1`)  
+**Parent:** Tier C closed server/export authority; Tier D closes **client hydration vs optimistic edit** authority across **all tabs, all beats, all events**.
 
 ---
 
@@ -22,8 +23,8 @@ The Phase B watercolor vanish bug (Event_3, 2026-06-28) proved persistence could
 |----|---------|-------------------|--------------|--------|-------------------|
 | **phase_watercolor_cue_geometry** | Phase A/B waveform watercolor cues | `phase_*_watercolor_cues_json` | `usePhaseWatercolorCues` + `mergeWatercolorCuesOnHydrate` | **shipped** | Cue markers vanish on focus/visibility refresh |
 | **stitch_sfx_cue_geometry** | Stitcher slot waveform SFX | `stitch_save_job` slot `sfx_cues` | `jobSlotsSnapshotRef` + `mergeStitchJobSlotsClientPatch` | shipped (Tier C) | Dragged SFX revert after save refresh |
-| **phase_script_draft** | Phase A/B script textarea | `phase_*_script` | `scriptDraft` + save-before-generate guard | partial | refreshAll resets draft mid-edit (comment only) |
-| **phase_stem_cut_geometry** | Phase A/B stem cut handles | `phase_*_voice_stem_cut_*_s` | optimistic `stateSlice` + dual patch | partial | cut rectangle revert on refresh race |
+| **phase_script_draft** | Phase A/B script textarea | `phase_*_script` | `useProtectedPromptField` in PhaseProducer | **shipped** | refreshAll must not clobber draft |
+| **phase_stem_cut_geometry** | Phase A/B stem cut handles | `phase_*_voice_stem_cut_*_s` | `usePhaseStemCut` + mergeOperatorFieldOnHydrate | **shipped** | cut rectangle revert on refresh race |
 | **bg_beat_prompt_field** | BG beat prompt textarea | `_derived.display_prompt` + stored fields | `useProtectedPromptField` | shipped | cursor snap-back on poll |
 | **storyboard_dialogue_cell** | Storyboard beat dialogue | `beat_update_text` | contenteditable + pathappPatch | partial | rollback spec exists; no focus-refresh gate |
 | **stitch_ambient_bed_selection** | Stitcher ambient per slot | slot `ambient_bed` in job | `StitcherTab` local + save | partial | refresh may revert unsaved ambient pick |
@@ -66,8 +67,9 @@ The Phase B watercolor vanish bug (Event_3, 2026-06-28) proved persistence could
 ## Gates (Tier D)
 
 ```bash
+bash Production/scripts/verify_operator_edit_surfaces_durability.sh  # full surface matrix
 bash Production/scripts/verify_phase_watercolor_cue_authority_durability.sh
-bash Production/scripts/verify_storyboard_session_durability.sh  # includes Tier D when wired
+bash Production/scripts/verify_storyboard_session_durability.sh  # includes both when wired
 ```
 
 Playwright: `phase_waveform_playback.spec.ts` → `CUE-HYDRATE-1`
