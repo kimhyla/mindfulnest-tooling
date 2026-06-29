@@ -27,6 +27,19 @@ grep -q 'previewUrlMatchesPersistedMux' "$ROOT/Production/tools/storyboard-v2/sr
   || fail "resolveSlotPlaybackPreviewUrl must reject stale mux hash URLs"
 grep -q 'force_ambient_mix_rebuild' "$EDITOR" \
   || fail "mux preview export must force ambient mix rebuild"
+grep -q 'STITCH_AMBIENT_FORCE_REBUILD_ON_EXPORT_V1' "$EDITOR" \
+  || fail "export-only ambient force rebuild marker missing"
+preview_block="$(python3 - "$EDITOR" <<'PY'
+import sys
+from pathlib import Path
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = src.index("def handle_stitch_preview")
+end = src.index("\ndef ", start + 1)
+print(src[start:end])
+PY
+)"
+echo "$preview_block" | grep -q 'force_ambient_mix_rebuild' \
+  && fail "handle_stitch_preview must not force ambient rebuild (STITCH_SLOT_SESSION_CACHE_V1)"
 grep -q 'build_ambient_bed_filter_lane' "$EDITOR" || fail "missing build_ambient_bed_filter_lane in stitch_editor"
 grep -q 'build_ambient_bed_filter_lane' "$ROOT/Production/tools/production_server.py" \
   || fail "missing build_ambient_bed_filter_lane in production_server"

@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 TOOLS="${ROOT}/Production/tools"
 cd "${TOOLS}"
-PYTHONPATH="${ROOT}/Production:${ROOT}" python3 -m pytest tests/test_stitch_slot_artifact_freshness.py -q
+PYTHONPATH="${ROOT}/Production/tools:${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}" python3 -m pytest tests/test_stitch_slot_artifact_freshness.py tests/test_stitch_slot_session_cache.py -q
 grep -q 'purgeStitchSlotPlaybackCache' "${TOOLS}/storyboard-v2/src/utils/stitchJobMediaHydrate.ts" \
   || { echo "FATAL: hydrate must purge stale playback cache" >&2; exit 1; }
 echo "=== stitch slot artifact freshness OK ==="
