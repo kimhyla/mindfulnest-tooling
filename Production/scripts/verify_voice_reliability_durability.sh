@@ -42,7 +42,7 @@ from tools import kling_character_registry as reg
 from kling_voice_sample_lock import validate_voice_onboarding_before_spend
 
 reg.set_prod_root(".")
-skip = {"Bramble"}
+skip = set()
 for name, cfg in (reg.load_character_subjects().get("characters") or {}).items():
     if cfg.get("status") != "active" or not cfg.get("kling_voice_id"):
         continue
@@ -51,7 +51,7 @@ for name, cfg in (reg.load_character_subjects().get("characters") or {}).items()
     errs = validate_voice_onboarding_before_spend(name, cfg)
     if errs:
         raise SystemExit(f"{name} onboarding: " + "; ".join(errs))
-print("active roster onboarding OK (Bramble waived)")
+print("active roster onboarding OK")
 PY
 
 echo "=== voice reliability OK ==="

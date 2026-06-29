@@ -7111,7 +7111,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 not body.get("clear")
                 and not use_cut
                 and bg.beat_is_still_insert(beat)
-                and bg.still_insert_sidecar_trim_pending(beat)
+                and bg.still_insert_trim_pending(beat)
             ):
                 try:
                     bake = bg.bake_still_insert_trim_into_clip(beat)

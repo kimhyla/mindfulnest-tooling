@@ -27,7 +27,7 @@ from kling_voice_sample_lock import (  # noqa: E402
 )
 from tools import kling_character_registry as reg  # noqa: E402
 
-SKIP_CHARS = frozenset({"Bramble"})
+SKIP_CHARS = frozenset()
 
 
 def sync_character(name: str, cfg: dict, *, dry_run: bool) -> list[str]:

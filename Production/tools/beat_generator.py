@@ -5965,9 +5965,7 @@ def render_still_insert_o3_clip(
         )
     clips_dir = kling_o3_clips_dir(event_dir)
     ts = int(time.time())
-    saved_trim_start = float(beat.get("kling_o3_trim_start") or 0.0)
-    saved_trim_back = beat.get("kling_o3_trim_back")
-    had_sidecar_trim = still_insert_sidecar_trim_pending(beat)
+    clear_still_insert_slot_trim_state(beat, slot_index=slot_index)
     silent_path = clips_dir / f"{beat['beat_id']}_still_insert_{ts}.mp4"
     if method == "static_hold":
         run_static_hold(beat, str(still), duration, out_path=silent_path)
@@ -6024,16 +6022,7 @@ def render_still_insert_o3_clip(
     beat.pop("kling_o3_still_stitch_approved_at", None)
     beat["kling_o3_selected_option_key"] = opt_key
     beat["kling_o3_selected_at"] = now
-    if had_sidecar_trim:
-        beat["kling_o3_trim_start"] = round(saved_trim_start, 2)
-        if saved_trim_back is not None:
-            beat["kling_o3_trim_back"] = round(float(saved_trim_back), 2)
-        baked = bake_still_insert_trim_into_clip(beat, source_path=final_path)
-        final_path = Path(baked["video_path"])
-        beat["kling_o3_video_path"] = str(final_path)
-        option["video_path"] = str(final_path)
-    else:
-        clear_kling_o3_beat_trim(beat)
+    clear_kling_o3_beat_trim(beat)
     for o in options:
         o["active"] = o.get("key") == opt_key or o.get("video_path") == str(final_path)
     return {
@@ -6043,7 +6032,7 @@ def render_still_insert_o3_clip(
         "duration_s": duration,
         "tts_mixed": tts_mixed,
         "still_path": str(still),
-        "trim_baked": had_sidecar_trim,
+        "trim_baked": False,
     }
 
 
@@ -7055,7 +7044,12 @@ def set_o3_option_trim(
     vp = str(video_path or opt.get("video_path") or "").strip()
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before trimming")
-    raw_dur = _ffprobe_duration(Path(vp))
+    duration_path = Path(vp)
+    if beat_is_still_insert(beat):
+        untrimmed = _guess_o3_untrimmed_video_path(beat, opt)
+        if untrimmed and os.path.isfile(untrimmed):
+            duration_path = Path(untrimmed)
+    raw_dur = _ffprobe_duration(duration_path)
     if raw_dur <= 0:
         raise ValueError("Could not read clip duration")
 
@@ -7548,13 +7542,62 @@ def still_insert_sidecar_trim_pending(beat: dict) -> bool:
     return False
 
 
+def still_insert_trim_pending(beat: dict) -> bool:
+    """True when beat or active option has trim waiting to bake into still-insert file."""
+    if still_insert_sidecar_trim_pending(beat):
+        return True
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    opt = find_o3_option_by_video_path(beat, vp) if vp else None
+    return option_has_o3_trim(opt)
+
+
+def clear_still_insert_slot_trim_state(beat: dict, *, slot_index: int = 0) -> None:
+    """Drop trim/cut before fresh still+TTS render — never auto re-trim after rebuild."""
+    clear_kling_o3_beat_trim(beat)
+    clear_o3_cut_fields(beat)
+    clear_o3_baked_fields(beat)
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict):
+            continue
+        if opt.get("source") in O3_OPTION_SOURCE_STILL and opt.get("slot_index") == slot_index:
+            clear_o3_option_trim_fields(opt)
+            clear_o3_cut_fields(opt)
+
+
+def resolve_still_insert_trim_bake_source(
+    beat: dict,
+    *,
+    source_path: Path | str | None = None,
+) -> tuple[Path, dict | None]:
+    """Untrimmed still-insert source + option row for trim bake (never double-trim)."""
+    active = Path(source_path or beat.get("kling_o3_video_path") or "")
+    opt = find_o3_option_by_video_path(beat, str(active)) if str(active) else None
+    if opt is None and active.is_file():
+        opt = find_o3_option_by_video_path(beat, str(active.resolve()))
+    untrimmed = _guess_o3_untrimmed_video_path(beat, opt) if isinstance(opt, dict) else None
+    if untrimmed and Path(untrimmed).is_file():
+        src = Path(untrimmed)
+    elif active.is_file() and "_trimmed" not in active.stem.lower():
+        src = active.resolve()
+    else:
+        src = active
+    if isinstance(opt, dict) and option_has_o3_trim(opt):
+        mirror_beat_trim_from_option(beat, opt)
+    elif still_insert_sidecar_trim_pending(beat):
+        pass
+    else:
+        clear_kling_o3_beat_trim(beat)
+    return src, opt
+
+
 def bake_still_insert_trim_into_clip(
     beat: dict,
     *,
     source_path: Path | str | None = None,
 ) -> dict:
     """Materialize trim window into the active still-insert mp4; clear trim metadata."""
-    src = Path(source_path or beat.get("kling_o3_video_path") or "")
+    prior_active = str(source_path or beat.get("kling_o3_video_path") or "").strip()
+    src, opt = resolve_still_insert_trim_bake_source(beat, source_path=source_path)
     if not src.is_file():
         raise ValueError(f"missing still clip: {src}")
     raw_dur = _ffprobe_duration(src)
@@ -7572,11 +7615,16 @@ def bake_still_insert_trim_into_clip(
     for o in beat.get("kling_o3_options") or []:
         if not isinstance(o, dict):
             continue
-        if (o.get("video_path") or "") in (old_path, str(src)):
+        op = str(o.get("video_path") or "").strip()
+        if op in (old_path, prior_active) or o is opt:
             if not str(o.get("o3_untrimmed_video_path") or "").strip():
                 o["o3_untrimmed_video_path"] = old_path
             o["video_path"] = new_path
+            clear_o3_option_trim_fields(o)
+            clear_o3_cut_fields(o)
     clear_kling_o3_beat_trim(beat)
+    clear_o3_cut_fields(beat)
+    clear_o3_baked_fields(beat)
     return {"baked": True, "video_path": new_path, "source_path": old_path}
 
 

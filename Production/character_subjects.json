@@ -120,7 +120,7 @@
         "proven_from_beat_id": "bg_arc1_event1_pre_beat_10",
         "lock_element_id": true,
         "locked_at": "2026-06-15T07:00:00.000000+00:00",
-        "note": "Event 1 Beat 10 canonical Arlo O3 stack \u2014 prevents Chipper interim bind drift on Event 2 beats"
+        "note": "Event 1 Beat 10 canonical Arlo O3 stack — prevents Chipper interim bind drift on Event 2 beats"
       },
       "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
     },
@@ -134,7 +134,7 @@
         "Benson/poses/benson_pose_happy.png",
         "Benson/poses/benson_pose_crouching_fear.png"
       ],
-      "audition_line": "It's going to be all right, little one. [pause] You're safe here with us now. [pause] Take a deep breath \u2014 we'll figure this out together.",
+      "audition_line": "It's going to be all right, little one. [pause] You're safe here with us now. [pause] Take a deep breath — we'll figure this out together.",
       "audition_speed": 0.95,
       "kling_voice_id": null,
       "kling_voice_label": null,
@@ -154,7 +154,7 @@
         "Ember/poses/ember_newstyle_pose_3.png",
         "Ember/poses/0434a8bd-daf5-4eea-9ea8-dccb1842ee18.png"
       ],
-      "audition_line": "Come here \u2014 you don't have to do this alone.",
+      "audition_line": "Come here — you don't have to do this alone.",
       "audition_speed": 1.0,
       "kling_voice_id": "899693413623930976",
       "kling_voice_label": "ElevenLabs Katie (create-voice)",
@@ -164,21 +164,21 @@
       "elevenlabs_voice_name": "Katie",
       "elevenlabs_voice_sample_path": "kling_voice_samples/ember.mp3",
       "element_sample_lines": [
-        "[warm, gentle] Come here \u2014 you don't have to do this alone.",
+        "[warm, gentle] Come here — you don't have to do this alone.",
         "[curious, friendly] Hello there.",
-        "[wonder-struck, breathless] I'm Ember \u2014 I'm from Foxhollow, down in the valley. [pause] What are you guys doing?"
+        "[wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?"
       ],
-      "element_sample_text": "[warm, gentle] Come here \u2014 you don't have to do this alone. ... [curious, friendly] Hello there. ... [wonder-struck, breathless] I'm Ember \u2014 I'm from Foxhollow, down in the valley. [pause] What are you guys doing?",
+      "element_sample_text": "[warm, gentle] Come here — you don't have to do this alone. ... [curious, friendly] Hello there. ... [wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?",
       "voice_sample_lock": {
         "schema_version": 1,
         "session_id": "ember_katie_canonical_v2_20260627",
-        "audition_line": "Come here \u2014 you don't have to do this alone.",
+        "audition_line": "Come here — you don't have to do this alone.",
         "element_sample_lines": [
-          "[warm, gentle] Come here \u2014 you don't have to do this alone.",
+          "[warm, gentle] Come here — you don't have to do this alone.",
           "[curious, friendly] Hello there.",
-          "[wonder-struck, breathless] I'm Ember \u2014 I'm from Foxhollow, down in the valley. [pause] What are you guys doing?"
+          "[wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?"
         ],
-        "element_sample_text": "[warm, gentle] Come here \u2014 you don't have to do this alone. ... [curious, friendly] Hello there. ... [wonder-struck, breathless] I'm Ember \u2014 I'm from Foxhollow, down in the valley. [pause] What are you guys doing?",
+        "element_sample_text": "[warm, gentle] Come here — you don't have to do this alone. ... [curious, friendly] Hello there. ... [wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?",
         "locked_speed": 1.0,
         "locked_at": "2026-06-29T16:53:02.860683+00:00",
         "sample_text_fingerprint": "1416f6f60128574c"
@@ -222,7 +222,7 @@
       "elevenlabs_voice_name": "Bork2"
     },
     "Bramble": {
-      "element_id": "313556315685320",
+      "element_id": "314729057848320",
       "status": "active",
       "element_name": "Bramble",
       "description": "Pixar cartoon bear, mossy brown fur, plaid shirt, suspenders, brimmed hat, gentle giant",
@@ -231,15 +231,45 @@
         "Bramble/poses/bramble_newstyle_pose_2.png",
         "Bramble/poses/bramble_newstyle_pose_3.png"
       ],
-      "audition_line": "Steady now \u2014 I've got you.",
+      "audition_line": "Steady now — I've got you.",
       "audition_speed": 0.9,
-      "kling_voice_id": "895720047158239315",
+      "kling_voice_id": "900638895540019224",
       "kling_voice_label": "ElevenLabs Northern Terry (create-voice)",
-      "created_at": "2026-06-16T04:40:38.690534+00:00",
-      "wavespeed_prediction_id": "01df8b604533426fb773401360a211d3",
+      "created_at": "2026-06-29T18:26:18.597876+00:00",
+      "wavespeed_prediction_id": "6af84a798f2f4a7a90ae9ca00d6b97a7",
       "elevenlabs_voice_id": "wo6udizrrtpIxWGp2qJk",
       "elevenlabs_voice_name": "Northern Terry",
-      "elevenlabs_voice_sample_path": "kling_voice_samples/bramble.mp3"
+      "elevenlabs_voice_sample_path": "kling_voice_samples/bramble.mp3",
+      "element_sample_lines": [
+        "[steady, reassuring] Steady now — I've got you.",
+        "[warm, calm] Easy does it — we'll figure this out together.",
+        "[gentle, grounded] You're safe here with us now."
+      ],
+      "element_sample_text": "[steady, reassuring] Steady now — I've got you. ... [warm, calm] Easy does it — we'll figure this out together. ... [gentle, grounded] You're safe here with us now.",
+      "voice_sample_lock": {
+        "schema_version": 1,
+        "session_id": "tag_sync_20260629",
+        "audition_line": "Steady now — I've got you.",
+        "element_sample_lines": [
+          "[steady, reassuring] Steady now — I've got you.",
+          "[warm, calm] Easy does it — we'll figure this out together.",
+          "[gentle, grounded] You're safe here with us now."
+        ],
+        "element_sample_text": "[steady, reassuring] Steady now — I've got you. ... [warm, calm] Easy does it — we'll figure this out together. ... [gentle, grounded] You're safe here with us now.",
+        "locked_speed": 0.9,
+        "locked_at": "2026-06-29T18:24:03.839300+00:00",
+        "sample_text_fingerprint": "8d45c831a725aa1c"
+      },
+      "voice_bind_history": [
+        {
+          "element_id": "313556315685320",
+          "kling_voice_id": "895720047158239315",
+          "archived_at": "2026-06-29T18:25:44.868186+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "ElevenLabs Northern Terry (create-voice)",
+          "wavespeed_prediction_id": "01df8b604533426fb773401360a211d3"
+        }
+      ]
     },
     "Luna": {
       "element_id": null,
@@ -314,9 +344,9 @@
       "element_sample_lines": [
         "[warm, gentle] Something wonderful is waiting for us.",
         "[soft, welcoming] The forest has been waiting for someone like you.",
-        "[reverent, warm] This wand chooses its keeper \u2014 and it chose you."
+        "[reverent, warm] This wand chooses its keeper — and it chose you."
       ],
-      "element_sample_text": "[warm, gentle] Something wonderful is waiting for us. ... [soft, welcoming] The forest has been waiting for someone like you. ... [reverent, warm] This wand chooses its keeper \u2014 and it chose you.",
+      "element_sample_text": "[warm, gentle] Something wonderful is waiting for us. ... [soft, welcoming] The forest has been waiting for someone like you. ... [reverent, warm] This wand chooses its keeper — and it chose you.",
       "kling_voice_id": "900615942877614081",
       "kling_voice_label": "ElevenLabs Brayden (create-voice)",
       "created_at": "2026-06-29T16:55:10.471940+00:00",
@@ -331,9 +361,9 @@
         "element_sample_lines": [
           "[warm, gentle] Something wonderful is waiting for us.",
           "[soft, welcoming] The forest has been waiting for someone like you.",
-          "[reverent, warm] This wand chooses its keeper \u2014 and it chose you."
+          "[reverent, warm] This wand chooses its keeper — and it chose you."
         ],
-        "element_sample_text": "[warm, gentle] Something wonderful is waiting for us. ... [soft, welcoming] The forest has been waiting for someone like you. ... [reverent, warm] This wand chooses its keeper \u2014 and it chose you.",
+        "element_sample_text": "[warm, gentle] Something wonderful is waiting for us. ... [soft, welcoming] The forest has been waiting for someone like you. ... [reverent, warm] This wand chooses its keeper — and it chose you.",
         "locked_speed": 1.0,
         "locked_at": "2026-06-29T16:53:02.862735+00:00",
         "sample_text_fingerprint": "7906f8d7602c14dd"
@@ -433,12 +463,12 @@
         "proven_from_beat_id": "bg_arc1_event1_pre_beat_10",
         "lock_element_id": true,
         "locked_at": "2026-06-15T07:00:00.000000+00:00",
-        "note": "Event 1 Beat 10 canonical Arlo O3 stack \u2014 prevents Chipper interim bind drift on Event 2 beats"
+        "note": "Event 1 Beat 10 canonical Arlo O3 stack — prevents Chipper interim bind drift on Event 2 beats"
       },
       "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
     },
     "Lorelai": {
-      "element_id": "314723690963308",
+      "element_id": "314729251556503",
       "status": "active",
       "element_name": "Loral",
       "description": "Cartoon 3D Pixar-style raccoon scholar, glasses, backpack, excitable academic personality",
@@ -446,7 +476,7 @@
       "refer_images": [
         "Lorelai/poses/lorelai_explaining.png",
         "Lorelai/poses/lorelai_shocked.png",
-        "Lorelai/poses/baseline_char_raccoon_explorer.png"
+        "Lorelai/poses/chatgpt_image_jun_15_2026_03_51_40_pm_2.png"
       ],
       "refer_pins": [
         "Lorelai/poses/lorelai_explaining.png",
@@ -462,20 +492,20 @@
       "audition_speed": 0.93,
       "element_sample_lines": [
         "[excited, scholarly] Fascinating! The patterns match exactly!",
-        "[delighted, breathless] Wait \u2014 look at this! The nest stones are glowing!",
+        "[delighted, breathless] Wait — look at this! The nest stones are glowing!",
         "[confident, warm] I think I know what the Great Wizard meant!"
       ],
-      "element_sample_text": "[excited, scholarly] Fascinating! The patterns match exactly! ... [delighted, breathless] Wait \u2014 look at this! The nest stones are glowing! ... [confident, warm] I think I know what the Great Wizard meant!",
+      "element_sample_text": "[excited, scholarly] Fascinating! The patterns match exactly! ... [delighted, breathless] Wait — look at this! The nest stones are glowing! ... [confident, warm] I think I know what the Great Wizard meant!",
       "voice_sample_lock": {
         "schema_version": 1,
         "session_id": "speed_compare_20260614",
         "audition_line": "Fascinating! The patterns match exactly!",
         "element_sample_lines": [
           "[excited, scholarly] Fascinating! The patterns match exactly!",
-          "[delighted, breathless] Wait \u2014 look at this! The nest stones are glowing!",
+          "[delighted, breathless] Wait — look at this! The nest stones are glowing!",
           "[confident, warm] I think I know what the Great Wizard meant!"
         ],
-        "element_sample_text": "[excited, scholarly] Fascinating! The patterns match exactly! ... [delighted, breathless] Wait \u2014 look at this! The nest stones are glowing! ... [confident, warm] I think I know what the Great Wizard meant!",
+        "element_sample_text": "[excited, scholarly] Fascinating! The patterns match exactly! ... [delighted, breathless] Wait — look at this! The nest stones are glowing! ... [confident, warm] I think I know what the Great Wizard meant!",
         "locked_speed": 0.93,
         "locked_at": "2026-06-29T16:53:02.866334+00:00",
         "sample_text_fingerprint": "c14cde3d3631c40f"
