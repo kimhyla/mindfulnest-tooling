@@ -13082,39 +13082,47 @@ body {{padding-top:44px!important;}}
                 pass
 
         if not out_path.is_file():
-            import fcntl  # noqa: PLC0415
-            from credentials_lib.stitch_cache_build import stitch_cache_build_lock  # noqa: PLC0415
+            from credentials_lib.stitch_cache_build import (  # noqa: PLC0415
+                run_stitch_cache_build,
+                stitch_cache_build_lock,
+            )
             from server_handlers.stitch_media_artifacts import stitch_collect_referenced_cache_stems  # noqa: PLC0415
 
-            with stitch_cache_build_lock(cache_dir):
-                if out_path.is_file() and preview_cache_is_valid(out_path, expected_s):
-                    pass
-                elif len(slot_finals) == 1:
-                    import shutil as _shutil  # noqa: PLC0415
+            def _preview_ready() -> bool:
+                return out_path.is_file() and preview_cache_is_valid(out_path, expected_s)
 
-                    tmp = out_path.parent / (
-                        f"{out_path.stem}.tmp.{os.getpid()}{out_path.suffix}"
+            def _build_preview() -> None:
+                with stitch_cache_build_lock(cache_dir):
+                    if _preview_ready():
+                        return
+                    if len(slot_finals) == 1:
+                        import shutil as _shutil  # noqa: PLC0415
+
+                        tmp = out_path.parent / (
+                            f"{out_path.stem}.tmp.{os.getpid()}{out_path.suffix}"
+                        )
+                        _shutil.copy(slot_finals[0], tmp)
+                        os.replace(tmp, out_path)
+                        from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
+
+                        ensure_mp4_playback_timestamps(out_path)
+                    else:
+                        concat_with_xfade_clips(slot_finals, out_path)
+
+                    pin_stems = stitch_collect_referenced_cache_stems(
+                        self.app.stitch_state.read_state() or {},
                     )
-                    _shutil.copy(slot_finals[0], tmp)
-                    os.replace(tmp, out_path)
-                    from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
+                    pin_stems.add(out_hash)
+                    lru_cleanup(
+                        cache_dir, keep=20, pattern=r"^stitch_preview_.*\.mp4$",
+                        pin_stems=pin_stems,
+                    )
+                    lru_cleanup(
+                        cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$",
+                        pin_stems=pin_stems,
+                    )
 
-                    ensure_mp4_playback_timestamps(out_path)
-                else:
-                    concat_with_xfade_clips(slot_finals, out_path)
-
-                pin_stems = stitch_collect_referenced_cache_stems(
-                    self.app.stitch_state.read_state() or {},
-                )
-                pin_stems.add(out_hash)
-                lru_cleanup(
-                    cache_dir, keep=20, pattern=r"^stitch_preview_.*\.mp4$",
-                    pin_stems=pin_stems,
-                )
-                lru_cleanup(
-                    cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$",
-                    pin_stems=pin_stems,
-                )
+            run_stitch_cache_build(cache_dir, ready=_preview_ready, build=_build_preview)
         else:
             from server_handlers.stitch_media_artifacts import stitch_collect_referenced_cache_stems  # noqa: PLC0415
 

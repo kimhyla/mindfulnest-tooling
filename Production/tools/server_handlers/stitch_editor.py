@@ -1496,19 +1496,20 @@ def _mix_stitch_waveform_audio(
         str(out_path.resolve()),
     ]
     from credentials_lib.stitch_cache_build import (  # noqa: PLC0415
-        StitchCacheBuildBusy,
         atomic_ffmpeg_output,
+        run_stitch_cache_build,
         stitch_cache_build_lock,
     )
 
-    try:
+    def _mix_ready() -> bool:
+        return out_path.is_file() and stitch_audio_cache_is_valid(
+            out_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+        )
+
+    def _build_mix() -> None:
         with stitch_cache_build_lock(cache_dir):
-            if out_path.is_file() and stitch_audio_cache_is_valid(
-                out_path, expected_s, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
-            ):
-                if valid_cue_labels:
-                    slot["_sfx_mixed"] = True
-                return out_path
+            if _mix_ready():
+                return
             atomic_ffmpeg_output(
                 mix_cmd,
                 out_path,
@@ -1517,7 +1518,10 @@ def _mix_stitch_waveform_audio(
                     p, exp, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
                 ),
             )
-    except StitchCacheBuildBusy as exc:
+
+    try:
+        run_stitch_cache_build(cache_dir, ready=_mix_ready, build=_build_mix)
+    except RuntimeError as exc:
         raise RuntimeError(str(exc)) from exc
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
