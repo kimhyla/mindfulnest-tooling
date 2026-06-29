@@ -42,6 +42,7 @@ def test_merge_event_scoped_mirror_preserves_sibling_events(
         ),
     )
     monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(tmp_path / "beatgen_event3.db"))
+    monkeypatch.setattr(bg, "_PROD_DIR", str(tmp_path))
     monkeypatch.setattr(bg, "_BG_EVENT_DIR", str(tmp_path / "Event_3"))
     incoming = {
         "arcs": {
@@ -83,6 +84,7 @@ def test_merge_event_scoped_mirror_never_shrinks_segment_beat_count(
         ),
     )
     monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(tmp_path / "beatgen_event3.db"))
+    monkeypatch.setattr(bg, "_PROD_DIR", str(tmp_path))
     monkeypatch.setattr(bg, "_BG_EVENT_DIR", str(tmp_path / "Event_3"))
     incoming = {
         "arcs": {
