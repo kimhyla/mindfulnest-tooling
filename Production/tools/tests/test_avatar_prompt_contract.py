@@ -82,4 +82,5 @@ def test_phase_b_static_prompt_shares_avatar_pro_prohibit():
     assert AVATAR_PRO_PROHIBIT in STATIC_BG_PROMPT
     assert PHASE_B_BACKGROUND_IDLE_LOCK in STATIC_BG_PROMPT
     assert "no Chinese characters" in STATIC_BG_PROMPT
-    assert "BACKGROUND IDLE LOCK" in STATIC_BG_PROMPT
+    assert "TRIPOD LOCK" in STATIC_BG_PROMPT
+    assert "Do NOT animate steam" in STATIC_BG_PROMPT

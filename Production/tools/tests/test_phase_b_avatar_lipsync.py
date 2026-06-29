@@ -43,24 +43,22 @@ def test_phase_b_lipsync_method_constant():
 
 
 def test_static_bg_prompt_includes_avatar_pro_prohibit():
+    import hashlib
+
+    from phase_b_avatar_lipsync import PHASE_B_STATIC_BG_PROMPT_SHA256
+
+    assert hashlib.sha256(STATIC_BG_PROMPT.encode()).hexdigest() == PHASE_B_STATIC_BG_PROMPT_SHA256
     assert AVATAR_PRO_PROHIBIT in STATIC_BG_PROMPT
     assert "no Chinese characters" in STATIC_BG_PROMPT
     assert "no subtitles" in STATIC_BG_PROMPT
     assert "TRIPOD LOCK" in STATIC_BG_PROMPT
-    assert "BACKGROUND IDLE LOCK" in STATIC_BG_PROMPT
     assert "wooden mug" in STATIC_BG_PROMPT
-    assert "Nothing pops up" in STATIC_BG_PROMPT
-    assert "lively storyteller energy" in STATIC_BG_PROMPT
-    assert "Generous upper-body" in STATIC_BG_PROMPT
-    assert "subtle breathing" not in STATIC_BG_PROMPT
-    assert "small hand gestures" not in STATIC_BG_PROMPT
-    # Fire-in-mug regression — hearth fire vocabulary must not animate or bleed into mug.
-    assert "flames steady" not in STATIC_BG_PROMPT
-    assert "firelit" not in STATIC_BG_PROMPT.lower()
-    assert "Do NOT animate the fireplace" in STATIC_BG_PROMPT
-    assert "NEVER flame" in STATIC_BG_PROMPT
-    assert "PROHIBIT FIRE BLEED" in STATIC_BG_PROMPT
-    assert "no flames in the mug" in STATIC_BG_PROMPT
+    assert "subtle breathing" in STATIC_BG_PROMPT
+    assert "small hand gestures" in STATIC_BG_PROMPT
+    assert "Do NOT animate steam" in STATIC_BG_PROMPT
+    assert "lively storyteller energy" not in STATIC_BG_PROMPT
+    assert "Generous upper-body" not in STATIC_BG_PROMPT
+    assert "firelit" in STATIC_BG_PROMPT.lower()
 
 
 def test_full_stem_runner_supports_resume_task_id_flag():
