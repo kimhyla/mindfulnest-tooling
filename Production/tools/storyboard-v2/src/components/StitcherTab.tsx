@@ -93,6 +93,7 @@ import {
 import {
   hydrateAllSlotMediaFromJob,
   isStitchMuxPlaybackUrl,
+  previewUrlMatchesPersistedMux,
   resolveDrySlotSourceVideoUrl,
   resolvePersistedPlaybackFromArtifacts,
   resolveSlotPlaybackPreviewUrl,
@@ -1448,7 +1449,7 @@ export function StitcherTab() {
     }
     if (
       persistedArtifactUrl
-      && (slotData.mix_sig ?? '').trim() === stitchSlotLiveGeometrySig(slotData)
+      && previewUrlMatchesPersistedMux(persistedArtifactUrl, slotData)
     ) {
       bindSlotPreviewUrl(slot, persistedArtifactUrl, 'hydrate');
       commitMuxSession(stitchSessionKey, slot, {

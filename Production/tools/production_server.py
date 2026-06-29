@@ -12887,7 +12887,10 @@ body {{padding-top:44px!important;}}
             slot_durations.append(slot_dur_ms)
 
             # Step 3+4: Mix ambient + SFX (slot-relative offsets)
-            final = self._stitch_mix_slot_audio(norm, slot, cache_dir)
+            force_ambient_rebuild = bool(body.get("force_ambient_mix_rebuild"))
+            final = self._stitch_mix_slot_audio(
+                norm, slot, cache_dir, force_rebuild=force_ambient_rebuild,
+            )
             slot_finals.append(final)
 
         # Handle transitions per spec §3.3 + Q1 LOCKED 2026-05-04 +

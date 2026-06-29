@@ -2728,6 +2728,8 @@ def build_stitch_slot_mux_preview_file(h, slot: dict) -> tuple[str, int]:
         "slots": [dict(slot)],
         "slot_preview": True,
         "transitions": [],
+        # STITCH_AMBIENT_LOOP_XFADE_V1 — export/preview bakes must not reuse stale se_slot_*.
+        "force_ambient_mix_rebuild": True,
     }
     out_path, slot_durations, _ = h._stitch_build_pipeline(body)
     hash_id = out_path.stem.replace("stitch_preview_", "")
@@ -3828,6 +3830,9 @@ def handle_stitch_preview(h, body: dict)-> None:
     try:
         try:
             hydrated = hydrate_stitch_pipeline_body(h, body)
+            # STITCH_AMBIENT_LOOP_XFADE_V1 — slot preview / Review must not reuse stale se_slot_*.
+            if body.get("slot_preview") or hydrated.get("slot_preview"):
+                hydrated["force_ambient_mix_rebuild"] = True
             tag_stitch_pipeline_scope(hydrated)
             out_path, slot_durations, slot_start_offsets_ms = h._stitch_build_pipeline(hydrated)
         except (ValueError, PermissionError) as exc:

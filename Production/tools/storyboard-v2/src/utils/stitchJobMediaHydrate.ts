@@ -304,6 +304,16 @@ export function previewUrlMatchesPersistedMux(
   return previewUrl.includes(hash);
 }
 
+/** True when playback URL matches the server-persisted ambient mix hash. */
+export function previewUrlMatchesPersistedAmbientMix(
+  previewUrl: string | undefined,
+  slot: StitchSlotMediaArtifactFields | null | undefined,
+): boolean {
+  const hash = (slot?.ambient_mix_hash ?? '').trim();
+  if (!hash || !previewUrl) return false;
+  return previewUrl.includes(hash);
+}
+
 /**
  * Resolve composer playback URL without triggering remux — state, session cache,
  * then persisted server artifacts, then dry slot source (speech-only and ambient-only
@@ -326,6 +336,24 @@ export function resolveSlotPlaybackPreviewUrl(
     if (requiresMux && !isStitchMuxPlaybackUrl(url)) {
       return undefined;
     }
+    if (requiresMux && !previewUrlMatchesPersistedMux(url, slot)) {
+      return undefined;
+    }
+    if (
+      requiresAmbient
+      && isStitchMuxPlaybackUrl(url)
+      && !previewUrlMatchesPersistedMux(url, slot)
+      && (slot?.mux_preview_hash ?? '').trim()
+    ) {
+      return undefined;
+    }
+    if (
+      requiresAmbient
+      && url.includes('/api/stitch_editor/slot_mix_file/')
+      && !previewUrlMatchesPersistedAmbientMix(url, slot)
+    ) {
+      return undefined;
+    }
     if (requiresAmbient && !isAllowedAmbientSlotPlaybackUrl(url)) {
       return undefined;
     }
@@ -336,6 +364,24 @@ export function resolveSlotPlaybackPreviewUrl(
   if (session?.muxPreviewUrl) {
     const url = session.muxPreviewUrl;
     if (requiresMux && !isStitchMuxPlaybackUrl(url)) {
+      return undefined;
+    }
+    if (requiresMux && !previewUrlMatchesPersistedMux(url, slot)) {
+      return undefined;
+    }
+    if (
+      requiresAmbient
+      && isStitchMuxPlaybackUrl(url)
+      && !previewUrlMatchesPersistedMux(url, slot)
+      && (slot?.mux_preview_hash ?? '').trim()
+    ) {
+      return undefined;
+    }
+    if (
+      requiresAmbient
+      && url.includes('/api/stitch_editor/slot_mix_file/')
+      && !previewUrlMatchesPersistedAmbientMix(url, slot)
+    ) {
       return undefined;
     }
     if (requiresAmbient && !isAllowedAmbientSlotPlaybackUrl(url)) {
