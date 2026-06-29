@@ -1,5 +1,4 @@
-/**
- * STITCH_SLOT_SESSION_CACHE_V1 — per-event in-memory cache for Stitcher slot composer.
+/** STITCH_SLOT_SESSION_CACHE_V1 — per-event in-memory cache for Stitcher slot composer.
  *
  * Once intro / phase_a / phase_b / resolution are loaded, switching the multiphase
  * track must not remux or re-peak unless slot content changes (video_path or mix sig).
@@ -14,6 +13,14 @@ import {
   stitchSlotSpeechPeaksSig,
   type StitchSlotMuxSigInput,
 } from './stitchSlotMuxAudioSig';
+import { stitchSlotMuxPreviewLineageMatches, stitchSlotAmbientMixLineageMatches } from './stitchMuxVideoLineage';
+
+type StitchSlotArtifactFields = StitchSlotMuxSigInput & {
+  mux_preview_hash?: string;
+  mux_video_path?: string;
+  ambient_mix_hash?: string;
+  ambient_mix_video_path?: string;
+};
 /** localStorage mux URL survives hard refresh; in-memory session does not. */
 export const STITCH_PREVIEW_LS_HYDRATE_V1 = 'STITCH_PREVIEW_LS_HYDRATE_V1';
 export const STITCH_SFX_PLAYBACK_TRUTH_V1 = 'STITCH_SFX_PLAYBACK_TRUTH_V1';
@@ -104,14 +111,33 @@ export function stitchSlotSessionExpectedSig(
   return stitchSlotMuxAudioSig(slotData);
 }
 
+/** Server must expose a live artifact before session/localStorage preview URLs are trusted. */
+export function stitchSlotServerArtifactReady(
+  slotData: StitchSlotArtifactFields | null | undefined,
+): boolean {
+  if (!slotData?.video_path) return false;
+  if (stitchSlotRequiresMuxedPreview(slotData)) {
+    const hash = (slotData.mux_preview_hash ?? '').trim();
+    return Boolean(hash && stitchSlotMuxPreviewLineageMatches(slotData));
+  }
+  if (stitchSlotRequiresAmbientMix(slotData)) {
+    const hash = (slotData.ambient_mix_hash ?? '').trim();
+    return Boolean(hash && stitchSlotAmbientMixLineageMatches(slotData));
+  }
+  return true;
+}
+
 export function isMuxSessionFresh(
   sessionKey: string,
   slot: StitchSessionSlotKey,
-  slotData: StitchSlotMuxSigInput & { video_path?: string } | null | undefined,
+  slotData: StitchSlotArtifactFields | null | undefined,
 ): boolean {
   const record = getStitchSlotSession(sessionKey, slot);
   const videoPath = (slotData?.video_path ?? '').trim();
   const audioSig = stitchSlotSessionExpectedSig(slotData);
+  if (!stitchSlotServerArtifactReady(slotData)) {
+    return false;
+  }
   return Boolean(
     record?.muxPreviewUrl
     && record.videoPath === videoPath
@@ -210,6 +236,15 @@ export function clearAllCachedStitcherPreviewsLs(sessionKey: string): void {
   for (const slot of ['intro', 'phase_a', 'phase_b', 'resolution', 'standalone'] as const) {
     clearCachedStitcherPreviewLs(sessionKey, slot);
   }
+}
+
+/** Drop in-memory mux session + localStorage when server artifacts were cleared. */
+export function purgeStitchSlotPlaybackCache(
+  sessionKey: string,
+  slot: StitchSessionSlotKey,
+): void {
+  invalidateStitchSlotSessionSlot(sessionKey, slot);
+  clearCachedStitcherPreviewLs(sessionKey, slot);
 }
 
 /** Sync hydrate from localStorage into session + preview URL map (hard-refresh durable). */

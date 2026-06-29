@@ -16,6 +16,8 @@ def test_session_cache_module_exists() -> None:
     assert "STITCH_PREVIEW_LS_HYDRATE_V1" in src
     assert "hydrateMuxFromLocalStorage" in src
     assert "isMuxSessionFresh" in src
+    assert "stitchSlotServerArtifactReady" in src
+    assert "purgeStitchSlotPlaybackCache" in src
     assert "isWaveformSessionFresh" in src
     assert "reconcileStitchSlotSession" in src
 

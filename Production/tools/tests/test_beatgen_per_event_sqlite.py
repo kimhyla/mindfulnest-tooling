@@ -244,6 +244,38 @@ def test_rehydrate_segment_from_o3_artifacts(tmp_path: Path) -> None:
     assert beat["reference_image"]["abs_path"] == str(tmp_path / "ember.png")
 
 
+def test_delete_beat_locked_sqlite(tmp_path: Path, monkeypatch) -> None:
+    from lib.beatgen_store import BeatgenStore
+
+    db = tmp_path / "beatgen_event4.db"
+    monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(db))
+    monkeypatch.setenv("MN_SIDECAR_SQLITE_AUTHORITY", "1")
+    monkeypatch.setenv("MN_BEATGEN_TEST_ALLOW_DIRECT_WRITE", "1")
+    BeatgenStore.reset_singleton_for_tests()
+    sidecar = {
+        "schema_version": 3,
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_4_pre": {
+                        "beats": [
+                            {"beat_id": "bg_arc1_event4_pre_beat_01", "speaker": "A"},
+                            {"beat_id": "bg_arc1_event4_pre_beat_02", "speaker": "B"},
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    BeatgenStore(db).import_from_dict(sidecar, replace=True)
+    assert bg.delete_beat_locked("bg_arc1_event4_pre_beat_01", caller="test") is True
+    store = BeatgenStore(db)
+    assert store.beat_count() == 1
+    remaining = store.assemble_sidecar_dict()["arcs"]["arc_1"]["segments"]["event_4_pre"]["beats"]
+    assert len(remaining) == 1
+    assert remaining[0]["beat_id"] == "bg_arc1_event4_pre_beat_02"
+
+
 def test_replace_full_blocks_any_net_beat_loss(tmp_path: Path, monkeypatch) -> None:
     from lib.beatgen_store import BeatgenStore
 

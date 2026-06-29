@@ -69,6 +69,7 @@ _PROJECT_DIR = os.path.normpath(os.path.join(_TOOLS_DIR, "..", ".."))
 _SKELETON_BASE = os.path.join(_PROJECT_DIR, "Arc Skeletons")
 
 BG_SIDECAR_PATH = os.path.join(_PROD_DIR, "beat_generator_state.json")
+BG_SIDECAR_MIRROR_PATH = BG_SIDECAR_PATH
 BG_STILLS_DIR = os.path.join(_PROD_DIR, "beat_generator_stills")
 # Milestone Beat Gen uses an isolated JSON sidecar — never the global SQLite beat store.
 _MILESTONE_SIDECAR_JSON_ONLY = False
@@ -301,7 +302,7 @@ def _run_bg_paths_cold_boot(event_dir) -> None:
         print(
             f"[beatgen_store] authority=sqlite db={store.db_path} "
             f"beats={store.beat_count()} integrity={store.integrity_check()} "
-            f"mirror={BG_SIDECAR_PATH}",
+            f"mirror={BG_SIDECAR_MIRROR_PATH}",
             flush=True,
         )
     else:
@@ -317,7 +318,7 @@ def _init_bg_paths_unlocked(
     cold_boot: bool = False,
 ) -> None:
     global _TOOLS_DIR, _PROD_DIR, _PROJECT_DIR, _SKELETON_BASE
-    global BG_SIDECAR_PATH, BG_STILLS_DIR
+    global BG_SIDECAR_PATH, BG_STILLS_DIR, BG_SIDECAR_MIRROR_PATH
     global _PROD_CHARS, _CREATURE_REFS, _CREATURE_REFS_BY_EMOTION
     global _CANON_BASE, _LOCAL_STILLS_DIR, _MILESTONE_SIDECAR_JSON_ONLY, _MILESTONE_SKELETON_REF
     global _MILESTONE_SCOPE_BIND, _BG_EVENT_DIR, _BG_ACTIVE_SCOPE_KEY
@@ -328,7 +329,7 @@ def _init_bg_paths_unlocked(
     _lib_parent = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     if _lib_parent not in _sys.path:
         _sys.path.insert(0, _lib_parent)
-    from Production.lib.paths import bg_paths as _bg_paths, milestone_bg_paths, character_pose_paths as _cpp
+    from Production.lib.paths import bg_paths as _bg_paths, milestone_bg_paths, character_pose_paths as _cpp, event_sidecar_mirror_path
 
     if milestone_dir is not None:
         lib = library_event_dir or event_dir
@@ -350,6 +351,11 @@ def _init_bg_paths_unlocked(
     _PROJECT_DIR = str(bp.project_root)
     _SKELETON_BASE = str(bp.skeleton_base)
     BG_SIDECAR_PATH = str(bp.sidecar_path)
+    if milestone_dir is not None:
+        BG_SIDECAR_MIRROR_PATH = BG_SIDECAR_PATH
+    else:
+        BG_SIDECAR_MIRROR_PATH = str(event_sidecar_mirror_path(event_dir))
+        os.makedirs(os.path.dirname(BG_SIDECAR_MIRROR_PATH), exist_ok=True)
     BG_STILLS_DIR = str(bp.stills_dir)
     _PROD_CHARS = str(bp.project_root)  # poses live at <project_root>/Production/<Char>/poses/
     _CANON_BASE = str(bp.canon_base)
@@ -838,7 +844,7 @@ def _schedule_sidecar_mirror_export() -> None:
     try:
         from lib.sidecar_mirror import schedule_mirror_export
 
-        mirror_path = os.path.abspath(BG_SIDECAR_PATH)
+        mirror_path = os.path.abspath(BG_SIDECAR_MIRROR_PATH)
         schedule_mirror_export(
             mirror_path,
             assemble=_beatgen_store().assemble_sidecar_dict,
@@ -852,10 +858,11 @@ def flush_sidecar_mirror_export() -> bool:
     try:
         from lib.sidecar_mirror import flush_mirror_export
 
+        mirror_path = os.path.abspath(BG_SIDECAR_MIRROR_PATH)
         return flush_mirror_export(
             assemble=_beatgen_store().assemble_sidecar_dict,
-            write_atomic=lambda d: _write_sidecar_json_mirror(d, os.path.abspath(BG_SIDECAR_PATH)),
-            mirror_path=os.path.abspath(BG_SIDECAR_PATH),
+            write_atomic=lambda d: _write_sidecar_json_mirror(d, mirror_path),
+            mirror_path=mirror_path,
         )
     except Exception:
         return False
@@ -899,6 +906,10 @@ def _union_segment_dict_for_mirror_export(existing_seg: dict, incoming_seg: dict
 
 def _merge_event_scoped_mirror(data: dict, path: str) -> dict:
     """Per-event SQLite DBs export only one event — merge into global JSON mirror."""
+    global_sidecar = os.path.join(_PROD_DIR, "beat_generator_state.json")
+    if os.path.abspath(path) != os.path.abspath(global_sidecar):
+        # PARALLEL_EVENT_ISOLATION_V1 — local per-event mirror; no Dropbox merge read.
+        return data
     if not _bootstrap_import_is_event_scoped() or not _BG_EVENT_DIR:
         return data
     if not os.path.isfile(path):
@@ -1212,6 +1223,64 @@ def mutate_sidecar_locked(
         mutator(sidecar)
         write_sidecar(sidecar)
         return sidecar
+
+
+def delete_beat_locked(
+    beat_id: str,
+    *,
+    scope=None,
+    caller: str = "delete_beat_locked",
+    migrate: bool = False,
+) -> bool:
+    """Atomically remove one beat — targeted SQLite DELETE, not replace_full.
+
+    JSON mirror path uses mutate_sidecar_locked (no replace_full guard).
+    """
+    from beatgen_scope import (  # noqa: PLC0415
+        assert_beat_id_matches_scope,
+        assert_db_path_matches_beat,
+        assert_direct_write_allowed,
+        event_id_from_beat_id,
+        log_beatgen_mutation,
+        scope_from_current_globals,
+    )
+
+    active_scope = scope if scope is not None else scope_from_current_globals(__import__(__name__))
+    if event_id_from_beat_id(str(beat_id)):
+        assert_beat_id_matches_scope(str(beat_id), active_scope)
+        assert_db_path_matches_beat(str(beat_id))
+    assert_direct_write_allowed(beat_id=str(beat_id), caller=caller)
+    log_beatgen_mutation(
+        operation="delete_beat_locked",
+        beat_id=str(beat_id),
+        scope=active_scope,
+        caller=caller,
+    )
+    if _sidecar_use_sqlite():
+        with _sidecar_lock:
+            ok = _beatgen_store().delete_beat(beat_id)
+        if ok:
+            _schedule_sidecar_mirror_export()
+        return ok
+
+    def _delete(sidecar: dict) -> None:
+        for arc in sidecar.get("arcs", {}).values():
+            for seg in arc.get("segments", {}).values():
+                seg["beats"] = [
+                    b for b in seg.get("beats", []) if b.get("beat_id") != beat_id
+                ]
+
+    with sidecar_file_lock():
+        sidecar = read_sidecar()
+        if migrate:
+            sidecar = _migrate_sidecar(sidecar)
+        _maybe_isolate_milestone_sidecar(sidecar)
+        before = _count_sidecar_beats(sidecar)
+        _delete(sidecar)
+        if _count_sidecar_beats(sidecar) >= before:
+            return False
+        write_sidecar(sidecar)
+    return True
 
 
 def update_beat_locked(

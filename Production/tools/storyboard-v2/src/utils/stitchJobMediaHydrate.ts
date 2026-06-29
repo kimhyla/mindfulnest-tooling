@@ -4,6 +4,7 @@ import {
   commitMuxSession,
   commitWaveformSession,
   getStitchSlotSession,
+  purgeStitchSlotPlaybackCache,
   type StitchSessionSlotKey,
 } from './stitchSlotSessionCache';
 import {
@@ -15,7 +16,8 @@ import {
 } from './stitchSlotMuxAudioSig';
 import { stitchSlotSpeechPeaksSig } from './stitchSlotMuxAudioSig';
 import { resolveServerMediaUrl, resolveStitchSlotSourceVideoUrl } from './stitchSlotVideo';
-import { stitchSlotMuxPreviewLineageMatches } from './stitchMuxVideoLineage';
+import { stitchSlotMuxPreviewLineageMatches, stitchSlotAmbientMixLineageMatches } from './stitchMuxVideoLineage';
+export { stitchSlotAmbientMixLineageMatches } from './stitchMuxVideoLineage';
 
 export const STITCH_SLOT_MEDIA_ARTIFACTS_V1 = 'STITCH_SLOT_MEDIA_ARTIFACTS_V1';
 export const STITCH_MUX_REBUILD_QUEUE_V1 = 'STITCH_MUX_REBUILD_QUEUE_V1';
@@ -63,18 +65,6 @@ const SLOT_KEYS: StitchSessionSlotKey[] = [
   'resolution',
   'standalone',
 ];
-
-export function stitchSlotAmbientMixLineageMatches(
-  slot: StitchSlotMediaArtifactFields | null | undefined,
-): boolean {
-  if (!slot) return false;
-  const hash = (slot.ambient_mix_hash ?? '').trim();
-  if (!hash) return false;
-  const videoPath = (slot.video_path ?? '').trim();
-  const pinnedPath = (slot.ambient_mix_video_path ?? '').trim();
-  if (!videoPath || !pinnedPath || pinnedPath !== videoPath) return false;
-  return true;
-}
 
 export function resolvePersistedAmbientMixUrl(
   slot: StitchSlotMediaArtifactFields | null | undefined,
@@ -137,6 +127,7 @@ export function hydrateAllSlotMediaFromJob(
           audioSig: liveGeometrySig,
         });
       } else {
+        purgeStitchSlotPlaybackCache(sessionKey, slotKey);
         slotsNeedingMux.push(slotKey);
       }
     } else if (requiresAmbientMix) {
@@ -150,6 +141,7 @@ export function hydrateAllSlotMediaFromJob(
           audioSig: ambientSig,
         });
       } else {
+        purgeStitchSlotPlaybackCache(sessionKey, slotKey);
         slotsNeedingAmbientMix.push(slotKey);
       }
     }

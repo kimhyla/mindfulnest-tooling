@@ -135,6 +135,7 @@ import {
   invalidateStitchSlotPlaybackCaches,
   mergeHydratedPreviewUrlsAfterLineage,
   slotsWithVideoPathChanges,
+  stripPreviewUrlsForArtifactRebuild,
 } from '../utils/stitchSlotVideoLineage';
 import {
   singleFlightMuxPreview,
@@ -633,7 +634,11 @@ export function StitcherTab() {
       });
       jobSlotsSnapshotRef.current = mergedSlots;
       setPreviewUrls((prev) => mergeHydratedPreviewUrlsAfterLineage(
-        prev,
+        stripPreviewUrlsForArtifactRebuild(
+          prev,
+          hydrated.slotsNeedingMux,
+          hydrated.slotsNeedingAmbientMix,
+        ),
         hydrated.previewUrls,
         lineageChanged,
       ));

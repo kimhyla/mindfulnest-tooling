@@ -63,6 +63,24 @@ from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
 # In-process library list cache — disk is authority; fingerprint invalidates on upload/delete.
 _LIBRARY_LIST_CACHE: dict[str, tuple[str, dict]] = {}
 
+_CLOUD_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
+
+
+def _cloud_path_mtime(path: str, *, default: float = 0.0) -> float:
+    """Dropbox/FUSE-safe mtime — errno 11/35 retry (LIBRARY_CLOUD_IO_V1)."""
+    last: OSError | None = None
+    for attempt in range(5):
+        try:
+            return os.path.getmtime(path)
+        except OSError as exc:
+            last = exc
+            if exc.errno not in _CLOUD_IO_TRANSIENT_ERRNOS or attempt >= 4:
+                break
+            time.sleep(0.12 * (attempt + 1))
+    if last:
+        raise last
+    return default
+
 
 def _library_list_cache_key(library_event_dir: Path, app_event_id: str) -> str:
     return f"{library_event_dir.name}:{app_event_id}"
@@ -508,7 +526,7 @@ def handle_cr_library(h)-> None:
 
     if os.path.isdir(sources_dir):
         _src_names.sort(
-            key=lambda f: -os.path.getmtime(os.path.join(sources_dir, f)))
+            key=lambda f: -_cloud_path_mtime(os.path.join(sources_dir, f)))
         for fname in _src_names:
             fp = os.path.join(sources_dir, fname)
             item = _read_image_meta(fp, "source")

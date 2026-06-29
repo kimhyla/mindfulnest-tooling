@@ -39,7 +39,10 @@ for g in \
   verify_o3_generation_intent_transaction_durability \
   verify_storyboard_session_durability \
   verify_authority_registry_durability \
-  verify_speech_loudnorm_durability; do
+  verify_speech_loudnorm_durability \
+  verify_parallel_event_isolation_durability \
+  verify_stitch_slot_artifact_freshness \
+  verify_voice_reliability_durability; do
   bash "$SCRIPTS/${g}.sh"
 done
 

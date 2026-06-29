@@ -383,6 +383,58 @@ class BeatgenStore:
                 raise
         return True, sidecar_beat
 
+    def delete_beat(self, beat_id: str) -> bool:
+        """Remove one beat row and compact beat_index within its segment."""
+        expected_event = _event_id_from_beat_id(beat_id)
+        conn = self.connect()
+        with self._lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    """
+                    SELECT arc_key, segment_key, event_id
+                    FROM beats WHERE beat_id=?
+                    """,
+                    (beat_id,),
+                ).fetchone()
+                if not row:
+                    conn.execute("ROLLBACK")
+                    return False
+                if str(row["event_id"]) != expected_event:
+                    raise ValueError(
+                        f"beat_id {beat_id!r} event_id mismatch: row={row['event_id']!r} "
+                        f"expected={expected_event!r}"
+                    )
+                arc_key = str(row["arc_key"])
+                segment_key = str(row["segment_key"])
+                conn.execute("DELETE FROM beats WHERE beat_id=?", (beat_id,))
+                remaining = conn.execute(
+                    """
+                    SELECT beat_id FROM beats
+                    WHERE arc_key=? AND segment_key=?
+                    ORDER BY beat_index
+                    """,
+                    (arc_key, segment_key),
+                ).fetchall()
+                now = _utc_now_iso()
+                for idx, rem in enumerate(remaining):
+                    conn.execute(
+                        """
+                        UPDATE beats SET beat_index=?, updated_at=?
+                        WHERE beat_id=?
+                        """,
+                        (idx, now, str(rem["beat_id"])),
+                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO sidecar_meta(key, value) VALUES ('_last_updated', ?)",
+                    (now,),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return True
+
     def replace_full(self, data: dict) -> None:
         self.import_from_dict(data, replace=True)
 

@@ -1904,36 +1904,60 @@ def _run_o3_admin_reconcile(h, scope_event_id: str | None = None, *, force: bool
     if not force and runtime_probe.get(reconcile_key):
         return {"ok": True, "skipped": True, "counts": counts, "changed": 0}
 
-    try:
+    last_err: Exception | None = None
+    for attempt in range(12):
+        try:
 
-        def _commit(sidecar: dict) -> None:
-            nonlocal changed
-            bg.ensure_sidecar_schema_defaults(sidecar)
-            runtime = sidecar.setdefault("_runtime", {})
-            if not force and runtime.get(reconcile_key):
-                return
-            from o3_generation_intent import (
-                reconcile_stale_o3_intent_locks,
-                reconcile_stale_o3_intent_locks_all_events,
-            )
+            def _commit(sidecar: dict) -> None:
+                nonlocal changed
+                bg.ensure_sidecar_schema_defaults(sidecar)
+                runtime = sidecar.setdefault("_runtime", {})
+                if not force and runtime.get(reconcile_key):
+                    return
+                from o3_generation_intent import (
+                    reconcile_stale_o3_intent_locks,
+                    reconcile_stale_o3_intent_locks_all_events,
+                )
 
-            if force:
-                counts["intent_locks"] = reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
-            elif event_dir.is_dir():
-                counts["intent_locks"] = reconcile_stale_o3_intent_locks(sidecar, event_dir)
-            counts["log_pointers"] = reconcile_stale_o3_job_log_pointers_all_events(sidecar)
-            counts["stuck_beats"] = reconcile_stuck_o3_voice_beats(sidecar)
-            changed = sum(counts.values())
-            runtime[reconcile_key] = datetime.now(timezone.utc).isoformat()
+                if force:
+                    counts["intent_locks"] = reconcile_stale_o3_intent_locks_all_events(sidecar, prod_root)
+                elif event_dir.is_dir():
+                    counts["intent_locks"] = reconcile_stale_o3_intent_locks(sidecar, event_dir)
+                counts["log_pointers"] = reconcile_stale_o3_job_log_pointers_all_events(sidecar)
+                counts["stuck_beats"] = reconcile_stuck_o3_voice_beats(sidecar)
+                changed = sum(counts.values())
+                runtime[reconcile_key] = datetime.now(timezone.utc).isoformat()
 
-        bg.mutate_sidecar_locked(_commit, timeout_s=15)
-        return {"ok": True, "skipped": False, "counts": counts, "changed": changed}
-    except TimeoutError:
-        print("[BG] o3 admin reconcile skipped — sidecar lock busy", flush=True)
-        return {"ok": False, "error": "sidecar lock busy", "counts": counts, "changed": 0}
-    except Exception as exc:
-        print(f"[BG] o3 admin reconcile failed: {exc}", flush=True)
-        return {"ok": False, "error": str(exc), "counts": counts, "changed": 0}
+            bg.mutate_sidecar_locked(_commit, timeout_s=15)
+            return {"ok": True, "skipped": False, "counts": counts, "changed": changed}
+        except TimeoutError as exc:
+            last_err = exc
+            if attempt >= 11:
+                print("[BG] o3 admin reconcile skipped — sidecar lock busy", flush=True)
+                return {"ok": False, "error": "sidecar lock busy", "counts": counts, "changed": 0}
+            time.sleep(min(4.0, 0.15 * (2 ** attempt)))
+        except OSError as exc:
+            last_err = exc
+            if not bg.sidecar_io_transient(exc) or attempt >= 11:
+                print(f"[BG] o3 admin reconcile failed: {exc}", flush=True)
+                return {"ok": False, "error": str(exc), "counts": counts, "changed": 0}
+            time.sleep(min(4.0, 0.15 * (2 ** attempt)))
+        except Exception as exc:
+            print(f"[BG] o3 admin reconcile failed: {exc}", flush=True)
+            return {"ok": False, "error": str(exc), "counts": counts, "changed": 0}
+    if last_err:
+        return {"ok": False, "error": str(last_err), "counts": counts, "changed": 0}
+    return {"ok": False, "error": "o3 admin reconcile exhausted retries", "counts": counts, "changed": 0}
+
+
+def _o3_startup_admin_reconcile_transient(error: str | None) -> bool:
+    text = str(error or "")
+    return (
+        "sidecar lock busy" in text
+        or "Resource deadlock avoided" in text
+        or "[Errno 11]" in text
+        or "[Errno 35]" in text
+    )
 
 
 def run_blocking_o3_startup(app) -> None:
@@ -1948,9 +1972,21 @@ def run_blocking_o3_startup(app) -> None:
         print(f"[startup:o3-blocking-reconcile] closed={result['closed']}", flush=True)
     if result.get("errors"):
         raise RuntimeError(f"O3 startup reconcile errors: {result['errors']}")
-    admin = _run_o3_admin_reconcile(h_stub, scope_event_id, force=True)
-    if not admin.get("ok"):
-        raise RuntimeError(f"O3 admin reconcile failed at startup: {admin}")
+    # PARALLEL_EVENT_ISOLATION_V1 — event-scoped admin reconcile only (not all Event_N).
+    admin: dict = {"ok": False}
+    for attempt in range(12):
+        admin = _run_o3_admin_reconcile(h_stub, scope_event_id, force=False)
+        if admin.get("ok"):
+            break
+        if not _o3_startup_admin_reconcile_transient(admin.get("error")) or attempt >= 11:
+            raise RuntimeError(f"O3 admin reconcile failed at startup: {admin}")
+        delay = min(4.0, 0.15 * (2 ** attempt))
+        print(
+            f"[startup:o3-blocking-reconcile] retry {attempt + 1}/12 after {admin.get('error')} "
+            f"(sleep {delay:.2f}s)",
+            flush=True,
+        )
+        time.sleep(delay)
     print(f"[startup:o3-blocking-reconcile] admin counts={admin.get('counts')}", flush=True)
 
 
@@ -4013,12 +4049,14 @@ def handle_bg_delete_beat(h, body: dict)-> None:
                )
     bg = _bg_module()
 
-    def _delete(sidecar: dict) -> None:
-        for arc in sidecar.get("arcs", {}).values():
-            for seg in arc.get("segments", {}).values():
-                seg["beats"] = [b for b in seg.get("beats", []) if b.get("beat_id") != beat_id]
-
-    bg.mutate_sidecar_locked(_delete, migrate=True)
+    ok = bg.delete_beat_locked(str(beat_id), caller="handle_bg_delete_beat", migrate=True)
+    if not ok:
+        return h._send_error_v59(
+            404,
+            error_code="BEAT_NOT_FOUND",
+            error_message=f"beat not found: {beat_id}",
+            retry_safe=False,
+        )
     return h._send_json(200, {"ok": True})
 
 

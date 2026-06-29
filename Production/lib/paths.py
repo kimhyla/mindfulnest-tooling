@@ -130,6 +130,21 @@ class BgPaths:
     project_root: Path        # parent of Production/ (Dropbox project root)
 
 
+def event_sidecar_mirror_path(event_dir: Path | str) -> Path:
+    """Local per-event JSON mirror — PARALLEL_EVENT_ISOLATION_V1.
+
+    Export target for SQLite mirror worker. Avoids concurrent Dropbox
+    read-modify-write when multiple Event_N servers run in parallel.
+    Override with ``MN_SIDECAR_MIRROR_PATH`` (set by launchagent).
+    """
+    override = os.environ.get("MN_SIDECAR_MIRROR_PATH", "").strip()
+    if override:
+        return Path(override).expanduser().resolve()
+    ev_name = normalize_event_dir(event_dir).name  # Event_N
+    slug = ev_name.replace("Event_", "").strip().lower() or "1"
+    return Path.home() / ".mindfulnest" / "mirror" / f"beatgen_event{slug}.json"
+
+
 def bg_paths(event_dir: Path | str) -> BgPaths:
     """Build the BgPaths bundle for a given event_dir.
 
