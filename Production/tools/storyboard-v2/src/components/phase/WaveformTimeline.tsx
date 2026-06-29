@@ -25,6 +25,8 @@
 //   SEEK-7  Paused onSeeking must re-assert lastScrubMsRef (trim mode + lipsync mp4).
 //   SEEK-8  displayOnly + masterVideo (Stitcher): syncFromVideo MUST honor
 //           isDraggingSeekRef + lastScrubMsRef — video.currentTime at 0 fights drag.
+//   DROP-CAPTURE-1  HTML5 drop on wrapper bubble misses WaveSurfer canvas child;
+//           bindDropTargetCapture on wrapperRef (capture phase).
 //   CUE-HANDLE-1  cue-block body pointer-events:none REQUIRES cue-block-handle
 //           pointer-events:auto (stem-trim pattern). Partial copy regresses resize.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
@@ -44,9 +46,9 @@
 // Cursor v8 Q1: WaveSurfer.create / destroy cycle leaves no WebAudio leaks —
 // every effect that creates an instance returns a cleanup that calls .destroy().
 
-import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import WaveSurfer from 'wavesurfer.js';
-import { makeDropTarget, type DragPayload } from '../../utils/dragdrop';
+import { bindDropTargetCapture, makeDropTarget, type DragPayload } from '../../utils/dragdrop';
 import {
   pauseOtherWaveformPlayback,
   registerWaveformPlaybackControl,
@@ -1250,32 +1252,46 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   };
 
   // Drop target — lib-watercolor (Phase A/B) or lib-sfx (Stitcher).
-  const dropHandlers = makeDropTarget(
-    (payload: DragPayload, e: DragEvent) => {
-      const durMs = resolveTimelineDurationMs();
-      if (durMs <= 0) return;
-      const wrapper = wrapperRef.current;
-      if (!wrapper) return;
-      const relativeX = timelineRelXFromClientX(wrapper.getBoundingClientRect(), e.clientX);
-      const offsetMs = Math.round(relativeX * durMs);
-      if (payload.kind === 'lib-watercolor') {
-        onWatercolorDrop?.(payload.lib_key, offsetMs);
-        return;
-      }
-      if (payload.kind === 'lib-sfx' && onSfxDrop) {
-        const defaultDur = Math.max(
-          MIN_CUE_DURATION_MS,
-          Math.min(3000, durMs - offsetMs),
-        );
-        onSfxDrop(payload.lib_key, payload.source_path, offsetMs, defaultDur);
-      }
-    },
-    (payload) => {
-      if (payload.kind === 'lib-watercolor' && onWatercolorDrop) return true;
-      if (payload.kind === 'lib-sfx' && onSfxDrop) return true;
-      return false;
-    },
+  const onWatercolorDropRef = useRef(onWatercolorDrop);
+  onWatercolorDropRef.current = onWatercolorDrop;
+  const onSfxDropRef = useRef(onSfxDrop);
+  onSfxDropRef.current = onSfxDrop;
+
+  const dropHandlers = useMemo(
+    () => makeDropTarget(
+      (payload: DragPayload, e: DragEvent) => {
+        const durMs = resolveTimelineDurationMs();
+        if (durMs <= 0) return;
+        const wrapper = wrapperRef.current;
+        if (!wrapper) return;
+        const relativeX = timelineRelXFromClientX(wrapper.getBoundingClientRect(), e.clientX);
+        const offsetMs = Math.round(relativeX * durMs);
+        if (payload.kind === 'lib-watercolor') {
+          onWatercolorDropRef.current?.(payload.lib_key, offsetMs);
+          return;
+        }
+        if (payload.kind === 'lib-sfx' && onSfxDropRef.current) {
+          const defaultDur = Math.max(
+            MIN_CUE_DURATION_MS,
+            Math.min(3000, durMs - offsetMs),
+          );
+          onSfxDropRef.current(payload.lib_key, payload.source_path, offsetMs, defaultDur);
+        }
+      },
+      (payload) => {
+        if (payload.kind === 'lib-watercolor' && onWatercolorDropRef.current) return true;
+        if (payload.kind === 'lib-sfx' && onSfxDropRef.current) return true;
+        return false;
+      },
+    ),
+    [],
   );
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+    return bindDropTargetCapture(wrapper, dropHandlers);
+  }, [dropHandlers, audioSrc, isReady, displayOnly, fallbackDurationMs, displayPeaks, displayDurationS]);
 
   const controlRef = useRef<WaveformPlaybackControl | null>(null);
   if (!controlRef.current) {
@@ -1429,9 +1445,6 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           data-testid={rootTestId}
           data-loaded-duration-ms={fallbackDurationMs}
           data-cue-count={displayCues.length}
-          onDragOver={dropHandlers.onDragOver}
-          onDragLeave={dropHandlers.onDragLeave}
-          onDrop={dropHandlers.onDrop}
         >
           <div class="mn-waveform-source-label mn-waveform-source-label--compact">
             <span class="mn-dim">
@@ -1515,9 +1528,6 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-mix-extracting={mixExtracting ? 'true' : 'false'}
       {...(displayOnly ? { 'data-display-only-waveform': 'STITCH_UNIFIED_PLAYBACK_V1' } : {})}
       {...(displayOnly && masterVideoSrc ? { 'data-stitch-composer-master-video-sync': 'STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1' } : {})}
-      onDragOver={dropHandlers.onDragOver}
-      onDragLeave={dropHandlers.onDragLeave}
-      onDrop={dropHandlers.onDrop}
     >
       {compact ? (
         <div class="mn-waveform-source-label mn-waveform-source-label--compact">

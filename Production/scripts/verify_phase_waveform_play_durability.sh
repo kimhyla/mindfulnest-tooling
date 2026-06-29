@@ -95,5 +95,13 @@ grep -q 'timelineRelXFromClientX' "$WS" \
   || fail "seek/drop/cue drag must share timelineRelXFromClientX (WTA-5)"
 grep -q 'timelineRelXFromClientX' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils/waveformTimeAuthority.ts" \
   || fail "waveformTimeAuthority must export timelineRelXFromClientX"
+grep -q 'bindDropTargetCapture' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils/dragdrop.ts" \
+  || fail "dragdrop must export bindDropTargetCapture (DROP-CAPTURE-1)"
+grep -q 'bindDropTargetCapture' "$WS" \
+  || fail "WaveformTimeline must bind DROP-CAPTURE-1 on wrapper"
+grep -q 'draggable={false}' "${REPO_ROOT}/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx" \
+  || fail "PhaseProducer watercolor thumb must set draggable={false} (DROP-IMG-1)"
+grep -q 'DROP-WC-2' "$E2E" \
+  || fail "e2e must include tile drag regression (DROP-WC-2)"
 
 echo "[waveform-play-durability] OK — source patterns + e2e spec present"

@@ -203,7 +203,7 @@ export type LibraryTier = LibraryPanelTab;
 const LIBRARY_TIERS: LibraryTier[] = ['images', 'ambient', 'sfx', 'transitions', 'watercolors'];
 const DEFAULT_LIBRARY_TIER: LibraryTier = 'images';
 const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
-const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v3';
+const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v4';
 
 function libraryItemsStorageKey(eventId: string): string {
   return `${LIBRARY_ITEMS_SESSION_KEY}:${eventId}`;

@@ -1530,7 +1530,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           <div class="mn-phase-watercolor-grid">
             {watercolors.map((wc) => (
               <div
-                class={`mn-phase-watercolor-tile${wc.kind === 'animation' ? ' mn-phase-watercolor-tile--animation' : ''}`}
+                class={`mn-phase-watercolor-tile${wc.kind === 'animation' ? ' mn-phase-watercolor-tile--animation' : ''}${' mn-asset-tile-draggable'}`}
                 key={wc.key}
                 data-testid={`phase-${phase}-watercolor-tile-${wc.key}`}
                 draggable
@@ -1539,11 +1539,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 {/* LD-203 — white interior wraps the centered art. */}
                 <div class="mn-phase-watercolor-thumb-wrap">
                   {/* thumb_url is always a static PNG image (server resolves base PNG for animations).
-                      This avoids the black-first-frame problem with animation MP4s in thumbnails. */}
+                      draggable={false} — native <img> drag hijacks lib-watercolor payload (DROP-IMG-1). */}
                   <img
                     src={watercolorFileUrl(wc.key)}
                     alt={wc.filename}
                     class="mn-phase-watercolor-thumb"
+                    draggable={false}
                     loading="lazy"
                   />
                 </div>

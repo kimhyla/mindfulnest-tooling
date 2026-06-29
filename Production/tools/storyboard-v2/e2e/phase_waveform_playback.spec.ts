@@ -904,4 +904,56 @@ test.describe('WTA-018 — watercolor drop timing (DROP-WC-1)', () => {
       timeout: 5_000,
     });
   });
+
+  test('DROP-WC-2 — capture drop on canvas + non-draggable watercolor thumb (DROP-CAPTURE-1)', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: [],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    await expect(waveform).toHaveAttribute('data-drop-capture-bound', 'WAVEFORM_DROP_CAPTURE_V1');
+
+    const thumbDraggable = await page
+      .locator('[data-testid="phase-b-watercolor-tile-wc_test"] img')
+      .evaluate((el) => (el as HTMLImageElement).draggable);
+    expect(thumbDraggable).toBe(false);
+
+    const wfBox = await waveform.boundingBox();
+    expect(wfBox).not.toBeNull();
+    const dropX = wfBox!.x + wfBox!.width * 0.5;
+    const dropY = wfBox!.y + wfBox!.height * 0.7;
+
+    await waveform.evaluate(
+      (el: Element, args: { x: number; y: number }) => {
+        const canvas = el.querySelector('.mn-waveform-canvas') ?? el;
+        const dt = new DataTransfer();
+        const payload = JSON.stringify({
+          kind: 'lib-watercolor',
+          lib_key: 'wc_test',
+          animation_type: 'fade_in',
+        });
+        dt.setData('application/x-mn-drag', payload);
+        dt.setData('text/plain', payload);
+        const base = {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt,
+          clientX: args.x,
+          clientY: args.y,
+        };
+        canvas.dispatchEvent(new DragEvent('dragover', base));
+        canvas.dispatchEvent(new DragEvent('drop', base));
+      },
+      { x: dropX, y: dropY },
+    );
+
+    await expect(waveform).toHaveAttribute('data-cue-count', '1', { timeout: 5_000 });
+  });
 });
