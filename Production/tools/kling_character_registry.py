@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -304,16 +305,28 @@ def get_element_name(speaker: str) -> str | None:
     return kling_element_display_name(speaker)
 
 
+_CLOUD_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
+
+
 def file_sha256(path: str | Path) -> str | None:
     """Content hash for cross-path Element vs @Image1 alignment checks."""
     p = Path(path)
-    if not p.is_file():
-        return None
-    h = hashlib.sha256()
-    with p.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    last: OSError | None = None
+    for attempt in range(5):
+        try:
+            if not p.is_file():
+                return None
+            h = hashlib.sha256()
+            with p.open("rb") as fh:
+                for chunk in iter(lambda: fh.read(1024 * 1024), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        except OSError as exc:
+            last = exc
+            if exc.errno not in _CLOUD_IO_TRANSIENT_ERRNOS or attempt >= 4:
+                return None
+            time.sleep(0.12 * (attempt + 1))
+    return None
 
 
 def element_image_paths(speaker: str) -> list[Path]:
