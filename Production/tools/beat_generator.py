@@ -2181,6 +2181,38 @@ def _apply_intro_canonical_beat_defaults(
     beat.setdefault("kling_o3_status", "draft")
 
 
+def _intro_mirror_tail_is_stale(beat: dict, guide: str | None) -> bool:
+    """Detect Chipper-template tail on Arlo guide rows (and vice versa)."""
+    try:
+        from teleport_intro_canonical import intro_tail_path_matches_guide
+    except ImportError:
+        return False
+    vp = beat.get("kling_o3_video_path") or ""
+    if vp and not intro_tail_path_matches_guide(vp, guide):
+        return True
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict):
+            continue
+        if str(opt.get("source") or "") != "canonical_intro_tail":
+            continue
+        ovp = opt.get("video_path") or opt.get("path") or ""
+        if ovp and not intro_tail_path_matches_guide(ovp, guide):
+            return True
+    return False
+
+
+def _clear_stale_intro_mirror_tail(beat: dict) -> None:
+    """Drop wrong-template canonical tail so hydrate re-resolves from registry."""
+    beat.pop("kling_o3_video_path", None)
+    beat.pop("accepted_video_path", None)
+    beat.pop("kling_o3_baked_path", None)
+    beat.pop("kling_o3_baked_token", None)
+    beat["kling_o3_options"] = [
+        o for o in (beat.get("kling_o3_options") or [])
+        if not (isinstance(o, dict) and str(o.get("source") or "") == "canonical_intro_tail")
+    ]
+
+
 def hydrate_intro_canonical_mirror_beat(
     beat: dict,
     event_id: str,
@@ -2197,11 +2229,15 @@ def hydrate_intro_canonical_mirror_beat(
         beat, event_id, phase, INTRO_BEAT_ROLE_CANONICAL_MIRROR,
         guide=guide, sidecar=sidecar, segment_key=segment_key,
     )
+    if _intro_mirror_tail_is_stale(beat, guide):
+        _clear_stale_intro_mirror_tail(beat)
     if _has_populated_intro_mirror_beat(beat) and _intro_mirror_option_slot_ready(beat):
-        seed_canonical_intro_tail_export_trim(
-            beat, guide=guide, sidecar=sidecar, segment_key=segment_key,
-        )
-        return True
+        if not _intro_mirror_tail_is_stale(beat, guide):
+            seed_canonical_intro_tail_export_trim(
+                beat, guide=guide, sidecar=sidecar, segment_key=segment_key,
+            )
+            return True
+        _clear_stale_intro_mirror_tail(beat)
     if _has_populated_intro_mirror_beat(beat):
         tail_str = str(Path(beat["kling_o3_video_path"]).resolve())
         now = datetime.now(timezone.utc).isoformat()
@@ -6926,6 +6962,53 @@ def bake_o3_active_export_clip(
         "baked_path": beat["kling_o3_baked_path"],
         "baked_token": token,
         "effective_duration_s": round(_ffprobe_duration(baked_path), 3),
+    }
+
+
+def promote_o3_baked_trim_to_active_clip(
+    beat: dict,
+    *,
+    baked_path: str | Path,
+    slot_index: int | None = None,
+    video_path: str | None = None,
+) -> dict[str, Any]:
+    """After Apply trim bake: make baked MP4 the active clip and clear trim metadata.
+
+    Prevents double-trim when UI/server ffprobe sees a shorter file but trim_back
+    is still relative to the pre-bake delivery duration.
+    """
+    baked = Path(baked_path)
+    if not baked.is_file():
+        raise ValueError(f"missing baked clip: {baked}")
+    baked_str = str(baked.resolve())
+    opt = None
+    if slot_index is not None:
+        opt = find_o3_option_by_slot_index(
+            beat, int(slot_index), video_path=video_path,
+        )
+    old_vp = str(beat.get("kling_o3_video_path") or "").strip()
+    beat["kling_o3_video_path"] = baked_str
+    clear_kling_o3_beat_trim(beat)
+    clear_o3_cut_fields(beat)
+    clear_o3_baked_fields(beat)
+    if isinstance(opt, dict):
+        opt["video_path"] = baked_str
+        clear_o3_option_trim_fields(opt)
+        clear_o3_cut_fields(opt)
+        clear_o3_baked_fields(opt)
+    elif old_vp:
+        opt_by_path = find_o3_option_by_video_path(beat, old_vp)
+        if isinstance(opt_by_path, dict):
+            opt_by_path["video_path"] = baked_str
+            clear_o3_option_trim_fields(opt_by_path)
+            clear_o3_cut_fields(opt_by_path)
+            clear_o3_baked_fields(opt_by_path)
+    eff = _ffprobe_duration(baked)
+    return {
+        "video_path": baked_str,
+        "effective_duration_s": round(eff, 3) if eff > 0 else None,
+        "trim_start": 0.0,
+        "trim_back": None,
     }
 
 

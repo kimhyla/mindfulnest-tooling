@@ -2393,6 +2393,7 @@ export function BgTab() {
       effective_duration_s?: number | null;
       preview_video_url?: string;
       video_path?: string;
+      trim_baked?: boolean;
     }>(activeScope.value, 'bg_kling_o3_trim', {
       beat_id: beatId,
       slot_index: slotIndex,
@@ -2469,12 +2470,29 @@ export function BgTab() {
           }
           if (mirrorsActive && !opts?.clear) {
             const back = result.data?.trim_back ?? trimBackS;
+            const bakedPath = (
+              result.data?.trim_baked
+              || (result.data?.video_path && (back == null || back <= 0.009) && trimStartS <= 0.009)
+            ) ? result.data?.video_path : undefined;
             const nextBeat: BgBeat = {
               ...b,
               kling_o3_options: nextOptions,
-              kling_o3_trim_start: result.data?.trim_start ?? trimStartS,
-              kling_o3_trim_back: back != null && back > 0.009 ? back : null,
+              ...(bakedPath ? { kling_o3_video_path: bakedPath } : {}),
+              kling_o3_trim_start: bakedPath ? 0 : (result.data?.trim_start ?? trimStartS),
+              kling_o3_trim_back: bakedPath
+                ? null
+                : (back != null && back > 0.009 ? back : null),
             };
+            if (bakedPath) {
+              nextBeat.kling_o3_options = (nextBeat.kling_o3_options ?? []).map((o) => {
+                if (!o || o.video_path !== targetPath) return o;
+                const cleaned = { ...o } as GptOption & Record<string, unknown>;
+                delete cleaned.trim_start_s;
+                delete cleaned.trim_back_s;
+                cleaned.video_path = bakedPath;
+                return cleaned as GptOption;
+              });
+            }
             delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_cut_start_s;
             delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_cut_end_s;
             return nextBeat;

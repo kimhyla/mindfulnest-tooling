@@ -7032,6 +7032,15 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                             result["export_baked"] = bool(bake.get("baked"))
                             if bake.get("baked_path"):
                                 result["baked_path"] = bake["baked_path"]
+                            if bake.get("baked") and bake.get("baked_path"):
+                                promoted = bg.promote_o3_baked_trim_to_active_clip(
+                                    beat,
+                                    baked_path=bake["baked_path"],
+                                    slot_index=int(slot_index),
+                                    video_path=req_video_path,
+                                )
+                                result.update(promoted)
+                                result["trim_baked"] = True
                             opt_bake = bg.find_o3_option_by_slot_index(
                                 beat,
                                 int(slot_index),

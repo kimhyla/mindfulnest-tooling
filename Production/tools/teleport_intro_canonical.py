@@ -61,6 +61,17 @@ def active_manifest_path(project_root: Path, *, guide: str | None = None) -> Pat
     return project_root / _manifest_rel_for_guide(guide or env_guide)
 
 
+def _registry_is_single_canonical(project_root: Path, rel: str) -> bool:
+    path = project_root / rel
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    return bool(data.get("single_canonical")) and bool(data.get("variants"))
+
+
 def active_registry_rel(project_root: Path, *, guide: str | None = None) -> str:
     """Resolve canonical registry for a guide character (default Chipper legacy)."""
     import os
@@ -72,6 +83,9 @@ def active_registry_rel(project_root: Path, *, guide: str | None = None) -> str:
     rel = _registry_rel_for_guide(guide or env_guide)
     if (project_root / rel).is_file():
         return rel
+    # Arlo single-canonical is the approved intro tail (Teleport Glass + Arlo).
+    if _registry_is_single_canonical(project_root, ARLO_REGISTRY_REL):
+        return ARLO_REGISTRY_REL
     if _registry_has_variants(project_root, CHIPPER_REGISTRY_REL):
         return CHIPPER_REGISTRY_REL
     if _registry_has_variants(project_root, ARLO_REGISTRY_REL):
@@ -177,9 +191,11 @@ def infer_guide_from_sidecar_segment(sidecar: dict | None, segment_key: str | No
 
 
 def default_guide_for_project(project_root: Path) -> str | None:
-    """Prefer Arlo when only Arlo registry has variants (Event_2+ context)."""
+    """Prefer Arlo single-canonical when both registries exist (approved intro tail)."""
     arlo_ok = _registry_has_variants(project_root, ARLO_REGISTRY_REL)
     chipper_ok = _registry_has_variants(project_root, CHIPPER_REGISTRY_REL)
+    if arlo_ok and _registry_is_single_canonical(project_root, ARLO_REGISTRY_REL):
+        return "Arlo"
     if arlo_ok and not chipper_ok:
         return "Arlo"
     if chipper_ok:
@@ -187,6 +203,19 @@ def default_guide_for_project(project_root: Path) -> str | None:
     if arlo_ok:
         return "Arlo"
     return None
+
+
+def intro_tail_path_matches_guide(video_path: str | None, guide: str | None) -> bool:
+    """False when a populated mirror row pins the wrong template family."""
+    vp = str(video_path or "").replace("\\", "/").lower()
+    if not vp:
+        return True
+    g = (guide or "").strip().lower()
+    if g == "arlo":
+        return "arlo_teleport_intro" in vp
+    if g == "chipper":
+        return "chipper_teleport_intro" in vp
+    return True
 
 
 def upsert_variant(
