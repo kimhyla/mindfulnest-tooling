@@ -13938,12 +13938,19 @@ def resolve_segment_stitch_export_clip_paths(
         if is_last and canonical_tail is not None:
             clip_paths.append(canonical_tail.resolve())
         else:
+            raw_clip = materialize_beat_export_clip_with_retry(
+                beat,
+                event_dir,
+                scratch_dir,
+                event_id=event_id,
+            )
+            from server_handlers.speech_loudnorm import apply_speech_loudnorm_export_beat_clip  # noqa: PLC0415
+
             clip_paths.append(
-                materialize_beat_export_clip_with_retry(
-                    beat,
-                    event_dir,
-                    scratch_dir,
-                    event_id=event_id,
+                apply_speech_loudnorm_export_beat_clip(
+                    raw_clip,
+                    beat_id=str(beat.get("beat_id") or f"beat_{i}"),
+                    scratch_dir=scratch_dir,
                 ),
             )
     return clip_paths, scratch_dir

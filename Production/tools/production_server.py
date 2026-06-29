@@ -12871,6 +12871,18 @@ body {{padding-top:44px!important;}}
             # Step 2: Audio parity (CONCAT_AUDIO_PARITY_V1)
             norm = self._stitch_ensure_audio(norm, cache_dir)
 
+            # Step 2b: AUTO_LOUDNORM_V1 speech bus (before ambient/SFX mix)
+            from server_handlers.speech_loudnorm import (  # noqa: PLC0415
+                apply_speech_loudnorm_to_mp4,
+                slot_video_skips_layer_b_speech_loudnorm,
+            )
+
+            vp_name = slot.get("video_path") or ""
+            if not slot.get("loudnorm_already_applied") and not slot_video_skips_layer_b_speech_loudnorm(vp_name):
+                norm, applied = apply_speech_loudnorm_to_mp4(norm, cache_dir=cache_dir)
+                if applied:
+                    print(f"[stitch] speech loudnorm slot {i} ({slot.get('slot_key', i)}) ok", flush=True)
+
             slot_dur_ms = self._ffprobe_duration_ms(norm)
             slot_durations.append(slot_dur_ms)
 

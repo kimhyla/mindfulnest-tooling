@@ -2474,7 +2474,7 @@ export function StitcherTab() {
                   <div class="mn-stitcher-slot-header">
                     <strong>{sd.label}</strong>
                     {slot?.loudnorm_already_applied ? (
-                      <span class="mn-stitcher-loudnorm-tag">loudnorm ✓</span>
+                      <span class="mn-stitcher-loudnorm-tag">speech loudnorm ✓</span>
                     ) : null}
                   </div>
                   <SlotImageDropTarget

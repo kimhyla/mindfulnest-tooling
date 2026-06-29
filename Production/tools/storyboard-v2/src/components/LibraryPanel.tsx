@@ -381,6 +381,7 @@ export function LibraryPanel() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
   const [elementSpeaker, setElementSpeaker] = useState<string>('Lorelai');
   const [elementAdding, setElementAdding] = useState(false);
 
@@ -591,6 +592,9 @@ export function LibraryPanel() {
     if (result.ok) {
       pushToast({ kind: 'success', message: `Deleted ${displayName(item)}`, source: 'library-delete' });
       setRefreshTick((n) => n + 1);
+    } else if (result.status === 404) {
+      pushToast({ kind: 'info', message: `Already removed: ${displayName(item)}`, source: 'library-delete-gone' });
+      setRefreshTick((n) => n + 1);
     } else {
       const resultData = result.data as Record<string, unknown> | undefined;
       const deleteErrCode = resultData?.['code'] as string | undefined;
@@ -679,7 +683,10 @@ export function LibraryPanel() {
       }
     }
     setUploading(false);
-    if (added > 0) setRefreshTick((n) => n + 1);
+    if (added > 0) {
+      setRefreshTick((n) => n + 1);
+      if (listRef.current) listRef.current.scrollTop = 0;
+    }
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -771,7 +778,7 @@ export function LibraryPanel() {
                 : `No items in tier ${tier} yet.`}
           </p>
         ) : (
-          <ul class="mn-library-list" data-testid="library-list">
+          <ul class="mn-library-list" data-testid="library-list" ref={listRef}>
             {filteredItems.map((it, i) => {
               const libKey = it.key ?? it.abs_path ?? `item-${i}`;
               // Wave 5 R2 (Q1 source-side completion): emit lib-sfx for SFX-tier

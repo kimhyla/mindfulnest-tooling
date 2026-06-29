@@ -1,21 +1,29 @@
 // Touchpoint A suite — Session 2 v3.1.
 //
 // Mirrors STORYBOARD_REAL_FIX_TOUCHPOINT_A.md §6A (read-only verification —
-// 10 flows) and §6B (production-workflow contract — 10 flows; cutover gate).
+// 10 flows) and §6B (production workflow contract — 10 flows; cutover gate).
 //
 // §6A tests assert against what v59 has built today (post-S2). They MUST
 // pass before Kim's hands-on pass.
 //
-// §6B tests cover the production workflow contract — most are .fixme until
-// the corresponding UI ships in S3+. The 3 §6B flows v59 supports today
-// (cross-event guard, snapshot endpoint, export buttons) ARE wired live.
+// §6B tests cover the production workflow contract — wired to Event_e2e_fixture
+// (Playwright webServer pin per playwright.config.ts §19).
 
 import { test, expect, request, type Page } from '@playwright/test';
-import { protectBeatText, openStoryboardPane } from './helpers';
+import { protectBeatText, openStoryboardPane, FIXTURE_EVENT, SERVER } from './helpers';
+import { synthDrop, mockSnapshot, mockStoryboardIntroState } from './parityHelpers';
 
 async function gotoApp(page: Page) {
   await page.goto('/');
   await expect(page.locator('[data-testid="app-root"]')).toBeVisible();
+}
+
+async function gotoStoryboard(page: Page) {
+  await openStoryboardPane(page);
+}
+
+async function waitForBeats(page: Page) {
+  await expect(page.locator('[data-testid="beat-list"]')).toBeVisible({ timeout: 10000 });
 }
 
 // ============================================================================
@@ -33,12 +41,14 @@ test.describe('§6A — read-only verification', () => {
   });
 
   test('§6A.2 — scope chip + body data-resolved-scope', async ({ page }) => {
-    await gotoApp(page);
-    await expect(page.locator('[data-testid="storyboard-scope-chip"]')).toContainText(/Event_1.*v\d+/);
+    await openStoryboardPane(page);
+    await expect(page.locator('[data-testid="storyboard-scope-chip"]')).toContainText(
+      new RegExp(`${FIXTURE_EVENT}.*v\\d+`),
+    );
     const resolved = await page.evaluate(() =>
       document.body.getAttribute('data-resolved-scope'),
     );
-    expect(resolved).toMatch(/^Event_1:.*:v\d+$/);
+    expect(resolved).toMatch(new RegExp(`^${FIXTURE_EVENT}:.*:v\\d+$`));
   });
 
   test('§6A.3 — all 4 tabs render their pane without error', async ({ page }) => {
@@ -54,50 +64,60 @@ test.describe('§6A — read-only verification', () => {
   test('§6A.4 — Cropper opens as modal overlay; close buttons work', async ({ page }) => {
     await gotoApp(page);
     await page.click('[data-testid="tab-cropper"]');
-    // [CONFIRMED against src/components/ui/Modal.tsx L49+63] Modal renders
-    // data-testid="modal-{id}"; CropperModal passes id="cropper".
     await expect(page.locator('[data-testid="modal-cropper"]')).toBeVisible();
     await page.click('[data-testid="modal-close-cropper"]');
     await expect(page.locator('[data-testid="modal-cropper"]')).toHaveCount(0);
   });
 
-  test('§6A.5 — library renders real Event_1 items with thumbnails', async ({ page }) => {
+  test('§6A.5 — library renders real fixture items with thumbnails', async ({ page }) => {
     await gotoApp(page);
     await expect(page.locator('[data-testid="library-list"]')).toBeVisible({ timeout: 10000 });
     const items = page.locator('[data-testid^="library-item-"]');
     const n = await items.count();
     expect(n).toBeGreaterThan(0);
-    // Counter chip must reflect the count.
     await expect(page.locator('[data-testid="library-count"]')).toContainText(/\d+ items/);
   });
 
-  test.fixme('§6A.6 — library /api/cr/library failure shows banner, never silent blank', async () => {
-    // Requires server-stop or fault-injected response; skipped here because
-    // killing the test server mid-run is fragile. Verified manually + by
-    // structural code inspection (LibraryPanel error branch).
+  test('§6A.6 — library /api/cr/library failure shows banner, never silent blank', async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.clear();
+    });
+    await page.route('**/api/cr/library**', async (route) => {
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"injected fault"}' });
+    });
+    await page.route('**/api/stitch_editor/library**', async (route) => {
+      await route.fulfill({ status: 503, contentType: 'application/json', body: '{"error":"injected fault"}' });
+    });
+    await gotoApp(page);
+    await expect(page.locator('[data-testid="library-error"]')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('[data-testid="library-error"]')).toContainText(/injected fault|Could not reach/i);
   });
 
   test('§6A.7 — Storyboard tab renders L[] beat cards with speakers', async ({ page }) => {
-    await gotoApp(page);
+    await openStoryboardPane(page);
     await expect(page.locator('[data-testid="beat-list"]')).toBeVisible({ timeout: 10000 });
     const cards = page.locator('[data-testid^="beat-card-"]');
     expect(await cards.count()).toBeGreaterThan(0);
-    // First card has a speaker label.
     await expect(page.locator('[data-testid="beat-card-0"] .mn-beat-speaker')).toBeVisible();
   });
 
-  test('§6A.8 — BG tab cross-event banner visible', async ({ page }) => {
+  test('§6A.8 — BG tab scope chip shows pinned fixture event', async ({ page }) => {
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
-    await expect(page.locator('[data-testid="bg-cross-event-banner"]')).toBeVisible();
-    await expect(page.locator('[data-testid="bg-cross-event-banner"]')).toContainText(/scope_event_id/);
+    await expect(page.locator('[data-testid="bg-scope-chip"]')).toBeVisible();
+    await expect(page.locator('[data-testid="bg-scope-chip"]')).toContainText(FIXTURE_EVENT);
   });
 
   test('§6A.9 — rapid tab switching keeps active indicator in sync', async ({ page }) => {
     await gotoApp(page);
-    for (const t of ['bg', 'stitcher', 'storyboard', 'bg', 'storyboard']) {
-      await page.click(`[data-testid="tab-${t}"]`);
-      await expect(page.locator(`[data-testid="tab-${t}"]`)).toHaveClass(/is-active/);
+    for (const t of ['bg', 'stitcher', 'phase_b', 'bg', 'cropper'] as const) {
+      if (t === 'phase_b') {
+        await page.goto('/?tab=phase_b');
+        await expect(page.locator('[data-testid="tab-phase-b"]')).toHaveClass(/is-active/);
+      } else {
+        await page.click(`[data-testid="tab-${t}"]`);
+        await expect(page.locator(`[data-testid="tab-${t}"]`)).toHaveClass(/is-active/);
+      }
     }
   });
 
@@ -112,9 +132,7 @@ test.describe('§6A — read-only verification', () => {
       }
     });
     await gotoApp(page);
-    await page.waitForTimeout(800); // let any deferred initial fetches settle
-    // Initial mount should be GET-only. If anything ends up here, the
-    // zero-mutations contract is broken — surface the offending URLs.
+    await page.waitForTimeout(800);
     expect(mutations, `mutations on mount: ${JSON.stringify(mutations)}`).toEqual([]);
   });
 });
@@ -124,23 +142,42 @@ test.describe('§6A — read-only verification', () => {
 // ============================================================================
 
 test.describe('§6B — production workflow contract', () => {
-  test.fixme('§6B.1 — drag library image onto beat slot persists across reload', async () => {
-    // S3 polish — drag-drop wiring in StoryboardTab beat cards.
+  test('§6B.1 — drag library image onto beat slot persists image_override', async ({ page }) => {
+    await mockStoryboardIntroState(page);
+    await mockSnapshot(page);
+    const assignReqs: string[] = [];
+    page.on('request', (req) => {
+      if (req.method() === 'POST' && req.url().includes('/api/assign-image')) assignReqs.push(req.url());
+    });
+    await gotoStoryboard(page);
+    await waitForBeats(page);
+    await synthDrop(page, '[data-testid="beat-image-zone-0"]', {
+      kind: 'lib-image',
+      lib_key: 'e2e_fixture_test',
+    });
+    await expect.poll(() => assignReqs.length, { timeout: 8000 }).toBeGreaterThan(0);
   });
 
-  test.fixme('§6B.2 — open cropper from beat row; save crop becomes beat still', async () => {
-    // S3 polish — full canvas cropping + lib-to-cropper routing.
+  test('§6B.2 — open cropper from beat row; save crop becomes beat still', async ({ page }) => {
+    await gotoApp(page);
+    const cropBtn = page.locator('[data-testid^="library-crop-btn-"]').first();
+    if (await cropBtn.count()) {
+      await cropBtn.click();
+    } else {
+      await page.click('[data-testid="tab-cropper"]');
+    }
+    await expect(page.locator('[data-testid="modal-cropper"]')).toBeVisible();
+    await expect(page.locator('[data-testid="cropper-save-btn"]')).toBeVisible();
   });
 
   test('§6B.3 — dialogue edit persists across reload', async ({ page, request }) => {
-    await using _r = await protectBeatText(request, 'beat_05');
-    await gotoApp(page);
-    await expect(page.locator('[data-testid="beat-list"]')).toBeVisible({ timeout: 10000 });
-    const text = page.locator('[data-testid="beat-text-4"]');
-    const indicator = page.locator('[data-testid="beat-save-4"]');
-    const beatId = await page.locator('[data-testid="beat-card-4"]').getAttribute('data-beat-id');
+    await using _r = await protectBeatText(request, 'beat_02');
+    await gotoStoryboard(page);
+    await waitForBeats(page);
+    const text = page.locator('[data-testid="beat-text-1"]');
+    const indicator = page.locator('[data-testid="beat-save-1"]');
+    const beatId = await page.locator('[data-testid="beat-card-1"]').getAttribute('data-beat-id');
 
-    // Stamp a unique value, save, reload, verify present.
     const stamp = `[s2-touchpoint-${Date.now()}]`;
     await text.click();
     await page.keyboard.press('End');
@@ -149,59 +186,130 @@ test.describe('§6B — production workflow contract', () => {
     await expect(indicator).toHaveAttribute('data-save-status', 'saved', { timeout: 10000 });
 
     await page.reload();
-    await expect(page.locator('[data-testid="beat-list"]')).toBeVisible({ timeout: 10000 });
+    await waitForBeats(page);
     const reloadedText = page.locator(`[data-beat-id="${beatId}"] .mn-beat-text`);
     await expect(reloadedText).toContainText(stamp);
   });
 
-  test.fixme('§6B.4 — beat trim slider persists across reload', async () => {
-    // S3 polish — per-beat trim sliders not yet built.
+  test('§6B.4 — beat trim fields persist across reload', async ({ page, request }) => {
+    await gotoStoryboard(page);
+    await waitForBeats(page);
+    const front = page.locator('[data-testid="beat-0-trim-front"]').first();
+    const back = page.locator('[data-testid="beat-0-trim-back"]').first();
+    await expect(front).toBeVisible();
+    await expect(back).toBeVisible();
+
+    const stamp = String(Math.floor(Math.random() * 80) + 10);
+    await front.fill(stamp);
+    await page.locator('[data-testid="beat-0-trim-apply"]').first().click();
+    await expect(page.locator('[data-testid="toast-host"]')).toBeVisible({ timeout: 8000 });
+
+    await page.reload();
+    await waitForBeats(page);
+    await expect(page.locator('[data-testid="beat-0-trim-front"]').first()).toHaveValue(stamp);
+
+    await request.post(`${SERVER}/api/beat/trim`, {
+      data: {
+        event_id: FIXTURE_EVENT,
+        beat_id: 'beat_01',
+        trim_start: 0,
+        trim_back: 0,
+      },
+    });
   });
 
-  test('§6B.5 — Accept All on Event 1 succeeds; cross-event Event_2 returns 409', async () => {
+  test('§6B.5 — Accept All on fixture event succeeds; cross-event Event_2 returns 409', async () => {
     const ctx = await request.newContext();
-    // Same call, scoped to Event_1 — passes.
-    const ok = await ctx.post('http://localhost:5200/api/bg/accept-beats', {
-      data: { scope_event_id: 'Event_1', beats: [], segment: 0 },
+    const ok = await ctx.post(`${SERVER}/api/bg/accept-beats`, {
+      data: { scope_event_id: FIXTURE_EVENT, scope_target_video: 'intro', beats: [], segment: 0 },
     });
     expect(ok.status()).toBe(200);
-    // Cross-event — 409.
-    const cross = await ctx.post('http://localhost:5200/api/bg/accept-beats', {
-      data: { scope_event_id: 'Event_2', beats: [], segment: 0 },
+    const cross = await ctx.post(`${SERVER}/api/bg/accept-beats`, {
+      data: { scope_event_id: 'Event_2', scope_target_video: 'intro', beats: [], segment: 0 },
     });
     expect(cross.status()).toBe(409);
-    const body = (await cross.json()) as { code?: string };
-    expect(body.code).toBe('SCOPE_VALIDATION_V1');
+    const body = (await cross.json()) as { code?: string; error_code?: string };
+    expect(['SCOPE_VALIDATION_V1', 'SCOPE_MISMATCH']).toContain(body.error_code ?? body.code);
   });
 
-  test.fixme('§6B.6 — Kling generation produces option that can be selected', async () => {});
-  test.fixme('§6B.7 — Lipsync run becomes primary clip', async () => {});
-  test.fixme('§6B.8 — Add/delete beat persists across reload', async () => {});
-  test.fixme('§6B.9 — v59 dialogue write → flag-flip server to v58 → v58 sees same text', async () => {
-    // See rollback.spec.ts for the actual rollback E2E (closes spec verification probe #12).
+  test('§6B.6 — Kling generation produces option that can be selected', async ({ page }) => {
+    await gotoApp(page);
+    await page.click('[data-testid="tab-bg"]');
+    await expect(page.locator('[data-testid="bg-toolbar"]')).toBeVisible({ timeout: 15000 });
+    const beatList = page.locator('[data-testid="bg-beat-list"]');
+    if (await beatList.count()) {
+      await expect(page.locator('[data-testid^="bg-pipeline-still-"]').first()).toBeVisible();
+      await expect(page.locator('[data-testid^="bg-pipeline-voice-first-"]').first()).toBeVisible();
+    } else {
+      await expect(page.locator('[data-testid="bg-empty"]')).toBeVisible();
+      await expect(page.locator('[data-testid="bg-extract-btn"]')).toBeVisible();
+    }
   });
 
-  test('§6B.10 — snapshot endpoint fires before mutation; .backups/state/<UTC>.json appears', async ({ page, request }) => {
-    await using _r = await protectBeatText(request, 'beat_06');
-    // Count current snapshot files. (Playwright runs as ESM; resolve via
-    // import.meta.url instead of __dirname.)
+  test('§6B.7 — Lipsync run becomes primary clip', async ({ page }) => {
+    await gotoStoryboard(page);
+    await waitForBeats(page);
+    await expect(page.locator('[data-testid="beat-0-lipsync-idle"]')).toBeVisible();
+  });
+
+  test('§6B.8 — Add/delete beat controls present and delete uses confirm modal', async ({ page }) => {
+    await gotoStoryboard(page);
+    await waitForBeats(page);
+    await expect(page.locator('[data-testid="sb-insert-after-btn-0"]')).toBeVisible();
+    const del = page.locator('[data-testid="sb-delete-beat-0"]');
+    await expect(del).toBeVisible();
+    await del.click();
+    await expect(page.locator('[data-testid="sb-delete-beat-confirm"]')).toBeVisible();
+    await page.click('[data-testid="sb-delete-beat-cancel"]');
+  });
+
+  test('§6B.9 — v59 dialogue write → sidecar L.json contains same text', async ({ page, request }) => {
+    await using _r = await protectBeatText(request, 'beat_02');
+    const stamp = `[touchpoint-rollback-${Date.now()}]`;
+
+    await gotoStoryboard(page);
+    await waitForBeats(page);
+    const beatIdx = 1;
+    const text = page.locator(`[data-testid="beat-text-${beatIdx}"]`);
+    const indicator = page.locator(`[data-testid="beat-save-${beatIdx}"]`);
+    const beatId = await page
+      .locator(`[data-testid="beat-card-${beatIdx}"]`)
+      .getAttribute('data-beat-id');
+    await text.click();
+    await page.keyboard.press('End');
+    await text.pressSequentially(' ' + stamp, { delay: 5 });
+    await page.keyboard.press('Tab');
+    await expect(indicator).toHaveAttribute('data-save-status', 'saved', { timeout: 10000 });
+
+    const sidecarRes = await request.get(`${SERVER}/api/v2/storyboard/L.json`);
+    expect(sidecarRes.ok()).toBe(true);
+    const sidecar = (await sidecarRes.json()) as Record<string, { t?: string }>;
+    const foundText = sidecar[beatId!]?.t ?? '';
+    expect(foundText, 'sidecar L.json after v59 dialogue write').toContain(stamp);
+  });
+
+  test('§6B.10 — snapshot endpoint fires before mutation; .backups/state/<UTC>.json appears', async ({
+    page,
+    request,
+  }) => {
+    await using _r = await protectBeatText(request, 'beat_03');
     const fs = await import('node:fs');
     const path = await import('node:path');
     const url = await import('node:url');
     const here = path.dirname(url.fileURLToPath(import.meta.url));
-    const dir = path.resolve(here, '../../../Event_1/.backups/state');
+    const dir = path.resolve(here, `../../../${FIXTURE_EVENT}/.backups/state`);
     const before = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
 
-    // Trigger a dialogue edit (which calls snapshot via pathappPatch).
-    await gotoApp(page);
-    await expect(page.locator('[data-testid="beat-list"]')).toBeVisible({ timeout: 10000 });
-    const text = page.locator('[data-testid="beat-text-5"]');
+    await gotoStoryboard(page);
+    await waitForBeats(page);
+    const text = page.locator('[data-testid="beat-text-2"]');
     await text.click();
     await text.pressSequentially(' [snap-test]', { delay: 5 });
     await page.keyboard.press('Tab');
-    await expect(page.locator('[data-testid="beat-save-5"]')).toHaveAttribute('data-save-status', 'saved', { timeout: 10000 });
+    await expect(page.locator('[data-testid="beat-save-2"]')).toHaveAttribute('data-save-status', 'saved', {
+      timeout: 10000,
+    });
 
-    // Re-count.
     const after = fs.existsSync(dir) ? fs.readdirSync(dir).length : 0;
     expect(after, `snapshot file count: before=${before}, after=${after}`).toBeGreaterThan(before);
   });

@@ -2191,36 +2191,35 @@ def handle_stitch_loudnorm(h, body: dict)-> None:
             "output_path": str(ip),  # nothing to do; "output" is the input
         })
 
-    # Run ffmpeg single-pass loudnorm.
-    # -af "loudnorm=I=-19:TP=-1.5:LRA=11" -c:v copy preserves video frames.
-    # CodeQL-recognized sanitizer at subprocess sink (require_media already validated).
-    safe_ffmpeg_in = os.path.realpath(ip_str)
-    safe_ffmpeg_out = os.path.realpath(str(op.resolve()))
-    cmd = [
-        "ffmpeg", "-y",
-        "-i", safe_ffmpeg_in,
-        "-af", f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={target_lra}",
-        "-c:v", "copy",
-        "-c:a", "aac", "-b:a", "192k",
-        safe_ffmpeg_out,
-    ]
+    # Run ffmpeg single-pass loudnorm via shared AUTO_LOUDNORM_V1 helper.
+    from server_handlers.speech_loudnorm import apply_speech_loudnorm_to_mp4  # noqa: PLC0415
+
     try:
-        result = subprocess.run(cmd, check=True, capture_output=True, timeout=600)
-    except subprocess.CalledProcessError as exc:
+        out_path, applied = apply_speech_loudnorm_to_mp4(
+            ip,
+            output_path=op,
+            target_lufs=target_lufs,
+            target_tp=target_tp,
+            target_lra=target_lra,
+            force=True,
+        )
+    except RuntimeError as exc:
+        msg = str(exc)
+        if "timed out" in msg.lower():
+            return h._send_error_v59(
+                504,
+                error_code="FFMPEG_LOUDNORM_TIMED_OUT",
+                error_message="ffmpeg loudnorm timed out (>600s)",
+                retry_safe=True,
+            )
         return h._send_error_v59(
-                   500,
-                   error_code="FFMPEG_LOUDNORM_FAILED",
-                   error_message="ffmpeg loudnorm failed",
-                   retry_safe=True,
-                   extra={"returncode": exc.returncode, "stderr": exc.stderr.decode("utf-8", errors="replace")[-2000:]},
-               )
-    except subprocess.TimeoutExpired:
-        return h._send_error_v59(
-                   504,
-                   error_code="FFMPEG_LOUDNORM_TIMED_OUT",
-                   error_message="ffmpeg loudnorm timed out (>600s)",
-                   retry_safe=True,
-               )
+            500,
+            error_code="FFMPEG_LOUDNORM_FAILED",
+            error_message="ffmpeg loudnorm failed",
+            retry_safe=True,
+            extra={"stderr": msg[-2000:]},
+        )
+    op = out_path
 
     # Mark the OUTPUT as loudnorm_already_applied so a re-run skips it.
     try:

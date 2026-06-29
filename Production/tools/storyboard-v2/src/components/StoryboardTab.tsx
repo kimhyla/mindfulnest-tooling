@@ -2126,6 +2126,29 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       setStatus('saved');
       setSavedAt(new Date().toISOString());
       clearStoryboardDialogueShadow(eventId, beatId);
+      pushToast({ kind: 'success', message: 'Dialogue saved', source: 'beat-dialogue-save' });
+      setTimeout(() => setStatus((s) => (s === 'saved' ? 'idle' : s)), 2000);
+    } else {
+      setStatus('error');
+      setErrorMsg(result.error ?? `HTTP ${result.status}`);
+    }
+  };
+
+  const onPauseTag = async () => {
+    const current = readText() || beat.text || '';
+    const newText = current.includes('[pause]') ? current : `${current} [pause]`.trim();
+    setDomText(newText);
+    setStatus('saving');
+    setErrorMsg(null);
+    const result = await pathappPatch(activeScope.value, 'beat_update_text', {
+      beat: beatId,
+      text: newText,
+    }, { skip_tts_regen: true });
+    if (result.ok) {
+      setStatus('saved');
+      clearStoryboardDialogueShadow(eventId, beatId);
+      pushToast({ kind: 'success', message: 'Pause tag saved (TTS skipped)', source: 'beat-pause-tag' });
+      onMutated();
       setTimeout(() => setStatus((s) => (s === 'saved' ? 'idle' : s)), 2000);
     } else {
       setStatus('error');
@@ -2301,6 +2324,15 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       />
       <div class="mn-beat-text-row">
         <SuggestParentheticalDropdown onPick={(p) => void onParentheticalPick(p)} />
+        <button
+          type="button"
+          class="mn-btn mn-btn-small"
+          data-testid={`beat-pause-tag-${index}`}
+          onClick={() => void onPauseTag()}
+          title="Insert [pause] without TTS regen"
+        >
+          [pause]
+        </button>
         <p
           ref={editRef}
           class="mn-beat-text mn-beat-editable"
