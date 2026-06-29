@@ -23,6 +23,8 @@
 //   SEEK-6  isDraggingSeekRef + capture-phase handlers + linkedVideoTimeS from
 //           lastScrubMsRef — onSeeking must not flash stale WS clock to 0.
 //   SEEK-7  Paused onSeeking must re-assert lastScrubMsRef (trim mode + lipsync mp4).
+//   SEEK-8  displayOnly + masterVideo (Stitcher): syncFromVideo MUST honor
+//           isDraggingSeekRef + lastScrubMsRef — video.currentTime at 0 fights drag.
 //   CUE-HANDLE-1  cue-block body pointer-events:none REQUIRES cue-block-handle
 //           pointer-events:auto (stem-trim pattern). Partial copy regresses resize.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
@@ -52,7 +54,10 @@ import {
 } from '../../utils/waveformPlaybackBus';
 import { isStitchComposerPlaybackOwner } from '../../utils/stitchConstants';
 import { linkedMediaSameFilename } from '../../utils/playbackVideoPolicy';
-import { createWaveformTimeAuthority } from '../../utils/waveformTimeAuthority.ts';
+import {
+  createWaveformTimeAuthority,
+  timelineRelXFromClientX,
+} from '../../utils/waveformTimeAuthority.ts';
 
 /** Intentional ws.destroy() during audioSrc / shared-media transitions aborts in-flight load. */
 function isIgnorableWaveformLoadError(err: unknown): boolean {
@@ -331,13 +336,19 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   useEffect(() => {
     if (displayOnly) {
       if (!displayPeaks?.length || !displayDurationS || !containerRef.current) return;
+      const ta = timeAuthorityRef.current;
+      const activeMs = lastScrubMsRef.current ?? currentMs;
+      if (activeMs > 0) ta.scrubToMs(activeMs);
+      ta.preserveAcrossRemount();
+      const restoredMs = ta.restoreAfterRemount();
       setLoadError(null);
       const slotClockMs = slotTimelineDurMs ?? fallbackDurationMs ?? 0;
       const authoritativeMs = slotClockMs > 0
         ? slotClockMs
         : displayDurationS * 1000;
       setDurationMs(authoritativeMs);
-      setCurrentMs(0);
+      setCurrentMs(restoredMs);
+      if (restoredMs > 0) lastScrubMsRef.current = restoredMs;
       setIsPlaying(false);
       setIsReady(false);
 
@@ -361,6 +372,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         setDurationMs(authoritativeMs);
         setIsReady(true);
         isReadyRef.current = true;
+        const playheadMs = lastScrubMsRef.current ?? timeAuthorityRef.current.getPlayheadMs();
+        if (playheadMs > 0 && authoritativeMs > 0) {
+          setCurrentMs(playheadMs);
+          ws.seekTo(Math.min(1, playheadMs / authoritativeMs));
+        }
       };
       ws.on('ready', onReadyHandler);
       const loadGen = ++waveformLoadGenRef.current;
@@ -688,17 +704,38 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     let rafId = 0;
     let boundVideo: HTMLVideoElement | null = null;
 
-    const syncFromVideo = (video: HTMLVideoElement) => {
-      const ms = Math.max(0, video.currentTime * 1000);
-      setCurrentMs(ms);
-      setIsPlaying(!video.paused && !video.ended);
-      const ws = wsRef.current;
+    const resolveDurMs = (): number => {
       const slotClockMs = slotTimelineDurMs ?? fallbackDurationMs ?? 0;
-      const durMs = durationMs ?? (slotClockMs > 0 ? slotClockMs : (displayDurationS ? displayDurationS * 1000 : 0));
+      return durationMs ?? (slotClockMs > 0 ? slotClockMs : (displayDurationS ? displayDurationS * 1000 : 0));
+    };
+
+    const applyPlayheadMs = (ms: number) => {
+      setCurrentMs(ms);
+      const ws = wsRef.current;
+      const durMs = resolveDurMs();
       if (ws && durMs > 0) {
         ws.seekTo(Math.min(1, ms / durMs));
       }
       onTimeUpdate?.(ms);
+    };
+
+    // SEEK-8 — Stitcher displayOnly: master <video> must not clobber paused drag authority.
+    const syncFromVideo = (video: HTMLVideoElement) => {
+      if (isDraggingSeekRef.current) return;
+      if (!video.paused && !video.ended) {
+        lastScrubMsRef.current = null;
+        applyPlayheadMs(Math.max(0, video.currentTime * 1000));
+        setIsPlaying(true);
+        return;
+      }
+      const scrubbed = lastScrubMsRef.current;
+      if (scrubbed != null) {
+        applyPlayheadMs(scrubbed);
+        setIsPlaying(false);
+        return;
+      }
+      applyPlayheadMs(Math.max(0, video.currentTime * 1000));
+      setIsPlaying(false);
     };
 
     const tick = () => {
@@ -930,10 +967,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
     const getRelX = (e: PointerEvent): number => {
       const box = wrapper.getBoundingClientRect();
-      const trackLeft = box.left + 8;
-      const trackWidth = box.width - 16;
-      if (trackWidth <= 0) return 0;
-      return Math.max(0, Math.min(1, (e.clientX - trackLeft) / trackWidth));
+      return timelineRelXFromClientX(box, e.clientX);
     };
 
     const shouldSkipSeek = (target: EventTarget | null): boolean => {
@@ -949,7 +983,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (shouldSkipSeek(e.target)) return;
       const live = wsRef.current;
       const durMs = displayOnly
-        ? (displayDurationS ?? 0) * 1000
+        ? (slotTimelineDurMs ?? fallbackDurationMs ?? (displayDurationS ?? 0) * 1000)
         : (timelineDurationMsRef.current ?? 0);
       if (!live || durMs <= 0) return;
       isDraggingSeekRef.current = true;
@@ -964,7 +998,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const endDragSeek = (rel: number) => {
       applySeek(rel);
       const durMs = displayOnly
-        ? (displayDurationS ?? 0) * 1000
+        ? (slotTimelineDurMs ?? fallbackDurationMs ?? (displayDurationS ?? 0) * 1000)
         : (timelineDurationMsRef.current ?? 0);
       onWaveformClickRef.current?.(rel * durMs);
       requestAnimationFrame(() => {
@@ -1035,10 +1069,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     return { ...c, offset_ms: dragDraft.offset_ms, duration_ms: dragDraft.duration_ms };
   });
 
-  const relXFromPointer = (wrapper: HTMLDivElement, evt: PointerEvent): number => {
-    const box = wrapper.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (evt.clientX - box.left) / box.width));
-  };
+  const relXFromPointer = (wrapper: HTMLDivElement, evt: PointerEvent): number =>
+    timelineRelXFromClientX(wrapper.getBoundingClientRect(), evt.clientX);
 
   const displayStemCut = stemCutDraft ?? {
     start_ms: cutStartMs,
@@ -1224,10 +1256,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (durMs <= 0) return;
       const wrapper = wrapperRef.current;
       if (!wrapper) return;
-      const box = wrapper.getBoundingClientRect();
-      const relativeX = (e.clientX - box.left) / box.width;
-      const clamped = Math.max(0, Math.min(1, relativeX));
-      const offsetMs = Math.round(clamped * durMs);
+      const relativeX = timelineRelXFromClientX(wrapper.getBoundingClientRect(), e.clientX);
+      const offsetMs = Math.round(relativeX * durMs);
       if (payload.kind === 'lib-watercolor') {
         onWatercolorDrop?.(payload.lib_key, offsetMs);
         return;

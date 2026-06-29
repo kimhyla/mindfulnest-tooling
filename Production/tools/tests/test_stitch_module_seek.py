@@ -34,3 +34,14 @@ def test_module_preview_seek_helper_prefers_start_offsets() -> None:
     src = MOD.read_text(encoding="utf-8")
     assert "export function modulePreviewSeekOffsetMs" in src
     assert "slotStartOffsetsMs[idx]" in src
+
+
+def test_stitcher_display_only_waveform_honors_drag_authority() -> None:
+    """SEEK-8 — Stitcher displayOnly masterVideo must not snap playhead to 0 on drag."""
+    ws = REPO / "tools" / "storyboard-v2" / "src" / "components" / "phase" / "WaveformTimeline.tsx"
+    src = ws.read_text(encoding="utf-8")
+    assert "SEEK-8" in src
+    block = src.split("if (!displayOnly) return;", 1)[1].split("}, [displayOnly, masterVideo", 1)[0]
+    assert "isDraggingSeekRef.current" in block
+    assert "lastScrubMsRef.current" in block
+    assert "timelineRelXFromClientX" in src

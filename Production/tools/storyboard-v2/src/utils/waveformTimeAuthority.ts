@@ -3,6 +3,19 @@
  * E3 track: closes WTA-017 remount reset class.
  */
 export const WAVEFORM_TIME_AUTHORITY_V1 = 'WAVEFORM_TIME_AUTHORITY_V1';
+/** Must match WaveformTimeline track insets (cue overlay alignment). */
+export const WAVEFORM_TRACK_INSET_PX = 8;
+
+/** Single X→rel mapping for seek, drop, and cue-handle drag (WTA-5). */
+export function timelineRelXFromClientX(
+  box: Pick<DOMRect, 'left' | 'width'>,
+  clientX: number,
+): number {
+  const trackLeft = box.left + WAVEFORM_TRACK_INSET_PX;
+  const trackWidth = box.width - WAVEFORM_TRACK_INSET_PX * 2;
+  if (trackWidth <= 0) return 0;
+  return Math.max(0, Math.min(1, (clientX - trackLeft) / trackWidth));
+}
 
 export interface WaveformTimeAuthority {
   getPlayheadMs(): number;

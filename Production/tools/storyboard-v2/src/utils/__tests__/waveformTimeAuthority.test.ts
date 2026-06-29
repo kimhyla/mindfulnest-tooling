@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { createWaveformTimeAuthority } from '../waveformTimeAuthority.ts';
+import { createWaveformTimeAuthority, timelineRelXFromClientX } from '../waveformTimeAuthority.ts';
 
 describe('waveformTimeAuthority', () => {
   it('preserveAcrossRemount keeps scrubbed playhead', () => {
@@ -28,5 +28,12 @@ describe('waveformTimeAuthority', () => {
     ta.scrubToMs(8000);
     ta.preserveAcrossRemount();
     assert.equal(ta.restoreAfterRemount(), 8000);
+  });
+
+  it('timelineRelXFromClientX respects track insets', () => {
+    const box = { left: 100, width: 200 };
+    assert.equal(timelineRelXFromClientX(box, 100), 0);
+    assert.equal(timelineRelXFromClientX(box, 300), 1);
+    assert.ok(Math.abs(timelineRelXFromClientX(box, 200) - 0.5) < 0.01);
   });
 });
