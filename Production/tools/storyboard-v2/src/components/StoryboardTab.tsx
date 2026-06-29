@@ -32,6 +32,11 @@ import {
   storyboardSessionHasCache,
   storyboardState,
 } from '../state/storyboardSessionStore';
+import {
+  clearStoryboardDialogueShadow,
+  useStoryboardDialogueField,
+} from '../hooks/useStoryboardDialogueField';
+import { useStoryboardTrimFields } from '../hooks/useStoryboardTrimFields';
 import { SERVER_BASE, MUTATION_ENDPOINTS as ENDPOINTS } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
 import { Spinner } from './ui/Spinner';
@@ -174,47 +179,8 @@ const KNOWN_SPEAKERS: readonly string[] = [
   'Ember', 'Bork', 'Bramble', 'Grizzle', 'Oliver',
 ] as const;
 
-function shadowKey(eventId: string, beatId: string): string {
-  return `mn:v59:shadow:${eventId}:${beatId}`;
-}
-
 function endFrameAddendumKey(eventId: string, beatId: string): string {
   return `mn:v59:endframe-addendum:${eventId}:${beatId}`;
-}
-const SHADOW_TTL_MS = 24 * 3600 * 1000;
-
-function readShadow(eventId: string, beatId: string): string | null {
-  try {
-    const raw = localStorage.getItem(shadowKey(eventId, beatId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { text: string; ts: number };
-    if (Date.now() - parsed.ts > SHADOW_TTL_MS) {
-      localStorage.removeItem(shadowKey(eventId, beatId));
-      return null;
-    }
-    return parsed.text;
-  } catch {
-    return null;
-  }
-}
-
-function writeShadow(eventId: string, beatId: string, text: string): void {
-  try {
-    localStorage.setItem(
-      shadowKey(eventId, beatId),
-      JSON.stringify({ text, ts: Date.now() }),
-    );
-  } catch {
-    // localStorage full / disabled — ignore (best-effort safety net).
-  }
-}
-
-function clearShadow(eventId: string, beatId: string): void {
-  try {
-    localStorage.removeItem(shadowKey(eventId, beatId));
-  } catch {
-    // ignore
-  }
 }
 
 // ----------------------------------------------------------------
@@ -555,25 +521,21 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
   // onPreviewTrim. Duration source: beat.audio_duration_s (populated after
   // first TTS regen; lipsync video duration is audio_duration_s + ~0.4s
   // tailroom per LD-779 — close enough for trim semantics).
-  const [trimFrontSec, setTrimFrontSec] = useState<string>('0.0');
-  const [trimBackSec, setTrimBackSec] = useState<string>('0.0');
-  // L5 fix 2026-05-16 per STORYBOARD_AUDIO_DELAY_READ_NESTED_PATH_V2: server
-  // persists at beat.phase_1.audio_delay (nested) and the bootstrap
-  // /api/v2/event/<id>/state response returns the raw state.json — so the
-  // value lives at the nested path on the React render path. The prior fix
-  // (LD-694, 2026-05-14) read the FLATTENED `beat.audio_delay` shape which
-  // is emitted only by /api/animate_status (different endpoint) — undefined
-  // on bootstrap → slider always re-defaulted to 0.0. Read order:
-  // phase_1.audio_delay (canonical) → audio_delay (flattened-poll fallback)
-  // → delay_seconds (legacy) → '0.0'. See spec id=225 §5.1 Edit 1.
-  const [delaySec, setDelaySec] = useState<string>(
-    String(
-      beat.phase_1?.audio_delay
-        ?? beat.audio_delay
-        ?? beat.delay_seconds
-        ?? '0.0',
-    ),
-  );
+  const trimFields = useStoryboardTrimFields(beatId, beat);
+  const {
+    trimFrontSec,
+    trimBackSec,
+    delaySec,
+    setTrimFrontSec,
+    setTrimBackSec,
+    setDelaySec,
+    onTrimFrontFocus,
+    onTrimFrontBlur,
+    onTrimBackFocus,
+    onTrimBackBlur,
+    onDelayFocus,
+    onDelayBlur,
+  } = trimFields;
   const [holdDuration, setHoldDuration] = useState<string>(
     String(beat.final?.kenburns?.duration_s ?? ''),
   );
@@ -583,42 +545,6 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
       setHoldDuration(String(persisted));
     }
   }, [beat.final?.kenburns?.duration_s]);
-  useEffect(() => {
-    setDelaySec(String(
-      beat.phase_1?.audio_delay
-        ?? beat.audio_delay
-        ?? beat.delay_seconds
-        ?? '0.0',
-    ));
-  }, [beat.phase_1?.audio_delay, beat.audio_delay, beat.delay_seconds]);
-  // LD-756 hydration: front_sec = trim_start (absolute = relative-from-start).
-  useEffect(() => {
-    const start = beat.phase_1?.trim_start ?? beat.trim_in;
-    setTrimFrontSec(start === null || start === undefined ? '0.0' : String(start));
-  }, [beat.phase_1?.trim_start, beat.trim_in]);
-  // LD-756 hydration: back_sec from trim_back (new canonical, relative) or duration - trim_end (legacy absolute).
-  useEffect(() => {
-    // New canonical path: trim_back is stored directly as relative seconds — no reverse-calculation.
-    const trimBack = beat.phase_1?.trim_back;
-    if (typeof trimBack === 'number' && Number.isFinite(trimBack) && trimBack > 0) {
-      setTrimBackSec(trimBack.toFixed(2));
-      return;
-    }
-    // Legacy fallback: trim_end is absolute timestamp; reverse-calculate back offset.
-    const trimEnd = beat.phase_1?.trim_end ?? beat.trim_out;
-    if (trimEnd === null || trimEnd === undefined || trimEnd === 'full') {
-      setTrimBackSec('0.0');
-      return;
-    }
-    const dur = beat.audio_duration_s;
-    if (typeof dur === 'number' && Number.isFinite(dur)) {
-      const back = Math.max(0, dur - Number(trimEnd));
-      setTrimBackSec(back.toFixed(2));
-    } else {
-      // Duration not yet known — leave as 0.0 until audio metadata arrives.
-      setTrimBackSec('0.0');
-    }
-  }, [beat.phase_1?.trim_back, beat.phase_1?.trim_end, beat.trim_out, beat.audio_duration_s]);
 
   // ----------------------------------------------------------------
   // Polling (animate + lipsync)
@@ -1647,6 +1573,8 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
           class="mn-beat-trim-input"
           data-testid={`beat-${index}-trim-front`}
           value={trimFrontSec}
+          onFocus={onTrimFrontFocus}
+          onBlur={onTrimFrontBlur}
           onInput={(e) => setTrimFrontSec((e.target as HTMLInputElement).value)}
           aria-label="Seconds to trim from the front (0.0 = no trim)"
           placeholder="0.0"
@@ -1658,6 +1586,8 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
           class="mn-beat-trim-input"
           data-testid={`beat-${index}-trim-back`}
           value={trimBackSec}
+          onFocus={onTrimBackFocus}
+          onBlur={onTrimBackBlur}
           onInput={(e) => setTrimBackSec((e.target as HTMLInputElement).value)}
           aria-label="Seconds to trim from the end (0.0 = no trim)"
           placeholder="0.0"
@@ -1691,6 +1621,8 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
           class="mn-beat-trim-input"
           data-testid={`beat-${index}-delay`}
           value={delaySec}
+          onFocus={onDelayFocus}
+          onBlur={onDelayBlur}
           onInput={(e) => setDelaySec((e.target as HTMLInputElement).value)}
           aria-label="Delay seconds"
           placeholder="0.0"
@@ -1726,13 +1658,19 @@ interface BeatCardProps {
 
 function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsertAfter, onDeleteBeat }: BeatCardProps) {
   const initialText = beat.text ?? '';
-  // CRITICAL: contenteditable must be UNCONTROLLED. State-driven children on a
-  // contenteditable trigger a re-render on every keystroke, which clobbers
-  // the DOM text node and resets the cursor to position 0. The user-visible
-  // bug is that typed characters appear REVERSED (because each new char goes
-  // in at position 0 after cursor reset). Fix: render initialText ONCE via
-  // ref, never set children from state, read text on blur.
-  const editRef = useRef<HTMLParagraphElement | null>(null);
+  const dialogueField = useStoryboardDialogueField({
+    eventId,
+    beatId,
+    externalText: initialText,
+  });
+  const {
+    editRef,
+    onInput: onDialogueInput,
+    onFocus: onDialogueFocus,
+    onBlur: onDialogueBlur,
+    readText,
+    setDomText,
+  } = dialogueField;
   const [status, setStatus] = useState<SaveStatus>('idle');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<string | null>(beat.text_last_updated_at ?? null);
@@ -2149,28 +2087,6 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     resetPlayState(`video load failed: ${msg}`, 'error', 'Lipsync playback');
   }, [resetPlayState, beatId]);
 
-  // Hydrate the ref's initial text + recover from localStorage if a fresher draft.
-  useEffect(() => {
-    const draft = readShadow(eventId, beatId);
-    if (editRef.current) {
-      if (draft !== null && draft !== initialText) {
-        editRef.current.innerText = draft;
-      } else {
-        editRef.current.innerText = initialText;
-      }
-    }
-  }, []);
-
-  const onInput = () => {
-    const next = editRef.current?.innerText ?? '';
-    writeShadow(eventId, beatId, next);
-  };
-
-  // Speaker dropdown change handler (LD CHARACTER_DROPDOWN_RESTORED_V1).
-  // Writes through pathappPatch (scope-validated mutation channel) — server
-  // canonicalizes the value, dual-writes top-level + phase_1.speaker, and
-  // sets text_modified_after_tts=true so the stale-TTS badge fires. No
-  // auto-regen — Kim clicks Regen Audio to apply.
   const onSpeakerChange = async (e: Event) => {
     const target = e.target as HTMLSelectElement | null;
     const nextSpeaker = (target?.value ?? '').trim();
@@ -2180,7 +2096,6 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
       speaker: nextSpeaker,
     });
     if (result.ok) {
-      // Trigger parent refresh so the new speaker + stale-TTS badge render.
       onMutated();
     } else {
       const msg = formatMutationError(result, 'Speaker save failed');
@@ -2195,7 +2110,8 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
   };
 
   const onBlur = async () => {
-    const next = editRef.current?.innerText ?? '';
+    onDialogueBlur();
+    const next = readText();
     if (next === initialText) {
       setStatus('idle');
       return;
@@ -2209,8 +2125,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     if (result.ok) {
       setStatus('saved');
       setSavedAt(new Date().toISOString());
-      clearShadow(eventId, beatId);
-      // Auto-fade to idle after 2s.
+      clearStoryboardDialogueShadow(eventId, beatId);
       setTimeout(() => setStatus((s) => (s === 'saved' ? 'idle' : s)), 2000);
     } else {
       setStatus('error');
@@ -2219,10 +2134,9 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
   };
 
   const onParentheticalPick = async (p: string) => {
-    const current = editRef.current?.innerText ?? beat.text ?? '';
+    const current = readText() || beat.text || '';
     const newText = current ? `${p} ${current}` : p;
-    if (editRef.current) editRef.current.innerText = newText;
-    writeShadow(eventId, beatId, newText);
+    setDomText(newText);
     setStatus('saving');
     setErrorMsg(null);
     const result = await pathappPatch(activeScope.value, 'beat_update_text', {
@@ -2232,7 +2146,7 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
     if (result.ok) {
       setStatus('saved');
       setSavedAt(new Date().toISOString());
-      clearShadow(eventId, beatId);
+      clearStoryboardDialogueShadow(eventId, beatId);
       onMutated();
       setTimeout(() => setStatus((s) => (s === 'saved' ? 'idle' : s)), 2000);
     } else {
@@ -2393,7 +2307,8 @@ function BeatCard({ index, beatId, beat, eventId, videoRole, onMutated, onInsert
           data-testid={`beat-text-${index}`}
           contentEditable
           spellcheck
-          onInput={onInput}
+          onInput={onDialogueInput}
+          onFocus={onDialogueFocus}
           onBlur={onBlur}
         />
       </div>

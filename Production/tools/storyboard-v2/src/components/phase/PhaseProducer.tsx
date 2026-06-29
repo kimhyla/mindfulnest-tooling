@@ -345,12 +345,22 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   });
 
   const refreshAll = async (): Promise<boolean> => {
-    const [wc, bc, st, ap] = await Promise.all([
+    const eventId = activeScope.value.event_id;
+    const catalogFetches: Promise<unknown>[] = [
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
       apiGet<BaseClipsResponse>('phase_base_clips_list'),
-      apiGet<EventStateResponse>('v2_event_state', { event_id: activeScope.value.event_id }),
-      apiGet<AmbientPresetListResponse>('phase_b_ambient_preset_list'),
-    ]);
+      apiGet<EventStateResponse>('v2_event_state', { event_id: eventId }),
+    ];
+    if (phase === 'b') {
+      catalogFetches.push(apiGet<AmbientPresetListResponse>('phase_b_ambient_preset_list'));
+    }
+    const results = await Promise.all(catalogFetches);
+    const wc = results[0] as Awaited<ReturnType<typeof apiGet<WatercolorListResponse>>>;
+    const bc = results[1] as Awaited<ReturnType<typeof apiGet<BaseClipsResponse>>>;
+    const st = results[2] as Awaited<ReturnType<typeof apiGet<EventStateResponse>>>;
+    const ap = phase === 'b'
+      ? (results[3] as Awaited<ReturnType<typeof apiGet<AmbientPresetListResponse>>>)
+      : { ok: false as const, status: 0, error: 'skipped' };
     let nextSlice = stateSlice;
     if (st.ok && st.data) {
       nextSlice = pickPhaseSlice(st.data, phase);

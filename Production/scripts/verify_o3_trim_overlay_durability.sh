@@ -21,6 +21,8 @@ grep -q "resolveO3PlaybackDurationS" "$BG_TAB" \
   || fail "BgTab must use resolveO3PlaybackDurationS for overlay timeline"
 grep -q "normalizeO3KeepWindow" "$OVERLAY" \
   || fail "commitDraft must normalize before isValidO3KeepWindow"
+grep -q "useBgO3CutSession\\|shouldPreserveBgO3CutDraft" "$BG_TAB" "$OVERLAY" \
+  || fail "BG O3 cut session authority must be wired"
 
 cd "$TOOLS"
 PYTHONPATH="${REPO_ROOT}/Production:${REPO_ROOT}" \

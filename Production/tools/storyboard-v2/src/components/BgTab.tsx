@@ -52,6 +52,8 @@ import {
   BgO3TrimNumericControls,
   showBgO3NumericTrimControls,
 } from './bg/BgO3TrimNumericControls.deprecated';
+import { useBgO3TrimNumericDraft } from '../hooks/useBgO3TrimNumericDraft';
+import { useBgO3CutSession } from '../hooks/useBgO3CutSession';
 import { writePersistedTrackSlot, isStitchUiSlotKey } from '../utils/stitchTrackFocus';
 import { stitchJobSessionKey } from '../state/producerSessionKeys';
 import { stitcherRefreshTick } from '../state/refreshSignals';
@@ -4527,28 +4529,27 @@ function BgOptionTile({
   const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
   const rawDurationRef = useRef<number | null>(null);
   const showNumericTrim = showBgO3NumericTrimControls();
-  const [trimStartDraft, setTrimStartDraft] = useState<string>(String(trimStart || 0));
-  const [trimBackDraft, setTrimBackDraft] = useState<string>(String(trimBack || 0));
+  const trimDraft = useBgO3TrimNumericDraft(beatId, optionIndex, trimStart || 0, trimBack);
+  const cutSession = useBgO3CutSession(beatId, optionIndex);
+  const {
+    trimStartDraft,
+    trimBackDraft,
+    trimDraftDirty,
+    setTrimStartDraft,
+    setTrimBackDraft,
+    clearDirtyAfterSave,
+  } = trimDraft;
+  const { pendingCut, setPendingCut, onOverlayDragStart, onOverlayDragEnd, clearPendingCut } = cutSession;
   const savedTrimStart = trimStart || 0;
   const savedTrimBack = trimBack ?? 0;
-  const trimDraftDirty = trimStartDraft !== String(savedTrimStart)
-    || trimBackDraft !== String(savedTrimBack);
   const [videoLoadError, setVideoLoadError] = useState(false);
   const [loadedDuration, setLoadedDuration] = useState<number | null>(null);
   const [sourceDurationS, setSourceDurationS] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [cutBusy, setCutBusy] = useState(false);
-  const [pendingCut, setPendingCut] = useState<{ startS: number; endS: number } | null>(null);
   const lastAutoPreviewRef = useRef<string | null>(null);
   const clipMissingOnDisk = option?.video_path_exists === false;
-
-  useEffect(() => {
-    setTrimStartDraft(String(trimStart || 0));
-  }, [trimStart]);
-  useEffect(() => {
-    setTrimBackDraft(String(trimBack || 0));
-  }, [trimBack]);
 
   const clearTrimPlaybackListener = useCallback((video?: HTMLVideoElement | null) => {
     const el = video ?? videoRef.current;
@@ -5005,7 +5006,7 @@ function BgOptionTile({
     if (!selected || !hasActiveCut) return;
     const saved = await persistCut(effectiveKeepStartS, effectiveKeepEndS);
     if (!saved.ok) return;
-    setPendingCut(null);
+    clearPendingCut();
     const trimBack = saved.trimBackS ?? cutPreviewTrimBackS();
     const startS = saved.keepStartS ?? effectiveKeepStartS;
     await refreshSavedCutPreview(startS, trimBack, saved.previewUrl);
@@ -5015,7 +5016,7 @@ function BgOptionTile({
     if (!selected) return;
     setCutBusy(true);
     try {
-      setPendingCut(null);
+      clearPendingCut();
       setPreviewUrl(null);
       lastAutoPreviewRef.current = null;
       forgetCutPreviewsForBeat(beatId);
@@ -5204,6 +5205,7 @@ function BgOptionTile({
     if (applied?.rawDurationS != null && applied.rawDurationS > 0) {
       rawDurationRef.current = applied.rawDurationS;
     }
+    clearDirtyAfterSave();
     const video = videoRef.current;
     if (video && canonicalVideoUrl) {
       setPreviewUrl(null);
@@ -5282,10 +5284,13 @@ function BgOptionTile({
               <BgO3CutOverlay
                 beatIndex={beatIndex}
                 optionIndex={optionIndex}
+                beatId={beatId}
                 durationS={overlayDurationS}
                 keepStartS={effectiveKeepStartS}
                 keepEndS={effectiveKeepEndS}
                 editable={!cutBusy}
+                onDragStart={onOverlayDragStart}
+                onDragEnd={onOverlayDragEnd}
                 onKeepDraftChange={(startS, endS) => {
                   setPendingCut({ startS, endS });
                 }}

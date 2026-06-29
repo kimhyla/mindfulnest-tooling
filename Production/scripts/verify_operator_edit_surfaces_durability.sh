@@ -58,8 +58,25 @@ fi
 echo "[operator-edit-surfaces] pass 3/4 — Beat Gen + Stitcher surfaces"
 grep -q 'useProtectedPromptField' "$SB/components/BgTab.tsx" \
   || fail "BgTab must use useProtectedPromptField"
-grep -q 'preserveRefBoxesOnServerBeatMerge' "$SB/state/bgSessionStore.ts" \
-  || fail "bgSessionStore must preserve ref boxes on merge"
+grep -q 'mergeBeatsOnSessionHydrate' "$SB/state/bgSessionStore.ts" \
+  || fail "bgSessionStore must use mergeBeatsOnSessionHydrate"
+if grep -q 'preserveRefBoxesOnServerBeatMerge' "$SB/state/bgSessionStore.ts"; then
+  fail "bgSessionStore must not call preserveRefBoxesOnServerBeatMerge directly"
+fi
+grep -q 'useBgO3TrimNumericDraft' "$SB/components/BgTab.tsx" \
+  || fail "BgTab must use useBgO3TrimNumericDraft"
+grep -q 'useBgO3CutSession' "$SB/components/BgTab.tsx" \
+  || fail "BgTab must use useBgO3CutSession"
+grep -q 'shouldPreserveBgO3CutDraft' "$SB/components/bg/BgO3CutOverlay.tsx" \
+  || fail "BgO3CutOverlay must preserve draft during drag"
+grep -q 'mergeStitchAmbientBedOnHydrate' "$SB/utils/stitchSlotDurableMerge.ts" \
+  || fail "stitchSlotDurableMerge missing mergeStitchAmbientBedOnHydrate"
+grep -q 'beginStitchAmbientPatch' "$SB/components/StitcherTab.tsx" \
+  || fail "StitcherTab must track ambient patch in flight"
+grep -q 'useStoryboardDialogueField' "$SB/components/StoryboardTab.tsx" \
+  || fail "StoryboardTab must use useStoryboardDialogueField"
+grep -q 'useStoryboardTrimFields' "$SB/components/StoryboardTab.tsx" \
+  || fail "StoryboardTab must use useStoryboardTrimFields"
 grep -q 'mergeStitchJobSlotsClientPatch' "$SB/components/StitcherTab.tsx" \
   || fail "StitcherTab must use mergeStitchJobSlotsClientPatch"
 grep -q 'STITCH_SAVE_REFRESH_LOCAL_CUES_V1' "$SB/components/StitcherTab.tsx" \
@@ -83,6 +100,10 @@ echo "[operator-edit-surfaces] pass 4/4 — vitest"
   node --experimental-strip-types --test "$MERGE_TEST"
   node --experimental-strip-types --test "$SB/utils/__tests__/phaseWatercolorCuesAuthority.test.ts"
   node --experimental-strip-types --test "$SB/hooks/__tests__/usePhaseBaseClipPicker.test.ts"
+  node --experimental-strip-types --test "$SB/hooks/__tests__/useBgO3TrimNumericDraft.test.ts"
+  node --experimental-strip-types --test "$SB/utils/__tests__/bgSessionBeatMerge.test.ts"
+  node --experimental-strip-types --test "$SB/utils/__tests__/bgO3CutSession.test.ts"
+  node --experimental-strip-types --test "$SB/utils/__tests__/stitchSlotDurableMerge.test.ts"
 ) || fail "operator edit vitest failed"
 
 echo "[operator-edit-surfaces] OK — full operator surface contract"

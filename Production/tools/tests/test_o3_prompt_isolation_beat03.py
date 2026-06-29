@@ -124,7 +124,7 @@ def test_submit_handler_blocks_still_insert_before_intent():
     block = src.read_text(encoding="utf-8").split("def handle_bg_submit_arlo_o3_voice", 1)[1]
     block = block.split("\ndef handle_bg_submit_kling", 1)[0]
     assert "validate_o3_submit_prompt_for_mode" in block
-    assert "heal_beat_dual_prompts" in block
+    assert "heal_beat_dual_prompts" not in block
     assert 'beat["o3_generate_mode"]' in block
 
 

@@ -7,8 +7,8 @@ import { apiGet } from '../api/client';
 import { handleO3TerminalOutcomesFromSession } from '../utils/o3SessionTerminalOutcomes';
 import {
   applyPromptEditsToBeats,
-  preserveRefBoxesOnServerBeatMerge,
 } from './promptEditRegistry';
+import { mergeBeatsOnSessionHydrate } from '../utils/bgSessionBeatMerge';
 import type { BgBeat, BgSegment, GptOption } from '../types/bgBeat';
 import { bgSessionKey } from './producerSessionKeys';
 import {
@@ -250,7 +250,7 @@ function applySessionPayload(
   }
   const nextBeats = applyPromptEditsToBeats(stateRes.beats ?? []);
   pauseAllBeatGenMedia();
-  row.beats = preserveRefBoxesOnServerBeatMerge(prevBeats, nextBeats);
+  row.beats = mergeBeatsOnSessionHydrate(prevBeats, nextBeats);
   row.lipsyncReady = stateRes.capabilities?.lipsync_public_host_ready ?? null;
   row.lipsyncMessage = stateRes.capabilities?.lipsync_public_host_message ?? null;
   seedGenFailureSeenKeys(row.beats);

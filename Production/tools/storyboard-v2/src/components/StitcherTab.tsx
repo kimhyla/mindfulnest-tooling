@@ -54,6 +54,8 @@ import {
 import {
   mergeStitchJobSlotsClientPatch,
   STITCH_SAVE_SLOT_DURABLE_MERGE_V1,
+  beginStitchAmbientPatch,
+  endStitchAmbientPatch,
 } from '../utils/stitchSlotDurableMerge';
 import {
   STITCH_AMBIENT_BED_VOLUME,
@@ -618,6 +620,7 @@ export function StitcherTab() {
       const mergedSlots = mergeStitchJobSlotsClientPatch(
         jobSlotsSnapshotRef.current,
         canonicalSlots,
+        { eventId: eventName },
       );
       const hydrated = hydrateAllSlotMediaFromJob(sessionKey, mergedSlots);
       setJob({
@@ -1993,6 +1996,8 @@ export function StitcherTab() {
   const onAmbientBedChange = async (slot: SlotKey, value: string) => {
     if (!job?.slots?.[slot]) return;
     setBusySlot({ slot, action: 'ambient' });
+    const eventId = activeScope.value.event_id;
+    beginStitchAmbientPatch(eventId, slot);
     const prev = job.slots[slot] ?? {};
     const nextSlot: StitchSlot = { ...prev, ambient_bed: value };
     if (value) {
@@ -2005,14 +2010,18 @@ export function StitcherTab() {
       ...job.slots,
       [slot]: nextSlot,
     };
-    const ok = await saveJobSlots(nextSlots);
-    setBusySlot(null);
-    if (ok) {
-      setStatusMsg(
-        value
-          ? `✓ ${slot} ambient bed → ${value} (composer preview updated)`
-          : `✓ ${slot} ambient bed cleared`,
-      );
+    try {
+      const ok = await saveJobSlots(nextSlots);
+      setBusySlot(null);
+      if (ok) {
+        setStatusMsg(
+          value
+            ? `✓ ${slot} ambient bed → ${value} (composer preview updated)`
+            : `✓ ${slot} ambient bed cleared`,
+        );
+      }
+    } finally {
+      endStitchAmbientPatch(eventId, slot);
     }
   };
 

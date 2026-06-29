@@ -4656,14 +4656,6 @@ def handle_bg_submit_arlo_o3_voice(h, body: dict) -> None:
                 ),
                 retry_safe=False,
             )
-        event_id_heal, phase_heal = bg.segment_event_phase_for_beat(sidecar_snap, str(beat_id))
-        if event_id_heal and phase_heal:
-            bg.heal_beat_dual_prompts(
-                work_beat,
-                sidecar_snap,
-                event_id=str(event_id_heal),
-                phase=str(phase_heal),
-            )
         body_mode = str(
             body.get("generation_mode") or body.get("o3_generate_mode") or "",
         ).strip().lower()
