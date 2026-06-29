@@ -259,7 +259,7 @@ def test_o3_poll_ui_patches_beat_while_running_and_on_terminal() -> None:
     store_src = (TOOLS / "storyboard-v2" / "src" / "state" / "bgSessionStore.ts").read_text(encoding="utf-8")
     assert "mergeBeatFromO3Poll" in poll_src
     assert "applyO3GalleryFieldsFromPoll" in helpers_src
-    assert "preserveRefBoxesOnServerBeatMerge" in store_src
+    assert "mergeBeatsOnSessionHydrate" in store_src
     assert "O3_POLL_INTERVAL_MS" in poll_src
     assert "res.data.beat" in poll_src
     assert "if (beatPatches.length > 0)" in poll_src
