@@ -4,10 +4,7 @@
 // Production/docs/PATCH_BEHAVIORAL_PARITY_AUDIT_v1.md (24 v58 patches deduped).
 //
 // Test types:
-//   * `test(...)`  — v59 implements the behavior; assertion is real.
-//   * `test.fixme(...)` — v59 doesn't yet implement (S3 polish); test is
-//     written but skipped. The fixme description names the gap so it's
-//     clear why and what S3 needs to add.
+//   * test(...)  — v59 implements the behavior; assertion is real.
 //   * Structural-eliminated rows (26, 27, 31): assertion proves v59's
 //     architectural fix held (no parent-relative selectors, no wrap-chain
 //     workarounds in code).

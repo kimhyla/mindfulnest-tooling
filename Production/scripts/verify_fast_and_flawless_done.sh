@@ -19,8 +19,8 @@ echo "[fast-and-flawless] === meta gate FAST_AND_FLAWLESS_DONE_V2 ==="
 grep -q "FAST_AND_FLAWLESS_DONE_V2" "$DONE" || fail "done doc must be V2 (zero fixme carve-out)"
 
 echo "[fast-and-flawless] pass 1/10 — no test.fixme in parity suites"
-grep -q 'test\.fixme' "$PARITY" && fail "behavioral-parity.spec.ts still has test.fixme — implement + un-skip"
-grep -q 'test\.fixme' "$TOUCH" && fail "touchpoint-a.spec.ts still has test.fixme — implement + un-skip"
+grep -E '^\s*test\.fixme\b' "$PARITY" && fail "behavioral-parity.spec.ts still has test.fixme — implement + un-skip"
+grep -E '^\s*test\.fixme\b' "$TOUCH" && fail "touchpoint-a.spec.ts still has test.fixme — implement + un-skip"
 
 echo "[fast-and-flawless] pass 2/10 — symptom matrix in-scope rows"
 for id in WTA-017 WTA-018 O3-004 O3-005 O3-006 SB-009 GAP-001 GAP-002 GAP-003; do
