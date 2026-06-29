@@ -436,6 +436,28 @@ export async function refreshBgSession(): Promise<boolean> {
   return true;
 }
 
+let refreshBgSessionInFlight: Promise<boolean> | null = null;
+let refreshBgSessionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Coalesce overlapping poll refreshes — OPERATOR_SESSION_PERF_V1. */
+export function scheduleRefreshBgSession(debounceMs = 150): void {
+  if (refreshBgSessionDebounceTimer !== null) {
+    clearTimeout(refreshBgSessionDebounceTimer);
+  }
+  refreshBgSessionDebounceTimer = setTimeout(() => {
+    refreshBgSessionDebounceTimer = null;
+    void refreshBgSessionCoalesced();
+  }, debounceMs);
+}
+
+export async function refreshBgSessionCoalesced(): Promise<boolean> {
+  if (refreshBgSessionInFlight) return refreshBgSessionInFlight;
+  refreshBgSessionInFlight = refreshBgSession().finally(() => {
+    refreshBgSessionInFlight = null;
+  });
+  return refreshBgSessionInFlight;
+}
+
 /** Wire submit ack or session reattach into poll map + nav busy indicators. */
 export function applyO3SubmitPollLatch(beatId: string, jobId: string): void {
   const id = beatId.trim();

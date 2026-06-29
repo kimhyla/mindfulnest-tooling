@@ -775,7 +775,64 @@ test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase B ambient preset hydrate', (
 });
 
 test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => {
-  // E2E deferred — ServerRehydrateWatcher races real /state with mock on focus refresh.
-  // Contract covered by hooks/__tests__/usePhaseBaseClipPicker.test.ts + F11 pick patch.
-  test.skip('PHASE-CLIP-HYDRATE-1 — focus refresh with omitted server field keeps picked clip', async () => {});
+  test('PHASE-CLIP-HYDRATE-1 — focus refresh with omitted server field keeps picked clip', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page);
+    await mockBaseClipsList(page);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+    await page.route('**/api/event/current**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          event_id: FIXTURE_EVENT,
+          event_generation: 1,
+        }),
+      });
+    });
+
+    let omitClipField = false;
+    await page.route(`**/api/v2/event/${FIXTURE_EVENT}/state**`, async (route) => {
+      const body: Record<string, unknown> = {
+        ok: true,
+        beats: {},
+        phase_a_lipsync_file: 'fix_lipsync.mp4',
+      };
+      if (!omitClipField) {
+        body.phase_a_chipper_sitting_clip_id = 'arlo_idle_wizard_desk_v1';
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    const slot = page.locator('[data-testid="phase-a-clip-slot-sitting"]');
+    await expect(slot).toHaveAttribute('data-clip-id', 'arlo_idle_wizard_desk_v1');
+
+    await page.locator('[data-testid="phase-a-clip-pick-sitting"]').click();
+    await page.locator('[data-testid="base-clip-option-chipper_sitting_alt_v2"]').click();
+    await expect(slot).toHaveAttribute('data-clip-id', 'chipper_sitting_alt_v2');
+
+    omitClipField = true;
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForTimeout(400);
+
+    await expect(slot).toHaveAttribute('data-clip-id', 'chipper_sitting_alt_v2');
+  });
 });

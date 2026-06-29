@@ -79,21 +79,19 @@ def handle_event_create(h, body: dict) -> None:
     new_event_dir.mkdir(parents=True, exist_ok=False)
     from lib.event_library import ensure_event_library_dirs
     ensure_event_library_dirs(new_event_dir)
-    # Storyboard template — prefer canonical deploy bundle (covers Event_7+ before
-    # next deploy fanout), else copy the serving event's storyboard HTML.
+    # Storyboard template — EVENT_SWITCH_STORYBOARD_BUNDLE_SYNC_V1
     try:
-        import shutil as _shutil
+        from lib.event_storyboard_bundle_sync import sync_event_storyboard_bundle
 
-        canonical_sb = (
-            new_event_dir.parent / "tools/storyboard-v2/dist/index.html"
+        boot = sync_event_storyboard_bundle(
+            new_event_dir,
+            fallback_source=h.app.storyboard_path if h.app.storyboard_path.is_file() else None,
+            force=True,
         )
-        target_name = "storyboard_v59_prod.html"
-        if canonical_sb.is_file():
-            _shutil.copy(canonical_sb, new_event_dir / target_name)
-        else:
-            src_sb = h.app.storyboard_path
-            if src_sb.is_file():
-                _shutil.copy(src_sb, new_event_dir / src_sb.name)
+        if boot.copied:
+            print(f"[event_create] storyboard bundle copied from {boot.source}", flush=True)
+        elif not boot.ok:
+            print(f"[event_create] storyboard copy skipped: {boot.error}", flush=True)
     except Exception as _e:
         print(f"[event_create] storyboard copy skipped: {_e}", flush=True)
     # Init state files (production_state.json + production_spend.json).
@@ -149,10 +147,29 @@ def handle_event_provision_server(h, body: dict) -> None:
             retry_safe=False,
             extra={"ok": False},
         )
+    bundle_sync = None
+    try:
+        from lib.event_storyboard_bundle_sync import sync_event_storyboard_bundle
+
+        event_dir = h.app.event_dir.parent / event_id
+        if event_dir.is_dir():
+            bundle_sync = sync_event_storyboard_bundle(
+                event_dir,
+                fallback_source=h.app.storyboard_path if h.app.storyboard_path.is_file() else None,
+            )
+            if bundle_sync.copied:
+                print(
+                    f"[event_provision_server] storyboard bundle synced for {event_id}",
+                    flush=True,
+                )
+    except Exception as _sync_exc:
+        print(f"[event_provision_server] WARN bundle sync: {_sync_exc}", flush=True)
     result = provision_dedicated_event_server(event_id)
     status = 200 if result.ok else 503
     payload = result.to_json()
     payload["ok"] = result.ok
+    if bundle_sync is not None:
+        payload["storyboard_bundle_sync"] = bundle_sync.to_json()
     if not result.ok:
         payload["error_code"] = "EVENT_SERVER_PROVISION_FAILED"
         payload["error_message"] = result.error or "provision failed"

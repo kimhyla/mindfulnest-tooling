@@ -21,8 +21,8 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 
 | Status | Count | Meaning |
 |--------|------:|---------|
-| **shipped** | 89 | Gate exists; fix landed |
-| **partial** | 18 | Gate or marker only; known hydrate/UX gap |
+| **shipped** | 105 | Gate exists; fix landed |
+| **partial** | 7 | Gate or marker only; known hydrate/UX gap |
 | **spec-only** | 6 | Documented in TECH_SPEC; not implemented |
 | **infra** | 12 | Operator pain but not edit-surface class (scope, sqlite, CI) |
 
@@ -80,20 +80,20 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | D-005 | Amber stem cut **reverted** on refresh before Apply | Phase A/B | Stem cut handles | Dual stateSlice | `usePhaseStemCut` | shipped |
 | D-006 | Stitcher SFX block **jumped back** after save refresh | Stitcher | SFX cues | GET after save clobber | `STITCH_SAVE_REFRESH_LOCAL_CUES_V1`, G3–G5 | shipped |
 | D-007 | BG ref boxes **lost** on session refresh | Beat Gen | Char/bg ref tiles | Server beat merge | `preserveRefBoxesOnServerBeatMerge` | shipped |
-| D-008 | O3 prompt **stripped/morphed** after Generate | Beat Gen | Prompt + refs | Sidecar rewrite not transaction | O3 intent spec (partial) | partial |
-| D-009 | Textarea **snaps back** immediately after Generate | Beat Gen | Prompt | refreshState from morphed sidecar | O3 intent spec | partial |
-| D-010 | Phase ambient preset **reverts** before save ack | Phase B | Ambient `<select>` | Direct patch + refreshAll | registry `phase_ambient_preset` debt | partial |
-| D-011 | Stitcher ambient bed **reverts** on refresh | Stitcher | Ambient per slot | Save refresh without merge | registry partial | partial |
-| D-012 | Storyboard dialogue cell **rolls back** mid-edit | Storyboard | contenteditable | Poll refresh | `rollback.spec`, S3 e2e | partial |
-| D-013 | Storyboard **trim front/back** fields reset mid-edit | Storyboard | LD-756 inputs | useEffect hydration | LD-756 markers only | partial |
-| D-014 | BG O3 trim overlay **resets mid-drag** before Apply Trim | Beat Gen | Amber keep-window | Poll + no merge owner | `verify_o3_trim_overlay` (export truth only) | partial |
-| D-015 | BG numeric trim draft **clobbered** on poll | Beat Gen | Trim numeric fields | trimStartDraft useEffect | BgOptionTile local state | partial |
-| D-016 | Phase base clip picker **desync** | Phase A/B | Base clip picker | selectedBaseClip + refreshAll | registry debt | partial |
-| D-017 | Cue drag **HTTP 0 / Failed to fetch** spam | Phase A/B | Cue handles | PATCH every pointermove | LL-WCU-2, pointerup commit | shipped |
-| D-018 | Gallery slot / trim fields **stale after session refresh** | Beat Gen | O3 gallery | Stale pipeline flags | commit `e6477ec` trim overlay timeline | partial |
+| D-008 | O3 prompt **stripped/morphed** after Generate | Beat Gen | Prompt + refs | O3 intent spec, `verify_o3_generation_intent` | shipped |
+| D-009 | Textarea **snaps back** immediately after Generate | Beat Gen | Prompt | intent latch before refreshState | shipped |
+| D-010 | Phase ambient preset **reverts** before save ack | Phase B | Ambient `<select>` | `usePhaseAmbientPreset` | shipped |
+| D-011 | Stitcher ambient bed **reverts** on refresh | Stitcher | Ambient per slot | `mergeStitchAmbientBedOnHydrate` | shipped |
+| D-012 | Storyboard dialogue cell **rolls back** mid-edit | Storyboard | contenteditable | `useStoryboardDialogueField`, S3 e2e | shipped |
+| D-013 | Storyboard **trim front/back** fields reset mid-edit | Storyboard | LD-756 inputs | `useStoryboardTrimFields` | shipped |
+| D-014 | BG O3 trim overlay **resets mid-drag** before Apply Trim | Beat Gen | Amber keep-window | `useBgO3CutSession`, `verify_o3_trim_overlay` | shipped |
+| D-015 | BG numeric trim draft **clobbered** on poll | Beat Gen | Trim numeric fields | `useBgO3TrimNumericDraft` | shipped |
+| D-016 | Phase base clip picker **desync** | Phase A/B | Base clip picker | `usePhaseBaseClipPicker`, PHASE-CLIP-HYDRATE-1 | shipped |
+| D-017 | Cue drag **HTTP 0 / Failed to fetch** spam | Phase A/B | Cue handles | LL-WCU-2, pointerup commit | shipped |
+| D-018 | Gallery slot / trim fields **stale after session refresh** | Beat Gen | O3 gallery | `mergeBeatsOnSessionHydrate` | shipped |
 | D-019 | `pathappPatch` **overwrote event_id** caller owned | All tabs | Mutations | scope injection bug | `F-STORYBOARD-001` e2e | shipped |
 | D-020 | Display order **empty vs undefined** broke UI | Storyboard | Beat list | JS falsy on `[]` | `DISPLAY_ORDER_STRICT_V1` e2e | shipped |
-| D-021 | Storyboard refresh after magic complete **lost local edits** | Storyboard | Beat cards | refreshTick full replace | S3 retroactive e2e | partial |
+| D-021 | Storyboard refresh after magic complete **lost local edits** | Storyboard | Beat cards | `useStoryboardDialogueField` + session merge | S3 retroactive e2e | shipped |
 | D-022 | Delay field **reverts** after save | Storyboard | Audio delay | T-5..T-9 durability | `delay_durability.spec` | shipped |
 | D-023 | Stitch slot **durable fields dropped** on partial client patch | Stitcher | Slot metadata | Partial patch merge | `STITCH_SAVE_SLOT_DURABLE_MERGE_V1` | shipped |
 | D-024 | Producer tab switch shows **reload spinner** | Phase A/B | Tab keep-alive | Full remount | `producer_session_tab_switch` e2e | shipped |
@@ -113,8 +113,8 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | TR-007 | Stitch **per-slot trim handles** missing | Stitcher | Slot waveform G9 | G9 e2e | shipped |
 | TR-008 | Stitch trim edit **doesn't persist** | Stitcher | G10 trim drag | G10 e2e | shipped |
 | TR-009 | Kling export used **untrimmed** clip after trim set | Beat Gen | Send to Stitcher | `materialize_kling_o3_trimmed_clip` grep | shipped |
-| TR-010 | BG trim overlay **mid-drag poll clobber** | Beat Gen | Overlay drag | — | **partial** |
-| TR-011 | Storyboard trim **mid-edit poll clobber** | Storyboard | Numeric trim | — | **partial** |
+| TR-010 | BG trim overlay **mid-drag poll clobber** | Beat Gen | Overlay drag | `useBgO3CutSession` | shipped |
+| TR-011 | Storyboard trim **mid-edit poll clobber** | Storyboard | Numeric trim | `useStoryboardTrimFields` | shipped |
 
 ---
 
@@ -125,7 +125,7 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | O3-001 | Generate button **disabled** falsely after debounce re-ran Element gate | Beat Gen | `verify_bg_generate_gate` | shipped |
 | O3-002 | Generate click **no spinner** — silent stall | Beat Gen | `verify_bg_generate_gate` | shipped |
 | O3-003 | UI shows **idle** while O3 job running | Beat Gen | `verify_bg_o3_submit_ui_reattach` | shipped |
-| O3-004 | Good g7 **overwritten**, no g8 | Beat Gen | O3 intent spec | partial |
+| O3-004 | Good g7 **overwritten**, no g8 | Beat Gen | O3 intent spec, beat03 isolation pytest | partial |
 | O3-005 | Char ref **ignored** (pose from Element not drop) | Beat Gen | O3 intent spec | partial |
 | O3-006 | `(female raccoon)` **stripped** from prompt after Generate | Beat Gen | O3 intent spec | partial |
 | O3-007 | Kling done but gallery **lags** lifecycle | Beat Gen | commit `d7a0760` close gallery before terminal | shipped |
@@ -165,8 +165,8 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | PA-018 | Animate hands: **whole frame sliced/moved** | Phase B | LL-WCA-3 wc_v13 | shipped |
 | PA-019 | White **holes** in animated cue | Phase B | LL-WCA-4 underlay | shipped |
 | PA-020 | Re-animate but preview shows **old** behavior | Phase B | LL-WCA-7 recipe hash bump | shipped |
-| PA-021 | F15 ambient preset selector empty/wrong | Phase B | F15, F-AMBIENT-001 | partial |
-| PA-022 | F10/F11 Phase A base clip pick | Phase A | F10/F11 e2e | partial (picker hydrate debt) |
+| PA-021 | F15 ambient preset selector empty/wrong | Phase B | F15, F-AMBIENT-001, AMBIENT-HYDRATE-1 | shipped |
+| PA-022 | F10/F11 Phase A base clip pick | Phase A | F10/F11, PHASE-CLIP-HYDRATE-1 | shipped |
 
 ---
 
@@ -209,6 +209,7 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | SC-007 | Event library paths **wrong event** after load | Beat Gen | `verify_event_library_scope` | shipped |
 | SC-008 | Cold boot **90s timeout** false fail deploy | CI | beatgen smoke 180s | shipped |
 | SC-009 | Milestone vs event **authority chain** wrong | Milestone | `verify_milestone_partition_resolver` | shipped |
+| SC-010 | Deploy while tab open — **manual reload** required | All | `checkBuildShaDriftAndAutoReload` | shipped |
 
 ---
 
@@ -218,7 +219,7 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 |----|------------------|-----|------|--------|
 | SB-001 | Magic trail **diagonal** not on shell path | Storyboard | LL magic path surface LD-828 | shipped |
 | SB-002 | Path picker drew on **still** not lipsync frame | Storyboard | LD-828 dim lock | shipped |
-| SB-003 | Rollback dialogue **reverts** edit | Storyboard | `rollback.spec` | partial |
+| SB-003 | Rollback dialogue **reverts** edit | Storyboard | `useStoryboardDialogueField`, S3 e2e | shipped |
 | SB-004 | Library SFX **disappeared** from panel | Library | `verify_library_audio` #1 | shipped |
 | SB-005 | MP3 upload **grayed out** | Library | `verify_library_audio` #2 | shipped |
 | SB-006 | Ambient preview **0:00** (spaced filename) | Library | `verify_library_audio` #3 | shipped |
@@ -236,9 +237,9 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | GAP-001 | Playhead **0:00 after audio remount** | WTA | `TECH_SPEC_WAVEFORM_TIME_AUTHORITY` WTA-1 REMOUNT-1 | **spec-only** |
 | GAP-002 | Single `waveformTimeAuthority.ts` module | WTA | WTA-0 extract | **spec-only** |
 | GAP-003 | `verify_waveform_time_authority.sh` grep gate | WTA | WTA-3 | **spec-only** |
-| GAP-004 | BG trim overlay mid-drag poll | Tier D | — | **partial** |
-| GAP-005 | Storyboard LD-756 trim mid-edit | Tier D | — | **partial** |
-| GAP-006 | Phase ambient + Stitcher ambient refresh | Tier D | registry P2 | **partial** |
+| GAP-004 | BG trim overlay mid-drag poll | Tier D | `useBgO3CutSession` | **shipped** |
+| GAP-005 | Storyboard LD-756 trim mid-edit | Tier D | `useStoryboardTrimFields` | **shipped** |
+| GAP-006 | Phase ambient + Stitcher ambient refresh | Tier D | ambient merge hooks | **shipped** |
 
 ---
 

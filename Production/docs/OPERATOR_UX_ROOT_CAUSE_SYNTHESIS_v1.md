@@ -10,14 +10,16 @@
 
 Phases A–C / Tier C answered: **“Which disk/server field is authoritative at export?”**
 
-The 149-row matrix shows **89 shipped**, **18 partial**, **3 spec-only**, **10 infra**, **6 gap duplicates** (section I overlaps B/C).
+The 149-row matrix shows **105 shipped**, **7 partial**, **3 spec-only**, **10 infra**, **6 gap duplicates** (section I overlaps B/C — now shipped).
 
-**Remaining operator pain is not another disk-authority problem.** It is **missing session boundaries** at two moments:
+**Remaining operator pain is narrowed to:**
 
-1. **While editing** — poll/refresh wins over local draft (RC2)
-2. **At Generate click** — canonical sidecar rewrite wins over operator intent (RC6 + RC8 + RC1)
+1. **WTA remount** — playhead 0:00 after audio remount (WTA-017, spec-only)
+2. **O3 prompt lineage** — g7/g8 overwrite, char ref pose, parenthetical strip (O3-004..006) — server prompt isolation, not session merge
+3. **Behavioral parity** — multi-tab legacy gaps (SB-009)
+4. **Watercolor drop timing** — WTA-018 partial
 
-A third parallel class — **ephemeral time authority** (RC3 + RC4) — is mostly shipped in waveform but **spec-only for remount** (WTA-017).
+Phase E **session merge** class (RC2) is **shipped** for all operator edit surfaces in `authority_registry.py`.
 
 ---
 
@@ -26,7 +28,7 @@ A third parallel class — **ephemeral time authority** (RC3 + RC4) — is mostl
 | ID | Name | Definition | Open rows |
 |----|------|------------|----------:|
 | **RC1** | Ephemeral vs persisted conflated | Session-only state treated as durable or vice versa | 2 |
-| **RC2** | Full-slice refresh without merge owner | GET/poll replaces entire client slice; no merge on omit/in-flight | **14** |
+| **RC2** | Full-slice refresh without merge owner | GET/poll replaces entire client slice; no merge on omit/in-flight | **0** |
 | **RC3** | Competing time/media clocks | WaveSurfer, `<video>`, React ms, duration refs disagree | 4 |
 | **RC4** | Effect lifecycle / handler binding | Handlers bound before refs ready; stale closures; remount order | 4 |
 | **RC5** | Dual UI surfaces same media | Two players/decoders for one clip | 0 |
@@ -44,13 +46,13 @@ A third parallel class — **ephemeral time authority** (RC3 + RC4) — is mostl
 
 | Status | Count | % |
 |--------|------:|--:|
-| shipped | 89 | 60% |
-| partial | 18 | 12% |
+| shipped | 105 | 70% |
+| partial | 7 | 5% |
 | spec-only | 3 | 2% |
 | infra | 10 | 7% |
 | *Section I duplicates partial/spec rows already counted in B/C* | 6 | — |
 
-**Unique open debt:** 18 partial + 3 spec-only = **21 rows** (section I GAP-* are subset of B/C/H partials + WTA spec).
+**Unique open debt:** 7 partial + 3 spec-only = **10 rows** (section I GAP-* shipped with Phase E).
 
 ### By meta-root (all 149 rows — shipped + open)
 

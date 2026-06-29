@@ -279,6 +279,7 @@ function fileUrl(name: string): string {
 export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [watercolors, setWatercolors] = useState<WatercolorItem[]>([]);
   const [baseClips, setBaseClips] = useState<BaseClipItem[]>([]);
+  const baseClipsLoadedRef = useRef(false);
   const [stateSlice, setStateSlice] = useState<PhaseStateSlice>({});
   const [suggesting, setSuggesting] = useState(false);
   const [therapeuticBrief, setTherapeuticBrief] = useState<TherapeuticBrief | null>(null);
@@ -344,11 +345,19 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     onPatchError: setStatusMsg,
   });
 
+  const ensureBaseClipsLoaded = async (): Promise<void> => {
+    if (baseClipsLoadedRef.current) return;
+    const bc = await apiGet<BaseClipsResponse>('phase_base_clips_list');
+    if (bc.ok && bc.data?.items) {
+      setBaseClips(bc.data.items);
+      baseClipsLoadedRef.current = true;
+    }
+  };
+
   const refreshAll = async (): Promise<boolean> => {
     const eventId = activeScope.value.event_id;
     const catalogFetches: Promise<unknown>[] = [
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
-      apiGet<BaseClipsResponse>('phase_base_clips_list'),
       apiGet<EventStateResponse>('v2_event_state', { event_id: eventId }),
     ];
     if (phase === 'b') {
@@ -356,10 +365,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
     const results = await Promise.all(catalogFetches);
     const wc = results[0] as Awaited<ReturnType<typeof apiGet<WatercolorListResponse>>>;
-    const bc = results[1] as Awaited<ReturnType<typeof apiGet<BaseClipsResponse>>>;
-    const st = results[2] as Awaited<ReturnType<typeof apiGet<EventStateResponse>>>;
+    const st = results[1] as Awaited<ReturnType<typeof apiGet<EventStateResponse>>>;
     const ap = phase === 'b'
-      ? (results[3] as Awaited<ReturnType<typeof apiGet<AmbientPresetListResponse>>>)
+      ? (results[2] as Awaited<ReturnType<typeof apiGet<AmbientPresetListResponse>>>)
       : { ok: false as const, status: 0, error: 'skipped' };
     let nextSlice = stateSlice;
     if (st.ok && st.data) {
@@ -387,9 +395,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         return next;
       });
     }
-    if (bc.ok && bc.data?.items) {
-      setBaseClips(bc.data.items);
-    }
     if (ap.ok && ap.data?.items) {
       setAmbientPresets(ap.data.items);
     }
@@ -401,6 +406,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
     return hydrated;
   };
+
+  useEffect(() => {
+    baseClipsLoadedRef.current = false;
+    setBaseClips([]);
+  }, [activeScope.value.event_id, phase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1439,7 +1449,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                       type="button"
                       class="mn-btn mn-btn-small"
                       data-testid={`phase-a-clip-pick-${pos}`}
-                      onClick={() => setPickerPosition(pos)}
+                      onClick={() => {
+                        void ensureBaseClipsLoaded();
+                        setPickerPosition(pos);
+                      }}
                     >
                       Pick clip
                     </button>

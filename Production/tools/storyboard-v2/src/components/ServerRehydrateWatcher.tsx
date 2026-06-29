@@ -9,7 +9,7 @@ import {
 } from '../state/serverRehydrate';
 import { waitForStableProductionServer } from '../state/serverRestartHydrate';
 import { reconcileScopeAfterRestart } from '../state/scopeReconcile';
-import { checkBuildShaDrift } from '../state/buildShaDrift';
+import { checkBuildShaDriftAndAutoReload } from '../state/buildShaDrift';
 import { pushToast } from './ui/Toast';
 
 const POLL_MS = 20_000;
@@ -27,8 +27,8 @@ export function ServerRehydrateWatcher() {
       reachableRef.current = probe.ok;
 
       if (probe.ok) {
-        await checkBuildShaDrift();
-        if (cancelled) return;
+        const drifted = await checkBuildShaDriftAndAutoReload(reason);
+        if (cancelled || drifted) return;
 
         if (wasReachable === false) {
           const reconciled = await reconcileScopeAfterRestart(reason);

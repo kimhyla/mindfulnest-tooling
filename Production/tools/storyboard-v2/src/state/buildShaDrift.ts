@@ -3,6 +3,7 @@
 import { signal } from '@preact/signals';
 import { setScopeReady } from './scopeReady';
 import { parseBuildShaFromHtml, readBuildShaMetaContent, buildShaDriftDetected } from './buildShaMeta';
+import { pushToast } from '../components/ui/Toast';
 
 export const CLIENT_BUNDLE_STALE_MESSAGE =
   'Storyboard updated — reload this page to continue editing.';
@@ -76,6 +77,52 @@ export async function checkBuildShaDrift(): Promise<boolean> {
 /** Hard reload preserving query string — required after deploy before any save. */
 export function reloadForFreshBundle(): void {
   window.location.reload();
+}
+
+const AUTO_RELOAD_SESSION_KEY = 'mn:build-sha-auto-reload-pair';
+
+/** Playwright / automated tests must not hard-reload mid-spec. */
+export function shouldAutoReloadOnBuildShaDrift(): boolean {
+  if (typeof navigator !== 'undefined' && navigator.webdriver) return false;
+  try {
+    if (sessionStorage.getItem('mn:disable-build-sha-auto-reload') === '1') return false;
+  } catch {
+    // ignore
+  }
+  return true;
+}
+
+/**
+ * On drift: auto-reload once per bundled→live pair (zero-touch after deploy).
+ * Returns true when drift detected (reload may have started).
+ */
+export async function checkBuildShaDriftAndAutoReload(reason: string): Promise<boolean> {
+  const drift = await checkBuildShaDrift();
+  if (!drift) return false;
+  if (!shouldAutoReloadOnBuildShaDrift()) return true;
+
+  const pair = buildShaDriftPair.value;
+  if (pair) {
+    try {
+      if (sessionStorage.getItem(AUTO_RELOAD_SESSION_KEY) === pair) {
+        return true;
+      }
+      sessionStorage.setItem(AUTO_RELOAD_SESSION_KEY, pair);
+    } catch {
+      // proceed with reload
+    }
+  }
+
+  if (typeof window !== 'undefined') {
+    pushToast({
+      kind: 'info',
+      message: `Storyboard updated (${reason}) — reloading…`,
+      source: 'build-sha-auto-reload',
+      ttlMs: 4000,
+    });
+    window.setTimeout(() => reloadForFreshBundle(), 120);
+  }
+  return true;
 }
 
 export function isClientBundleStale(): boolean {
