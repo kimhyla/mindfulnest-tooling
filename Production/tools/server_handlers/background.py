@@ -6724,22 +6724,20 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     error_message="slot_index required to clear per-option trim",
                     retry_safe=False,
                 )
-            bg.clear_o3_option_trim(
-                work_beat,
-                slot_index=int(slot_index),
-                video_path=req_video_path,
-            )
-            bg.clear_o3_option_cut(
-                work_beat,
-                slot_index=int(slot_index),
-                video_path=req_video_path,
-            )
-            result = {
-                "trim_start": 0.0,
-                "trim_back": None,
-                "effective_duration_s": None,
-                "slot_index": int(slot_index),
-            }
+            try:
+                result = bg.restore_o3_option_untrimmed_video(
+                    work_beat,
+                    slot_index=int(slot_index),
+                    video_path=req_video_path,
+                )
+            except ValueError as exc:
+                return h._send_error_v59(
+                    400,
+                    error_code="TRIM_RESTORE_FAILED",
+                    error_message=str(exc),
+                    retry_safe=False,
+                )
+            bg.invalidate_kling_o3_trim_scratch(beat_id, Path(h.app.event_dir))
             return None
         if slot_index is None:
             return h._send_error_v59(
@@ -6978,23 +6976,26 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         elif use_option_trim:
             bg.refresh_o3_ui_slot_layout(work_beat)
             bg.refresh_o3_ui_slot_layout(beat)
-            err = _apply_option_trim_to_work_beat(work_beat)
-            if err is not None:
-                return err
-            if not preview_only:
-                if body.get("clear"):
-                    bg.clear_o3_option_trim(
+            if not preview_only and body.get("clear"):
+                try:
+                    result = bg.restore_o3_option_untrimmed_video(
                         beat,
                         slot_index=int(slot_index),
                         video_path=req_video_path,
                     )
-                    bg.clear_o3_option_cut(
-                        beat,
-                        slot_index=int(slot_index),
-                        video_path=req_video_path,
+                except ValueError as exc:
+                    return h._send_error_v59(
+                        400,
+                        error_code="TRIM_RESTORE_FAILED",
+                        error_message=str(exc),
+                        retry_safe=False,
                     )
-                    bg.invalidate_kling_o3_trim_scratch(beat_id, Path(h.app.event_dir))
-                else:
+                bg.invalidate_kling_o3_trim_scratch(beat_id, Path(h.app.event_dir))
+            else:
+                err = _apply_option_trim_to_work_beat(work_beat)
+                if err is not None:
+                    return err
+                if not preview_only:
                     opt = bg.find_o3_option_by_slot_index(
                         beat,
                         int(slot_index),
@@ -7032,15 +7033,6 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                             result["export_baked"] = bool(bake.get("baked"))
                             if bake.get("baked_path"):
                                 result["baked_path"] = bake["baked_path"]
-                            if bake.get("baked") and bake.get("baked_path"):
-                                promoted = bg.promote_o3_baked_trim_to_active_clip(
-                                    beat,
-                                    baked_path=bake["baked_path"],
-                                    slot_index=int(slot_index),
-                                    video_path=req_video_path,
-                                )
-                                result.update(promoted)
-                                result["trim_baked"] = True
                             opt_bake = bg.find_o3_option_by_slot_index(
                                 beat,
                                 int(slot_index),

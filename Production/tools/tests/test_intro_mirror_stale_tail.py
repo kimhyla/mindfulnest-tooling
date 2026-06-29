@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -67,28 +68,44 @@ def test_stale_chipper_tail_replaced_with_arlo(arlo_canonical_prod):
     assert "chipper_teleport_intro" not in beat["kling_o3_video_path"]
 
 
-def test_promote_baked_trim_clears_metadata(tmp_path: Path):
-    src = tmp_path / "delivery.mp4"
-    baked = tmp_path / "baked.mp4"
+def test_restore_untrimmed_still_insert(tmp_path: Path):
+    src = tmp_path / "bg_arc1_event4_pre_beat_05_still_insert_1782751303.mp4"
+    trimmed = tmp_path / "bg_arc1_event4_pre_beat_05_still_insert_1782751303_tts_trimmed_1782754163.mp4"
     src.write_bytes(b"x" * 100)
-    baked.write_bytes(b"y" * 50)
+    trimmed.write_bytes(b"y" * 50)
     beat = {
-        "beat_id": "bg_arc1_event4_pre_beat_10",
-        "kling_o3_video_path": str(src),
-        "kling_o3_trim_start": 0.0,
-        "kling_o3_trim_back": 7.0,
+        "beat_id": "bg_arc1_event4_pre_beat_05",
+        "kling_o3_video_path": str(trimmed),
         "kling_o3_options": [{
             "slot_index": 0,
-            "video_path": str(src),
-            "trim_start_s": 0.0,
-            "trim_back_s": 7.0,
+            "active": True,
+            "video_path": str(trimmed),
+            "trim_start_s": 2.33,
+            "key": "bg_arc1_event4_pre_beat_05_still_insert_1782751303",
         }],
     }
-    out = bg.promote_o3_baked_trim_to_active_clip(
-        beat, baked_path=baked, slot_index=0,
-    )
-    assert out["video_path"] == str(baked.resolve())
-    assert beat["kling_o3_video_path"] == str(baked.resolve())
-    assert "kling_o3_trim_back" not in beat
-    assert beat["kling_o3_options"][0]["video_path"] == str(baked.resolve())
-    assert "trim_back_s" not in beat["kling_o3_options"][0]
+    out = bg.restore_o3_option_untrimmed_video(beat, slot_index=0, video_path=str(trimmed))
+    assert out["video_path"] == str(src.resolve())
+    assert beat["kling_o3_video_path"] == str(src.resolve())
+    assert "trim_start_s" not in beat["kling_o3_options"][0]
+
+
+def test_bake_still_insert_preserves_untrimmed_lineage(tmp_path: Path):
+    src = tmp_path / "beat_still_insert_1.mp4"
+    src.write_bytes(b"x" * 100)
+    beat = {
+        "beat_id": "beat",
+        "source": "still_insert_ken_burns",
+        "kling_o3_video_path": str(src),
+        "kling_o3_trim_start": 1.0,
+        "kling_o3_trim_back": 0.5,
+        "kling_o3_options": [{"video_path": str(src), "slot_index": 0}],
+    }
+    with patch.object(bg, "materialize_kling_o3_trimmed_clip") as mat:
+        mat.side_effect = lambda _beat, dest, **_: dest.write_bytes(b"z" * 50) or dest
+        with patch.object(bg, "_ffprobe_duration", return_value=6.0):
+            bake = bg.bake_still_insert_trim_into_clip(beat)
+    assert bake["baked"] is True
+    opt = beat["kling_o3_options"][0]
+    assert opt["o3_untrimmed_video_path"] == str(src.resolve())
+    assert opt["video_path"] != str(src.resolve())

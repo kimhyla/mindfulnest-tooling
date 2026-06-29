@@ -7092,6 +7092,100 @@ def set_o3_option_trim(
     }
 
 
+def restore_o3_option_untrimmed_video(
+    beat: dict,
+    *,
+    slot_index: int,
+    video_path: str | None = None,
+) -> dict[str, Any]:
+    """Clear trim/cut/bake and restore the full-length delivery clip on the option."""
+    refresh_o3_ui_slot_layout(beat)
+    opt = find_o3_option_by_slot_index(
+        beat,
+        slot_index,
+        video_path=video_path,
+    )
+    if opt is None and video_path:
+        opt = find_o3_option_by_video_path(beat, video_path)
+    if opt is None:
+        for row in beat.get("kling_o3_options") or []:
+            if not isinstance(row, dict):
+                continue
+            if int(row.get("slot_index", -1)) == int(slot_index):
+                opt = row
+                break
+    if opt is None:
+        raise ValueError(f"No O3 option in slot {slot_index}")
+    untrimmed = _guess_o3_untrimmed_video_path(beat, opt)
+    if not untrimmed:
+        raise ValueError(
+            "Cannot restore full clip — no untrimmed source found. "
+            "Select the recovered delivery option or rebuild the still.",
+        )
+    opt["video_path"] = untrimmed
+    clear_o3_option_trim_fields(opt)
+    clear_o3_cut_fields(opt)
+    clear_o3_baked_fields(opt)
+    opt.pop("o3_untrimmed_video_path", None)
+    active_vp = str(beat.get("kling_o3_video_path") or "").strip()
+    prior_vp = str(video_path or "").strip()
+    if not active_vp or active_vp == prior_vp or "_trimmed" in active_vp.lower():
+        beat["kling_o3_video_path"] = untrimmed
+    clear_kling_o3_beat_trim(beat)
+    clear_o3_cut_fields(beat)
+    clear_o3_baked_fields(beat)
+    raw_dur = _ffprobe_duration(Path(untrimmed))
+    return {
+        "video_path": untrimmed,
+        "trim_start": 0.0,
+        "trim_back": None,
+        "raw_duration_s": round(raw_dur, 3) if raw_dur > 0 else None,
+        "effective_duration_s": round(raw_dur, 3) if raw_dur > 0 else None,
+        "slot_index": max(0, min(2, int(slot_index))),
+    }
+
+
+def _guess_o3_untrimmed_video_path(beat: dict, opt: dict) -> str | None:
+    """Resolve pre-trim delivery path for restore-after-clear."""
+    stored = str(opt.get("o3_untrimmed_video_path") or "").strip()
+    if stored and os.path.isfile(stored):
+        return stored
+    vp = str(opt.get("video_path") or beat.get("kling_o3_video_path") or "").strip()
+    if not vp:
+        return None
+    p = Path(vp)
+    if p.is_file():
+        stem = p.stem
+        for suffix in (
+            r"_tts_trimmed_\d+$",
+            r"_trimmed_\d+$",
+            r"_trimmed$",
+        ):
+            m = re.search(suffix, stem, flags=re.IGNORECASE)
+            if m:
+                candidate = p.with_name(stem[: m.start()] + p.suffix)
+                if candidate.is_file():
+                    return str(candidate.resolve())
+    opt_key = str(opt.get("key") or "").split("_o3_video")[0].split("_still_insert")[0]
+    best: tuple[float, str] | None = None
+    for row in beat.get("kling_o3_options") or []:
+        if not isinstance(row, dict):
+            continue
+        op = str(row.get("video_path") or "").strip()
+        if not op or op == vp or not os.path.isfile(op):
+            continue
+        if "_trimmed" in op.lower() or "_kling_o3_trim_scratch" in op.lower():
+            continue
+        if opt_key and opt_key not in op and Path(op).stem not in Path(vp).stem:
+            continue
+        dur = _ffprobe_duration(Path(op))
+        if dur <= 0:
+            continue
+        if best is None or dur > best[0]:
+            best = (dur, op)
+    return best[1] if best else None
+
+
 def clear_o3_option_trim(
     beat: dict,
     *,
@@ -7479,6 +7573,8 @@ def bake_still_insert_trim_into_clip(
         if not isinstance(o, dict):
             continue
         if (o.get("video_path") or "") in (old_path, str(src)):
+            if not str(o.get("o3_untrimmed_video_path") or "").strip():
+                o["o3_untrimmed_video_path"] = old_path
             o["video_path"] = new_path
     clear_kling_o3_beat_trim(beat)
     return {"baked": True, "video_path": new_path, "source_path": old_path}

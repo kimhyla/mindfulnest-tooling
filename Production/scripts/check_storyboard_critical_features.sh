@@ -173,6 +173,8 @@ MARKERS=(
     "KLING_STITCH_READINESS|KLING_STITCH_READINESS_V1"
     "KLING_STITCH_READINESS|data-kling-stitch-readiness-v1"
     "KLING_STITCH_READINESS|Approve still for stitch"
+    "BG_KLING_CLIP_APPROVE|Approve this beat"
+    "BG_KLING_CLIP_APPROVE|BG_KLING_CLIP_APPROVE_V1"
 )
 
 missing_count=0
