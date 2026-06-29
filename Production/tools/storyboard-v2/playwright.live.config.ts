@@ -1,26 +1,32 @@
 import { defineConfig, devices } from '@playwright/test';
 
-const LIVE_BASE = process.env.STORYBOARD_BASE_URL ?? 'http://localhost:5111';
-
+/**
+ * Live storyboard E2E — runs against dedicated Event_N server (:5111+).
+ * No webServer spawn; no Event_e2e_fixture mutation.
+ *
+ * Usage:
+ *   cd Production/tools/storyboard-v2
+ *   STORYBOARD_LIVE_BASE_URL=http://localhost:5111 npx playwright test --config playwright.live.config.ts
+ */
 export default defineConfig({
   testDir: './e2e',
-  testMatch: ['phase_e_hydrate_live.spec.ts'],
-  timeout: 60_000,
-  expect: { timeout: 15_000 },
+  testMatch: '*_live.spec.ts',
+  timeout: 300_000,
+  expect: { timeout: 180_000 },
   fullyParallel: false,
   workers: 1,
-  retries: 0,
+  retries: process.env.CI ? 1 : 0,
   reporter: [['list']],
   use: {
-    baseURL: LIVE_BASE,
+    baseURL: process.env.STORYBOARD_LIVE_BASE_URL ?? 'http://localhost:5112',
     headless: true,
     trace: 'on-first-retry',
-    actionTimeout: 10_000,
-    navigationTimeout: 30_000,
+    actionTimeout: 15_000,
+    navigationTimeout: 60_000,
   },
   projects: [
     {
-      name: 'chromium',
+      name: 'chromium-live',
       use: { ...devices['Desktop Chrome'] },
     },
   ],
