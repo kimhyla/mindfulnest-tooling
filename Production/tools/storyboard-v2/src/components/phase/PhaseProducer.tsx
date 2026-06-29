@@ -42,6 +42,8 @@ import { serverRehydrateTick } from '../../state/refreshSignals';
 import { SERVER_REHYDRATE_EVENT } from '../../state/serverRehydrate';
 import { usePhaseWatercolorCues } from '../../hooks/usePhaseWatercolorCues';
 import { usePhaseStemCut } from '../../hooks/usePhaseStemCut';
+import { usePhaseAmbientPreset } from '../../hooks/usePhaseAmbientPreset';
+import { usePhaseBaseClipPicker } from '../../hooks/usePhaseBaseClipPicker';
 import { useProtectedPromptField } from '../../hooks/useProtectedPromptField';
 import { WaveformTimeline, type WatercolorCue, type WaveformPlaybackControl } from './WaveformTimeline';
 import { WatercolorAnimOverlay } from './WatercolorAnimOverlay';
@@ -53,7 +55,6 @@ import {
 } from '../../phaseLipsyncJobContract';
 import {
   coercePhaseBCedricBaseClipId,
-  PHASE_B_CEDRIC_BASE_CLIP_CANONICAL,
 } from '../../phaseBCedricContract';
 import {
   coercePhaseAArloBaseClipId,
@@ -285,7 +286,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [saveBtnLabel, setSaveBtnLabel] = useState<string>('Save Script');
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [selectedBaseClip, setSelectedBaseClip] = useState<string>('');
   const [activeCueId, setActiveCueId] = useState<string | null>(null);
   const [popoverAnchor, setPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pickerPosition, setPickerPosition] = useState<PhaseAClipPosition | null>(null);
@@ -332,6 +332,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     onPatchError: setStatusMsg,
   });
 
+  const ambientPreset = usePhaseAmbientPreset({
+    phase,
+    scope: activeScope.value,
+    onPatchError: setStatusMsg,
+  });
+
+  const baseClipPicker = usePhaseBaseClipPicker({
+    phase,
+    scope: activeScope.value,
+    onPatchError: setStatusMsg,
+  });
+
   const refreshAll = async (): Promise<boolean> => {
     const [wc, bc, st, ap] = await Promise.all([
       apiGet<WatercolorListResponse>('phase_watercolor_list'),
@@ -344,6 +356,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       nextSlice = pickPhaseSlice(st.data, phase);
       watercolorCues.adoptFromEventState(st.data);
       stemCut.adoptFromEventState(st.data);
+      ambientPreset.adoptFromEventState(st.data);
+      baseClipPicker.adoptFromEventState(st.data);
       setStateSlice(nextSlice);
     } else if (!st.ok) {
       setStatusMsg(
@@ -365,30 +379,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
     if (bc.ok && bc.data?.items) {
       setBaseClips(bc.data.items);
-      const phaseAChars = new Set(['arlo', 'chipper']);
-      const wantedChar = phase === 'a' ? 'arlo' : 'cedric';
-      const sittingId = phase === 'a'
-        ? coercePhaseAArloBaseClipId(
-            nextSlice.chipper_sitting_clip_id ?? PHASE_A_ARLO_BASE_CLIP_CANONICAL,
-          )
-        : undefined;
-      const savedBaseClipId =
-        phase === 'b'
-          ? coercePhaseBCedricBaseClipId(
-              nextSlice.cedric_base_clip_id ?? PHASE_B_CEDRIC_BASE_CLIP_CANONICAL,
-            )
-          : sittingId;
-      const bySaved = savedBaseClipId
-        ? bc.data.items.find((c) => c.id === savedBaseClipId)
-        : undefined;
-      const bySitting = sittingId
-        ? bc.data.items.find((c) => c.id === sittingId)
-        : undefined;
-      const match = bySaved
-        ?? bySitting
-        ?? bc.data.items.find((c) => c.character === wantedChar)
-        ?? bc.data.items.find((c) => c.character && phaseAChars.has(c.character));
-      if (match) setSelectedBaseClip(match.id);
     }
     if (ap.ok && ap.data?.items) {
       setAmbientPresets(ap.data.items);
@@ -664,7 +654,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setBusyAction('regen_base');
     setStatusMsg('Kling idle base clip (~6 min)…');
     const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
-      clip_id: stateSlice.chipper_sitting_clip_id ?? selectedBaseClip ?? PHASE_A_ARLO_BASE_CLIP_CANONICAL,
+      clip_id: stateSlice.chipper_sitting_clip_id
+        ?? baseClipPicker.selectedClipId
+        ?? PHASE_A_ARLO_BASE_CLIP_CANONICAL,
     });
     setBusyAction(null);
     if (res.ok && res.status === 202) {
@@ -849,20 +841,23 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   // ── Phase A 3-clip handling (Phase D) ──────────────────────────────────
   const phaseAClipId = (pos: PhaseAClipPosition): string | undefined => {
-    if (pos === 'sitting') return stateSlice.chipper_sitting_clip_id;
+    if (pos === 'sitting') {
+      return baseClipPicker.selectedClipId || stateSlice.chipper_sitting_clip_id;
+    }
     return undefined;
   };
 
   const onPickPhaseAClip = async (pos: PhaseAClipPosition, clipId: string) => {
     const field = `phase_a_chipper_${pos}_clip_id`;
     setPickerPosition(null);
+    if (pos === 'sitting') {
+      await baseClipPicker.pickClip(clipId, field);
+      return;
+    }
     setStateSlice((s) => ({
       ...s,
       [`chipper_${pos}_clip_id`]: clipId,
     } as PhaseStateSlice));
-    if (pos === 'sitting') {
-      setSelectedBaseClip(clipId);
-    }
     const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
       field,
       value: clipId,
@@ -931,19 +926,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
   // ── Ambient preset (Phase E) ─────────────────────────────────────────
   const onPickAmbientPreset = async (presetId: string) => {
-    const field = `phase_${phase}_ambient_preset_id`;
-    setStateSlice((s) => {
-      const next: PhaseStateSlice = { ...s };
-      if (presetId) next.ambient_preset_id = presetId;
-      else delete next.ambient_preset_id;
-      return next;
-    });
-    const res = await pathappPatch(activeScope.value, 'v2_module_patch', {
-      field,
-      value: presetId,
-    });
-    if (!res.ok) {
-      setStatusMsg(`✗ ${field} HTTP ${res.status}: ${res.error ?? ''}`);
+    const ok = await ambientPreset.pickPreset(presetId);
+    if (ok) {
+      setStateSlice((s) => {
+        const next: PhaseStateSlice = { ...s };
+        if (presetId) next.ambient_preset_id = presetId;
+        else delete next.ambient_preset_id;
+        return next;
+      });
     }
   };
 
@@ -1224,7 +1214,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           <select
             id={`phase-${phase}-ambient`}
             data-testid={`phase-${phase}-ambient-preset-select`}
-            value={stateSlice.ambient_preset_id ?? ''}
+            value={ambientPreset.presetId || stateSlice.ambient_preset_id || ''}
             onChange={(e: Event) =>
               void onPickAmbientPreset((e.target as HTMLSelectElement).value)
             }

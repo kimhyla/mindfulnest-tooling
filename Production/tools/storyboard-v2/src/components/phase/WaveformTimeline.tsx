@@ -52,6 +52,7 @@ import {
 } from '../../utils/waveformPlaybackBus';
 import { isStitchComposerPlaybackOwner } from '../../utils/stitchConstants';
 import { linkedMediaSameFilename } from '../../utils/playbackVideoPolicy';
+import { createWaveformTimeAuthority } from '../../utils/waveformTimeAuthority.ts';
 
 /** Intentional ws.destroy() during audioSrc / shared-media transitions aborts in-flight load. */
 function isIgnorableWaveformLoadError(err: unknown): boolean {
@@ -273,6 +274,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   };
   /** Authoritative scrub target while paused — WS getCurrentTime() lags on lipsync mp4. */
   const lastScrubMsRef = useRef<number | null>(null);
+  const timeAuthorityRef = useRef(createWaveformTimeAuthority());
   /** Survives seek-effect rebind — local isDragging was lost mid-drag (flash to 0). */
   const isDraggingSeekRef = useRef<boolean>(false);
   const linkedVideoRef = useRef(linkedVideo);
@@ -380,9 +382,15 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     }
 
     if (playbackDisabled || !audioSrc || !containerRef.current) return;
+    const ta = timeAuthorityRef.current;
+    const activeMs = lastScrubMsRef.current ?? currentMs;
+    if (activeMs > 0) ta.scrubToMs(activeMs);
+    ta.preserveAcrossRemount();
+    const restoredMs = ta.restoreAfterRemount();
     setLoadError(null);
     setDurationMs(null);
-    setCurrentMs(0);
+    setCurrentMs(restoredMs);
+    if (restoredMs > 0) lastScrubMsRef.current = restoredMs;
     setIsPlaying(false);
     setIsReady(false);
 
@@ -890,6 +898,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (!live || durMs <= 0) return;
       const ms = rel * durMs;
       lastScrubMsRef.current = ms;
+      timeAuthorityRef.current.scrubToMs(ms);
       setCurrentMs(ms);
       onTimeUpdateRef.current?.(ms);
       live.seekTo(rel);
@@ -1271,6 +1280,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
       if (fromStart) ws.seekTo(0);
       lastScrubMsRef.current = null;
+      timeAuthorityRef.current.onPlaybackStart();
       const lv = linkedVideo?.current;
       if (lv && !useSharedLinkedMedia) {
         withLinkedVideoSuppress(() => {

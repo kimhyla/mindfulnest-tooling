@@ -915,10 +915,11 @@ def reconcile_stale_o3_intent_locks(sidecar: dict, event_dir: Path) -> int:
             if video and Path(video).is_file():
                 write_intent_terminal(job_id, event_dir, {
                     "intent_id": intent.get("intent_id"),
-                    "status": "done",
+                    "status": "done_with_warning",
                     "phase_last": "reconcile_orphan_terminal",
                     "sidecar_persist_ok": False,
                     "delivered": {"video_path": video},
+                    "warning": "Video on disk but sidecar persist failed during orphan reconcile",
                 })
                 if beat:
                     _clear_beat_intent_lock_fields(beat)

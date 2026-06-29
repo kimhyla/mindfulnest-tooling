@@ -1920,7 +1920,6 @@ export function BgTab() {
     // BG_O3_SUBMIT_UI_REATTACH_V1 — poll latch + session reattach on ambiguous submit.
     if (result.ok && result.data?.job_id) {
       applyO3SubmitPollLatch(beatId, result.data.job_id);
-      void refreshState();
       if (result.data.intent) {
         bgO3IntentByBeat.value = {
           ...(bgO3IntentByBeat.value as Record<string, O3GenerationIntentPoll>),
@@ -1933,6 +1932,7 @@ export function BgTab() {
           [beatId]: result.data!.submitted!,
         };
       }
+      void refreshState();
       const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
       const mode = result.data.o3_generate_mode;
       const modeLabel = mode === 'avatar_pro'

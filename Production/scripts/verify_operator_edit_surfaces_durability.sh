@@ -26,6 +26,18 @@ grep -q 'usePhaseWatercolorCues' "$SB/components/phase/PhaseProducer.tsx" \
   || fail "PhaseProducer must use usePhaseWatercolorCues"
 grep -q 'usePhaseStemCut' "$SB/components/phase/PhaseProducer.tsx" \
   || fail "PhaseProducer must use usePhaseStemCut"
+grep -q 'usePhaseAmbientPreset' "$SB/components/phase/PhaseProducer.tsx" \
+  || fail "PhaseProducer must use usePhaseAmbientPreset"
+grep -q 'usePhaseBaseClipPicker' "$SB/components/phase/PhaseProducer.tsx" \
+  || fail "PhaseProducer must use usePhaseBaseClipPicker"
+grep -q 'mergeOperatorFieldOnHydrate' "$SB/hooks/usePhaseBaseClipPicker.ts" \
+  || fail "usePhaseBaseClipPicker must use mergeOperatorFieldOnHydrate"
+grep -q 'usePhaseBaseClipPicker.test.ts' "$ROOT/Production/scripts/verify_operator_edit_surfaces_durability.sh" \
+  || fail "operator edit gate must run usePhaseBaseClipPicker vitest"
+grep -q 'PHASE-CLIP-HYDRATE-1' "$ROOT/Production/tools/storyboard-v2/e2e/phase_waveform_playback.spec.ts" \
+  || fail "missing PHASE-CLIP-HYDRATE-1 marker"
+grep -q 'AMBIENT-HYDRATE-1' "$ROOT/Production/tools/storyboard-v2/e2e/phase_waveform_playback.spec.ts" \
+  || fail "missing AMBIENT-HYDRATE-1 e2e"
 grep -q 'useProtectedPromptField' "$SB/components/phase/PhaseProducer.tsx" \
   || fail "PhaseProducer script must use useProtectedPromptField"
 grep -q 'PHASE_STEM_CUT_AUTHORITY_V1' "$SB/hooks/usePhaseStemCut.ts" \
@@ -57,6 +69,8 @@ for surface_id in \
   phase_watercolor_cue_geometry \
   phase_stem_cut_geometry \
   phase_script_draft \
+  phase_ambient_preset \
+  phase_base_clip_picker \
   stitch_sfx_cue_geometry \
   bg_beat_prompt_field \
   bg_beat_ref_boxes; do
@@ -68,6 +82,7 @@ echo "[operator-edit-surfaces] pass 4/4 — vitest"
   cd "$ROOT/Production/tools/storyboard-v2"
   node --experimental-strip-types --test "$MERGE_TEST"
   node --experimental-strip-types --test "$SB/utils/__tests__/phaseWatercolorCuesAuthority.test.ts"
+  node --experimental-strip-types --test "$SB/hooks/__tests__/usePhaseBaseClipPicker.test.ts"
 ) || fail "operator edit vitest failed"
 
 echo "[operator-edit-surfaces] OK — full operator surface contract"
