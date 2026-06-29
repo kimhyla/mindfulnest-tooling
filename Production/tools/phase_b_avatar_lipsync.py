@@ -3,8 +3,8 @@
 Category replacement for Kling base-loop lipsync on Phase B. Validated probe:
 ``run_phase_b_single_shot_avatar_probe.py`` + Event_2 job fbb800405fb54c829e12e6b795f923f7.
 
-Operator-locked prompt hash (Event_3 insert clips, 2026-06-29):
-``fe0da7a34aa2beb206bc84d25da47e78736aecd8e51575766b1570caa4420851``
+Operator-locked prompt hash (shared anti-caption PROHIBIT + negative_prompt, 2026-06-29):
+``333483939b2087b55dc537ff9c3807052ddc82c574efd516e3809a503b17c41a``
 Subtle Cedric motion only — NOT lively storyteller / generous gestures.
 """
 from __future__ import annotations
@@ -29,7 +29,19 @@ AVATAR_PRO_PROHIBIT = (
     "PROHIBIT: no text, no subtitles, no captions, no lower-third graphics, no watermarks, "
     "no logos, no foreign characters, no Chinese characters, no on-screen writing, "
     "no letters, no numbers, no symbols, no glyphs, no UI overlays, "
-    "no second character, no humans, no extra limbs, no background hallucinations."
+    "no second character, no humans, no extra limbs, no background hallucinations. "
+    "AUDIO-TO-TEXT PROHIBIT: do NOT burn spoken dialogue into the frame. No subtitles, "
+    "no captions, no closed captions, no lower-third title cards, no decorative fantasy "
+    "script lettering at the bottom of frame, no karaoke lyrics, no transcript overlay. "
+    "No new text anywhere in the frame — only text already baked into the input still "
+    "(on papers, labels, book spines) may appear, and it must stay perfectly frozen."
+)
+
+# WaveSpeed Kling Avatar Pro negative_prompt — wired in LipSyncClient.submit_avatar_pro().
+AVATAR_PRO_NEGATIVE_PROMPT = (
+    "text, subtitles, captions, lower third, watermark, burned-in dialogue, "
+    "foreign characters, Chinese characters, letters, numbers, glyphs, decorative script, "
+    "title card, transcript overlay, karaoke lyrics, fantasy lettering"
 )
 
 # Event_3 operator-approved subtle motion + frozen room (mug steam static).
@@ -71,7 +83,7 @@ STATIC_BG_PROMPT = (
 )
 
 PHASE_B_STATIC_BG_PROMPT_SHA256 = (
-    "fe0da7a34aa2beb206bc84d25da47e78736aecd8e51575766b1570caa4420851"
+    "333483939b2087b55dc537ff9c3807052ddc82c574efd516e3809a503b17c41a"
 )
 
 

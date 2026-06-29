@@ -730,6 +730,7 @@ class LipSyncClient:
         audio_path: Path,
         prompt: str,
         *,
+        negative_prompt: str | None = None,
         timeout: int = 180,
     ) -> str:
         """Submit Kling V2 Avatar Pro — still PNG + audio + prompt via data URI."""
@@ -737,6 +738,7 @@ class LipSyncClient:
             ensure_avatar_still_dimensions,
             ensure_min_dimensions,
         )
+        from phase_b_avatar_lipsync import AVATAR_PRO_NEGATIVE_PROMPT  # noqa: WPS433
 
         still_path = Path(still_path).resolve()
         audio_path = Path(audio_path).resolve()
@@ -756,7 +758,17 @@ class LipSyncClient:
         )
         image_uri = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
         audio_uri = file_to_data_uri(audio_path, "audio/mpeg")
-        body = {"image": image_uri, "audio": audio_uri, "prompt": prompt}
+        neg = AVATAR_PRO_NEGATIVE_PROMPT if negative_prompt is None else negative_prompt
+        body = {
+            "image": image_uri,
+            "audio": audio_uri,
+            "prompt": prompt,
+            "negative_prompt": neg,
+        }
+        print(
+            f"[avatar_pro] prompt={len(prompt)} chars negative_prompt={len(neg)} chars",
+            flush=True,
+        )
         payload = self._curl_json("POST", AVATAR_PRO_ENDPOINT, body, timeout=timeout)
         job_id = (
             (payload.get("data") or {}).get("id")

@@ -51,6 +51,8 @@ def test_static_bg_prompt_includes_avatar_pro_prohibit():
     assert AVATAR_PRO_PROHIBIT in STATIC_BG_PROMPT
     assert "no Chinese characters" in STATIC_BG_PROMPT
     assert "no subtitles" in STATIC_BG_PROMPT
+    assert "AUDIO-TO-TEXT PROHIBIT" in STATIC_BG_PROMPT
+    assert "baked into the input still" in STATIC_BG_PROMPT
     assert "TRIPOD LOCK" in STATIC_BG_PROMPT
     assert "wooden mug" in STATIC_BG_PROMPT
     assert "subtle breathing" in STATIC_BG_PROMPT

@@ -92,6 +92,8 @@ class AvatarStillPrepContractTests(unittest.TestCase):
         block = src[src.index("def submit_avatar_pro") : src.index("def ", src.index("def submit_avatar_pro") + 1)]
         self.assertIn("ensure_min_dimensions", block)
         self.assertIn("ensure_avatar_still_dimensions", block)
+        self.assertIn("negative_prompt", block)
+        self.assertIn("AVATAR_PRO_NEGATIVE_PROMPT", block)
 
     def test_segmented_production_uses_submit_avatar_pro(self) -> None:
         src = (TOOLS / "run_phase_b_avatar_segmented_production.py").read_text(encoding="utf-8")

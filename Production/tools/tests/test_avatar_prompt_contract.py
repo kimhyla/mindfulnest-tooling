@@ -35,6 +35,7 @@ def test_avatar_prompt_contract_lorelai_continuity_sidecar():
     assert AVATAR_PRO_PROHIBIT in prompt
     assert "no Chinese characters" in prompt
     assert "no subtitles" in prompt
+    assert "AUDIO-TO-TEXT PROHIBIT" in prompt
     assert "TRIPOD LOCK" in prompt
     assert "looks briefly surprised" in prompt
     assert "input portrait of Loral" in prompt

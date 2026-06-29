@@ -77,8 +77,18 @@ def handle_event_create(h, body: dict) -> None:
     new_event_dir = parent / new_event_id
     # Create dir + initialize state via StateManager (writes v3-shape state.json).
     new_event_dir.mkdir(parents=True, exist_ok=False)
-    from lib.event_library import ensure_event_library_dirs
+    from lib.event_library import ensure_event_library_dirs, seed_event_watercolors_if_empty
+
     ensure_event_library_dirs(new_event_dir)
+    try:
+        seeded = seed_event_watercolors_if_empty(new_event_dir, prod_root=parent)
+        if seeded:
+            print(
+                f"[event_create] seeded {seeded} watercolor(s) into {new_event_id}",
+                flush=True,
+            )
+    except OSError as _wc_err:
+        print(f"[event_create] watercolor seed skipped: {_wc_err}", flush=True)
     # Storyboard template — EVENT_SWITCH_STORYBOARD_BUNDLE_SYNC_V1
     try:
         from lib.event_storyboard_bundle_sync import sync_event_storyboard_bundle
