@@ -22,6 +22,7 @@
 //           only; stitched stays on preview <video> (drag flash to 0.0 repro).
 //   SEEK-6  isDraggingSeekRef + capture-phase handlers + linkedVideoTimeS from
 //           lastScrubMsRef — onSeeking must not flash stale WS clock to 0.
+//   SEEK-7  Paused onSeeking must re-assert lastScrubMsRef (trim mode + lipsync mp4).
 //   CUE-HANDLE-1  cue-block body pointer-events:none REQUIRES cue-block-handle
 //           pointer-events:auto (stem-trim pattern). Partial copy regresses resize.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
@@ -274,6 +275,10 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const lastScrubMsRef = useRef<number | null>(null);
   /** Survives seek-effect rebind — local isDragging was lost mid-drag (flash to 0). */
   const isDraggingSeekRef = useRef<boolean>(false);
+  const linkedVideoRef = useRef(linkedVideo);
+  linkedVideoRef.current = linkedVideo;
+  const useSharedLinkedMediaRef = useRef(useSharedLinkedMedia);
+  useSharedLinkedMediaRef.current = useSharedLinkedMedia;
 
   const cuePctLeft = (cue: WatercolorCue): number => {
     if (!timelineDurationMs || timelineDurationMs <= 0) return 0;
@@ -443,12 +448,19 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // accepting that clock zeros the red playhead on drag release.
     const onSeeking = () => {
       if (isDraggingSeekRef.current) return;
-      if (!ws.isPlaying()) return;
+      if (!ws.isPlaying()) {
+        const scrubbed = lastScrubMsRef.current;
+        if (scrubbed != null) {
+          setCurrentMs(scrubbed);
+          onTimeUpdateRef.current?.(scrubbed);
+        }
+        return;
+      }
       const ms = msFromWsClock(ws);
       if (ms == null) return;
       lastScrubMsRef.current = null;
       setCurrentMs(ms);
-      onTimeUpdate?.(ms);
+      onTimeUpdateRef.current?.(ms);
     };
     const linkedVideoTimeS = (): number => {
       const scrubbed = lastScrubMsRef.current;
@@ -883,6 +895,27 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       live.seekTo(rel);
       if (displayOnly) {
         onMasterSeek?.(ms);
+        return;
+      }
+      const lv = linkedVideoRef.current?.current;
+      if (lv && useSharedLinkedMediaRef.current) {
+        withLinkedVideoSuppress(() => {
+          lv.muted = false;
+          try {
+            lv.currentTime = ms / 1000;
+          } catch {
+            // ignore seek on unloaded media
+          }
+        });
+      } else if (lv && !useSharedLinkedMediaRef.current) {
+        withLinkedVideoSuppress(() => {
+          lv.muted = true;
+          try {
+            lv.currentTime = ms / 1000;
+          } catch {
+            // ignore seek on unloaded media
+          }
+        });
       }
     };
 
@@ -967,6 +1000,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     syncPlayUi,
     waveformHeight,
     linkedVideoScrubOnly,
+    withLinkedVideoSuppress,
   ]);
 
   const emitCueRange = (cueId: string, offsetMs: number, durationMs: number) => {
@@ -1300,6 +1334,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const durMs = durationMs ?? fallbackDurationMs;
     if (!ws || !durMs || durMs <= 0) return;
     const clamped = Math.max(0, Math.min(durMs, ms));
+    lastScrubMsRef.current = clamped;
     ws.seekTo(clamped / durMs);
     setCurrentMs(clamped);
     if (displayOnly) {

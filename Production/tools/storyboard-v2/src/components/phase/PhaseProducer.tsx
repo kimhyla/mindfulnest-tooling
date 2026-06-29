@@ -558,7 +558,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
     setStemTrimMode(true);
     setStatusMsg(
-      '✂ Trim mode — gold handles on the waveform. Amber = section to REMOVE. Drag handles, then Apply Cut.',
+      stateSlice.lipsync_file
+        ? '✂ Trim mode — current lipsync on waveform. Gold handles mark voice-stem cut.'
+        : '✂ Trim mode — gold handles on the waveform. Amber = section to REMOVE. Drag handles, then Apply Cut.',
     );
   };
 
@@ -946,11 +948,15 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const priorityAudio = priorityAudioFileForPhase(stateSlice, phase);
-  const waveformAudio =
-    stemTrimMode && stateSlice.voice_stem_file
-      ? { name: stateSlice.voice_stem_file, label: 'stem' as const }
-      : priorityAudio;
   const lipsyncFile = stateSlice.lipsync_file ?? null;
+  // Trim mode: when lipsync exists, keep the current composite on the waveform +
+  // linked preview (stem cut handles still target voice_stem server-side).
+  const waveformAudio =
+    stemTrimMode && lipsyncFile
+      ? { name: lipsyncFile, label: 'lipsync' as const }
+      : stemTrimMode && stateSlice.voice_stem_file
+        ? { name: stateSlice.voice_stem_file, label: 'stem' as const }
+        : priorityAudio;
   const previewVideo: PhasePreviewFile | null =
     phase === 'a'
       ? phaseAPreviewFile(stateSlice)
@@ -1087,13 +1093,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           </button>
         </div>
 
-        {/* Waveform trim toolbar — enter trim mode to show amber cut on stem (not lipsync). */}
+        {/* Waveform trim toolbar — enter trim mode to show amber cut handles.
+            When lipsync is pinned, waveform + preview stay on the current composite. */}
         {stateSlice.voice_stem_file ? (
           <div class="mn-phase-waveform-trim-toolbar" data-testid={`phase-${phase}-waveform-trim-toolbar`}>
             {stemTrimMode ? (
               <>
                 <span class="mn-stem-trim-mode-badge" data-testid={`phase-${phase}-stem-trim-mode-badge`}>
-                  ✂ Trim mode — voice stem on waveform
+                  ✂ Trim mode — current lipsync on waveform
                 </span>
                 <button
                   type="button"
@@ -1118,7 +1125,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   </button>
                 ) : null}
                 <span class="mn-dim mn-stem-trim-hint" data-testid={`phase-${phase}-stem-trim-hint`}>
-                  Drag gold handles · amber = section to remove
+                  Drag gold handles · amber = section to remove from voice stem
                 </span>
                 <button
                   type="button"
@@ -1128,7 +1135,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   disabled={busyAction !== null}
                   title={
                     lipsyncFile
-                      ? 'Return waveform to lipsync audio'
+                      ? 'Return to normal waveform view (lipsync stays pinned)'
                       : 'Hide trim handles and return to normal waveform view'
                   }
                 >
@@ -1143,13 +1150,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                   data-testid={`phase-${phase}-trim-voice-stem-btn`}
                   onClick={onEnterStemTrimMode}
                   disabled={busyAction !== null}
-                  title="Switch waveform to voice stem and show amber cut handles"
+                  title="Mark a section to remove from the voice stem (waveform stays on current lipsync when pinned)"
                 >
                   Trim voice stem
                 </button>
                 {lipsyncFile ? (
                   <span class="mn-dim mn-stem-trim-hint">
-                    Lipsync is on the waveform now — click Trim voice stem to edit the stem cut.
+                    Lipsync is on the waveform — trim mode keeps the current clip visible.
                   </span>
                 ) : null}
               </>
@@ -1159,7 +1166,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
         {/* Audio waveform — WaveSurfer v7 timeline (LD-330 / LD-472).
             Priority: lipsync > mixed > stem (resolved by priorityAudioFileForPhase).
-            stemTrimMode forces stem for cut editing. */}
+            stemTrimMode forces stem when no lipsync; otherwise keeps lipsync linked. */}
         <WaveformTimeline
           audioSrc={waveformAudio ? fileUrl(waveformAudio.name) : null}
           sourceLabel={waveformAudio?.label ?? null}
@@ -1174,12 +1181,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           stemCutEndMs={stemCutEndMs}
           stemCutEditable={canEditStemCut}
           onStemCutChange={onStemCutChange}
-          {...(stemTrimMode
-            ? {}
-            : {
+          {...(lipsyncFile
+            ? {
                 linkedVideo: videoRef,
                 linkedVideoFilename: previewVideo?.name ?? null,
-              })}
+              }
+            : {})}
           {...(linkedVideoMatchesWaveformAudio ? { linkedVideoMatchAudio: true } : {})}
           playbackControl={waveformPlaybackRef}
         />

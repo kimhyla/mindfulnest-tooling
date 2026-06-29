@@ -504,6 +504,39 @@ test.describe('PHASE_WAVEFORM_PLAY — drag-seek must not snap to 0 (WAVEFORM_DR
   });
 });
 
+test.describe('PHASE_WAVEFORM_PLAY — trim mode keeps lipsync + drag-seek (SEEK-7)', () => {
+  test('SEEK-TRIM-1 — Phase B trim mode drag release must not snap to 0', async ({ page }) => {
+    await mockAudioFiles(page, 90);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    await page.locator('[data-testid="phase-b-trim-voice-stem-btn"]').click();
+    await expect(page.locator('[data-testid="phase-b-stem-trim-mode-badge"]')).toBeVisible();
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+
+    const startX = box!.x + box!.width * 0.12;
+    const endX = box!.x + box!.width * 0.62;
+    const y = box!.y + box!.height * 0.72;
+
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(endX, y, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+
+    const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(ms).toBeGreaterThan(8000);
+    expect(ms).toBeLessThan(22000);
+  });
+});
+
 test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + bus)', () => {
   test('PLAY-A1 — Phase A ▶ Play toggles without seek-jump', async ({ page }) => {
     await mockAudioFiles(page, 30);

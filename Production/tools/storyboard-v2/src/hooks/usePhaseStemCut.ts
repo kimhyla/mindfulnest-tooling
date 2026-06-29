@@ -31,7 +31,10 @@ function readCutFields(
   const prefix = `phase_${phase}_`;
   const startS = state[`${prefix}voice_stem_cut_start_s`] as number | undefined;
   const endS = state[`${prefix}voice_stem_cut_end_s`] as number | undefined;
-  return { startS, endS };
+  const out: { startS?: number; endS?: number } = {};
+  if (startS != null) out.startS = startS;
+  if (endS != null) out.endS = endS;
+  return out;
 }
 
 export function usePhaseStemCut({
