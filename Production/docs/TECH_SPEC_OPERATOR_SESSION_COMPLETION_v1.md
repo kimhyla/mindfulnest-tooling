@@ -1,7 +1,7 @@
 # Tech Spec — Operator Session Completion (Phase E)
 
 **Marker:** `OPERATOR_SESSION_COMPLETION_V1`  
-**Status:** Shipped (Phase E PR2–PR6)  
+**Status:** Shipped — `verify_fast_and_flawless_done.sh` is the done gate.  
 **Input:** `OPERATOR_UX_SYMPTOM_MATRIX_v1.md` (149 rows) + `OPERATOR_UX_ROOT_CAUSE_SYNTHESIS_v1.md`  
 **Prerequisite:** Tier C disk authority (shipped); Tier D partial (watercolor, script, stem cut)
 

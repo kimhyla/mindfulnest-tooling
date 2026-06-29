@@ -21,9 +21,9 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 
 | Status | Count | Meaning |
 |--------|------:|---------|
-| **shipped** | 105 | Gate exists; fix landed |
-| **partial** | 7 | Gate or marker only; known hydrate/UX gap |
-| **spec-only** | 6 | Documented in TECH_SPEC; not implemented |
+| **shipped** | 112 | Gate exists; fix landed |
+| **partial** | 0 | — |
+| **spec-only** | 0 | — |
 | **infra** | 12 | Operator pain but not edit-surface class (scope, sqlite, CI) |
 
 | Phase E bucket | Count |
@@ -60,8 +60,8 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | WTA-014 | Phase switch in Stitcher **re-muxes slowly** | Stitcher | Phase tabs | Unnecessary remux on revisit | `stitcher_phase_switch_no_remux` e2e | shipped |
 | WTA-015 | F5 click-to-seek on waveform | Phase A/B | Waveform | Baseline seek | F5 e2e | shipped |
 | WTA-016 | F4 wrong audio on waveform (mixed vs lipsync) | Phase A/B | Waveform source | Priority resolver | F4 e2e | shipped |
-| WTA-017 | **Playhead resets to 0** after Generate stem / lipsync completes / audioSrc change | Phase A/B | Waveform | WS remount zeros state — **no preserve** | `TECH_SPEC_WAVEFORM_TIME_AUTHORITY` REMOUNT-1 | **spec-only** |
-| WTA-018 | Drop watercolor at X% lands at wrong timestamp | Phase A/B | Waveform drop | Duration not ready / dual time authority | WTA spec DROP-WC-1 (partial F7) | partial |
+| WTA-017 | **Playhead resets to 0** after Generate stem / lipsync completes / audioSrc change | Phase A/B | Waveform | WS remount zeros state — **no preserve** | `waveformTimeAuthority.ts`, REMOUNT-1 | shipped |
+| WTA-018 | Drop watercolor at X% lands at wrong timestamp | Phase A/B | Waveform drop | Duration not ready / dual time authority | DROP-WC-1 e2e | shipped |
 | WTA-019 | Library preview audio **keeps playing** on tab change | Library | Preview chip | No global pause | playback bus `mn-library-preview-audio` | shipped |
 | WTA-020 | Background tab WaveSurfer **blocks** visible tab play | Phase A/B | Keep-alive pane | Chrome autoplay / hidden pane | keep-alive MutationObserver | shipped |
 | WTA-021 | Stitcher SFX playback **diverges** from mux adelay | Stitcher | Composer + SFX | Wrong preview URL when SFX exist | `STITCH_SFX_PLAYBACK_TRUTH` live e2e | shipped |
@@ -125,9 +125,9 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | O3-001 | Generate button **disabled** falsely after debounce re-ran Element gate | Beat Gen | `verify_bg_generate_gate` | shipped |
 | O3-002 | Generate click **no spinner** — silent stall | Beat Gen | `verify_bg_generate_gate` | shipped |
 | O3-003 | UI shows **idle** while O3 job running | Beat Gen | `verify_bg_o3_submit_ui_reattach` | shipped |
-| O3-004 | Good g7 **overwritten**, no g8 | Beat Gen | O3 intent spec, beat03 isolation pytest | partial |
-| O3-005 | Char ref **ignored** (pose from Element not drop) | Beat Gen | O3 intent spec | partial |
-| O3-006 | `(female raccoon)` **stripped** from prompt after Generate | Beat Gen | O3 intent spec | partial |
+| O3-004 | Good g7 **overwritten**, no g8 | Beat Gen | `verify_o3_prompt_lineage_durability` | shipped |
+| O3-005 | Char ref **ignored** (pose from Element not drop) | Beat Gen | intent commit char ref gate | shipped |
+| O3-006 | `(female raccoon)` **stripped** from prompt after Generate | Beat Gen | intent verbatim pytest | shipped |
 | O3-007 | Kling done but gallery **lags** lifecycle | Beat Gen | commit `d7a0760` close gallery before terminal | shipped |
 | O3-008 | Orphan recovery says **done** when sidecar errno 11 | Beat Gen | `verify_o3_sidecar_checkpoint` | shipped |
 | O3-009 | **Beats disappeared** on cold boot | Beat Gen | beatgen sqlite / mirror union | shipped |
@@ -225,7 +225,7 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | SB-006 | Ambient preview **0:00** (spaced filename) | Library | `verify_library_audio` #3 | shipped |
 | SB-007 | Library tile **sizing** wrong | Library | R5 e2e | shipped |
 | SB-008 | Drag-drop wiring broken | Library/BG | R2 e2e | shipped |
-| SB-009 | Behavioral parity gaps (dialogue, crop, export) | Multi | `behavioral-parity.spec` | partial |
+| SB-009 | Behavioral parity gaps (dialogue, crop, export) | Multi | `behavioral-parity.spec` executable rows | shipped |
 | SB-010 | Video encode **soft/blotchy** previews | All previews | VQ-P3..P6 | shipped |
 
 ---
@@ -234,9 +234,9 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 
 | ID | What you noticed | Bucket | Doc | Status |
 |----|------------------|--------|-----|--------|
-| GAP-001 | Playhead **0:00 after audio remount** | WTA | `TECH_SPEC_WAVEFORM_TIME_AUTHORITY` WTA-1 REMOUNT-1 | **spec-only** |
-| GAP-002 | Single `waveformTimeAuthority.ts` module | WTA | WTA-0 extract | **spec-only** |
-| GAP-003 | `verify_waveform_time_authority.sh` grep gate | WTA | WTA-3 | **spec-only** |
+| GAP-001 | Playhead **0:00 after audio remount** | WTA | REMOUNT-1 + `verify_waveform_time_authority.sh` | **shipped** |
+| GAP-002 | Single `waveformTimeAuthority.ts` module | WTA | WTA-0 shipped | **shipped** |
+| GAP-003 | `verify_waveform_time_authority.sh` grep gate | WTA | WTA-3 | **shipped** |
 | GAP-004 | BG trim overlay mid-drag poll | Tier D | `useBgO3CutSession` | **shipped** |
 | GAP-005 | Storyboard LD-756 trim mid-edit | Tier D | `useStoryboardTrimFields` | **shipped** |
 | GAP-006 | Phase ambient + Stitcher ambient refresh | Tier D | ambient merge hooks | **shipped** |

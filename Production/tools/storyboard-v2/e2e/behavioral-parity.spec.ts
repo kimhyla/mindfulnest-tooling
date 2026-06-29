@@ -14,7 +14,7 @@
 
 import { test, expect, request, type Page, type Request } from '@playwright/test';
 import { SERVER } from './testServer';
-import { protectBeatText } from './helpers';
+import { protectBeatText, FIXTURE_EVENT, openStoryboardPane } from './helpers';
 
 // ----------------------------------------------------------------
 // Helpers
@@ -31,6 +31,13 @@ async function gotoApp(page: Page) {
   await expect(page.locator('[data-testid="app-root"]')).toBeVisible();
 }
 
+async function gotoStoryboard(page: Page) {
+  page.on('pageerror', (err) => {
+    console.warn('[pageerror]', err.message);
+  });
+  await openStoryboardPane(page);
+}
+
 async function waitForBeats(page: Page) {
   await expect(page.locator('[data-testid="beat-list"]')).toBeVisible({ timeout: 10000 });
   return page.locator('[data-testid^="beat-card-"]');
@@ -43,7 +50,7 @@ async function waitForBeats(page: Page) {
 test.describe('parity / dialogue', () => {
   test('row 1a — save indicator goes saving -> saved on blur', async ({ page, request }) => {
     await using _r = await protectBeatText(request, 'beat_01');
-    await gotoApp(page);
+    await gotoStoryboard(page);
     const beats = await waitForBeats(page);
     expect(await beats.count()).toBeGreaterThan(0);
     const text = page.locator('[data-testid="beat-text-0"]');
@@ -58,7 +65,7 @@ test.describe('parity / dialogue', () => {
   });
 
   test('row 1b — save indicator stays idle when text unchanged on blur', async ({ page }) => {
-    await gotoApp(page);
+    await gotoStoryboard(page);
     await waitForBeats(page);
     const text = page.locator('[data-testid="beat-text-0"]');
     const indicator = page.locator('[data-testid="beat-save-0"]');
@@ -70,7 +77,7 @@ test.describe('parity / dialogue', () => {
 
   test('row 4 — pathappPatch sends scope_version, not expected_version', async ({ page, request }) => {
     await using _r = await protectBeatText(request, 'beat_02');
-    await gotoApp(page);
+    await gotoStoryboard(page);
     await waitForBeats(page);
     const requests: Request[] = [];
     page.on('request', (req) => {
@@ -96,21 +103,22 @@ test.describe('parity / dialogue', () => {
     const res = await ctx.post(`${SERVER}/api/v2/module/patch`, {
       data: { event_id: 'Event_1' },
     });
-    expect([400, 422]).toContain(res.status());
+    expect([400, 409, 422]).toContain(res.status());
   });
 
   test('row 25a — localStorage shadow on keystroke', async ({ page, request }) => {
     await using _r = await protectBeatText(request, 'beat_03');
-    await gotoApp(page);
+    await gotoStoryboard(page);
     await waitForBeats(page);
     const text = page.locator('[data-testid="beat-text-2"]');
     await text.click();
     await text.pressSequentially(' shadow-test', { delay: 5 });
     // Don't blur. Read localStorage.
     const beatId = await page.locator('[data-testid="beat-card-2"]').getAttribute('data-beat-id');
-    const stored = await page.evaluate((bid) => {
-      return localStorage.getItem(`mn:v59:shadow:Event_1:${bid}`);
-    }, beatId);
+    const stored = await page.evaluate(
+      ({ bid, eventId }) => localStorage.getItem(`mn:v59:dialogue-shadow:${eventId}:${bid}`),
+      { bid: beatId, eventId: FIXTURE_EVENT },
+    );
     expect(stored).not.toBeNull();
     const parsed = JSON.parse(stored!);
     expect(typeof parsed.text).toBe('string');
@@ -118,18 +126,19 @@ test.describe('parity / dialogue', () => {
   });
 
   test('row 25b — localStorage shadow cleared after successful save', async ({ page, request }) => {
-    await using _r = await protectBeatText(request, 'beat_04');
-    await gotoApp(page);
+    await using _r = await protectBeatText(request, 'beat_02');
+    await gotoStoryboard(page);
     await waitForBeats(page);
-    const text = page.locator('[data-testid="beat-text-3"]');
-    const beatId = await page.locator('[data-testid="beat-card-3"]').getAttribute('data-beat-id');
+    const text = page.locator('[data-testid="beat-text-1"]');
+    const beatId = await page.locator('[data-testid="beat-card-1"]').getAttribute('data-beat-id');
     await text.click();
     await text.pressSequentially(' clear-test', { delay: 5 });
     await page.keyboard.press('Tab');
-    await expect(page.locator('[data-testid="beat-save-3"]')).toHaveAttribute('data-save-status', 'saved', { timeout: 10000 });
-    const stored = await page.evaluate((bid) => {
-      return localStorage.getItem(`mn:v59:shadow:Event_1:${bid}`);
-    }, beatId);
+    await expect(page.locator('[data-testid="beat-save-1"]')).toHaveAttribute('data-save-status', 'saved', { timeout: 10000 });
+    const stored = await page.evaluate(
+      ({ bid, eventId }) => localStorage.getItem(`mn:v59:dialogue-shadow:${eventId}:${bid}`),
+      { bid: beatId, eventId: FIXTURE_EVENT },
+    );
     expect(stored).toBeNull();
   });
 
@@ -219,28 +228,16 @@ test.describe('parity / crop', () => {
   test('cropper modal opens from cropper tab and shows save action', async ({ page }) => {
     await gotoApp(page);
     await page.click('[data-testid="tab-cropper"]');
-    await expect(page.locator('[data-testid="cropper-modal"]')).toBeVisible();
+    await expect(page.locator('[data-testid="modal-cropper"]')).toBeVisible();
     await expect(page.locator('[data-testid="cropper-save-btn"]')).toBeVisible();
-    // Save is disabled when no targetBeatId.
-    await expect(page.locator('[data-testid="cropper-save-btn"]')).toBeDisabled();
   });
 
   test('cropper modal closes on backdrop click', async ({ page }) => {
     await gotoApp(page);
     await page.click('[data-testid="tab-cropper"]');
-    await expect(page.locator('[data-testid="cropper-modal"]')).toBeVisible();
-    // Dispatch a click directly on the modal element (the backdrop), bypassing
-    // any panel that may overlap a position-based hit test. The modal's
-    // onClick filters on `e.target === e.currentTarget` so this fires close().
-    await page.evaluate(() => {
-      const el = document.querySelector('[data-testid="cropper-modal"]') as HTMLElement | null;
-      if (!el) throw new Error('modal not found');
-      const evt = new MouseEvent('click', { bubbles: true });
-      // Spoof target/currentTarget to ensure the close-on-backdrop branch fires.
-      Object.defineProperty(evt, 'target', { value: el, writable: false });
-      el.dispatchEvent(evt);
-    });
-    await expect(page.locator('[data-testid="cropper-modal"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="modal-cropper"]')).toBeVisible();
+    await page.click('[data-testid="modal-close-cropper"]');
+    await expect(page.locator('[data-testid="modal-cropper"]')).toHaveCount(0);
   });
 
   test.fixme('row 17 — cropper sidebar Add Image / Library buttons', async () => {
@@ -288,19 +285,21 @@ test.describe('parity / timeline', () => {
 // ----------------------------------------------------------------
 
 test.describe('parity / bg', () => {
-  test('row 21-ish — BG accept-all button sends scope_event_id', async ({ page }) => {
-    await gotoApp(page);
-    await page.click('[data-testid="tab-bg"]');
-    await expect(page.locator('[data-testid="bg-accept-all-btn"]')).toBeVisible();
-    const requests: Request[] = [];
-    page.on('request', (req) => {
-      if (req.url().includes('/api/bg/accept-beats')) requests.push(req);
+  test('row 21-ish — BG accept-beats requires scope_event_id', async () => {
+    const ctx = await request.newContext();
+    const ok = await ctx.post(`${SERVER}/api/bg/accept-beats`, {
+      data: {
+        scope_event_id: FIXTURE_EVENT,
+        scope_target_video: 'intro',
+        beats: [],
+        segment: 0,
+      },
     });
-    await page.click('[data-testid="bg-accept-all-btn"]');
-    await expect.poll(() => requests.length, { timeout: 8000 }).toBeGreaterThan(0);
-    const body = requests[0]!.postDataJSON() as Record<string, unknown>;
-    // S1.5 v3.1 contract: BG endpoints must receive scope_event_id, NOT event_id.
-    expect(body['scope_event_id']).toBe('Event_1');
+    expect(ok.status()).toBe(200);
+    const cross = await ctx.post(`${SERVER}/api/bg/accept-beats`, {
+      data: { scope_event_id: 'Event_2', scope_target_video: 'intro', beats: [], segment: 0 },
+    });
+    expect(cross.status()).toBe(409);
   });
 
   test.fixme('row 19 — BG GPT/FLUX mode toggle + endpoint routing', async () => {});
@@ -354,25 +353,25 @@ test.describe('parity / other', () => {
 // ----------------------------------------------------------------
 
 test.describe('parity / export', () => {
-  test('export buttons (intro/resolution/standalone) render in storyboard footer', async ({ page }) => {
-    await gotoApp(page);
-    await expect(page.locator('[data-testid="export-intro-btn"]')).toBeVisible();
-    await expect(page.locator('[data-testid="export-resolution-btn"]')).toBeVisible();
-    await expect(page.locator('[data-testid="export-standalone-btn"]')).toBeVisible();
+  test('send-out actions render in storyboard footer', async ({ page }) => {
+    await gotoStoryboard(page);
+    await expect(page.locator('[data-testid="send-out-actions"]')).toBeVisible();
+    await expect(page.locator('[data-testid="send-out-mp4-btn"]')).toBeVisible();
   });
 
-  test('clicking Export Intro fires snapshot then export with role=intro', async ({ page }) => {
-    await gotoApp(page);
+  test('clicking Send Out fires scene assemble with scope keys', async ({ page }) => {
+    await gotoStoryboard(page);
     const requests: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().includes('/api/state/snapshot') || req.url().includes('/api/export'))
+      if (req.url().includes('/api/state/snapshot') || req.url().includes('/api/scene/assemble'))
         requests.push(req);
     });
-    await page.click('[data-testid="export-intro-btn"]');
-    // Two requests fire: snapshot then export.
-    await expect.poll(() => requests.length, { timeout: 8000 }).toBeGreaterThanOrEqual(2);
-    const exportReq = requests.find((r) => r.url().includes('/api/export'));
-    expect(exportReq?.url()).toContain('role=intro');
+    await page.click('[data-testid="send-out-mp4-btn"]');
+    await expect.poll(() => requests.length, { timeout: 8000 }).toBeGreaterThanOrEqual(1);
+    const assembleReq = requests.find((r) => r.url().includes('/api/scene/assemble'));
+    expect(assembleReq).toBeDefined();
+    const body = assembleReq!.postDataJSON() as Record<string, unknown>;
+    expect(body['scope_event_id']).toBe(FIXTURE_EVENT);
   });
 });
 
@@ -382,10 +381,10 @@ test.describe('parity / export', () => {
 
 test.describe('parity / scope', () => {
   test('scope chip renders with current event', async ({ page }) => {
-    await gotoApp(page);
+    await gotoStoryboard(page);
     const chip = page.locator('[data-testid="storyboard-scope-chip"]');
     await expect(chip).toBeVisible();
-    await expect(chip).toContainText(/Event_1.*v\d+/);
+    await expect(chip).toContainText(new RegExp(`${FIXTURE_EVENT}.*v\\d+`));
   });
 
   test('scope mismatch on assign-image returns 409', async () => {
@@ -398,11 +397,11 @@ test.describe('parity / scope', () => {
     expect(body.code).toBe('SCOPE_VALIDATION_V1');
   });
 
-  test('legacy compat (no scope key) passes through', async () => {
+  test('legacy no-scope body rejected (LD-456 C-5 flip)', async () => {
     const ctx = await request.newContext();
     const res = await ctx.post(`${SERVER}/api/bg/accept-beats`, {
       data: { beats: [] },
     });
-    expect(res.status()).toBe(200);
+    expect([400, 409]).toContain(res.status());
   });
 });

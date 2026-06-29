@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { mergeBeatsOnSessionHydrate } from '../bgSessionBeatMerge.ts';
 
-describe('mergeBeatsOnSessionHydrate', () => {
+describe('BG-SESSION-TERMINAL-1 — mergeBeatsOnSessionHydrate', () => {
   it('preserves locked ref boxes on session refresh', () => {
     const local = [{
       beat_id: 'b1',

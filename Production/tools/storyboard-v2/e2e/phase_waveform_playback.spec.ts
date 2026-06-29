@@ -836,3 +836,72 @@ test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => 
     await expect(slot).toHaveAttribute('data-clip-id', 'chipper_sitting_alt_v2');
   });
 });
+
+async function mockWatercolorList(page: Page): Promise<void> {
+  await page.route('**/api/phase/watercolor_list**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        items: [{ key: 'wc_test', filename: 'wc_test.png', mtime: 1 }],
+        count: 1,
+      }),
+    });
+  });
+}
+
+async function mockModulePatch(page: Page): Promise<void> {
+  await page.route('**/api/v2/module/patch**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+}
+
+test.describe('WTA-018 — watercolor drop timing (DROP-WC-1)', () => {
+  test('DROP-WC-1 — drop at 50% lands near midpoint after duration ready', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: [],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator('[data-testid="waveform-timeline"]');
+    await expect.poll(async () => {
+      const v = await waveform.getAttribute('data-loaded-duration-ms');
+      return v ? Number(v) : 0;
+    }, { timeout: 15_000 }).toBeGreaterThan(0);
+
+    const wfBox = await waveform.boundingBox();
+    expect(wfBox).not.toBeNull();
+    await waveform.evaluate((el: Element, args: { x: number; y: number }) => {
+      const dt = new DataTransfer();
+      const payload = JSON.stringify({
+        kind: 'lib-watercolor',
+        lib_key: 'wc_test',
+        animation_type: 'fade_in',
+      });
+      dt.setData('application/x-mn-drag', payload);
+      dt.setData('text/plain', payload);
+      el.dispatchEvent(new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+        clientX: args.x,
+        clientY: args.y,
+      }));
+    }, { x: wfBox!.x + wfBox!.width / 2, y: wfBox!.y + wfBox!.height / 2 });
+
+    await expect(page.locator('[data-testid="phase-b-watercolors"]')).toContainText('wc_test', {
+      timeout: 5_000,
+    });
+  });
+});

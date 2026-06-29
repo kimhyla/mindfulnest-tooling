@@ -23,8 +23,9 @@ import { expect, type APIRequestContext, type Page } from '@playwright/test';
 import { SERVER } from './testServer';
 
 export { SERVER } from './testServer';
-export const EVENT_ID = 'Event_1';
+/** Playwright webServer pins Event_e2e_fixture on :5200 — not Event_1. */
 export const FIXTURE_EVENT = 'Event_e2e_fixture';
+export const EVENT_ID = FIXTURE_EVENT;
 
 /** App root visible — fixture-agnostic (Playwright webServer pins Event_e2e_fixture). */
 export async function gotoApp(page: Page): Promise<void> {

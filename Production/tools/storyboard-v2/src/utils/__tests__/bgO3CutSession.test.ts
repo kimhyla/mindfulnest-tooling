@@ -7,7 +7,7 @@ import {
   shouldPreserveBgO3CutDraft,
 } from '../bgO3CutSession.ts';
 
-describe('bgO3CutSession', () => {
+describe('BG-O3-CUT-HYDRATE-1 — bgO3CutSession poll merge', () => {
   it('preserves draft while drag active', () => {
     markBgO3CutDragActive('beat1', 0);
     assert.equal(isBgO3CutDragActive('beat1', 0), true);

@@ -13,9 +13,11 @@ import { checkBuildShaDriftAndAutoReload } from '../state/buildShaDrift';
 import { pushToast } from './ui/Toast';
 
 const POLL_MS = 20_000;
+const CHECK_DEBOUNCE_MS = 300;
 
 export function ServerRehydrateWatcher() {
   const reachableRef = useRef<boolean | null>(null);
+  const debounceRef = useRef<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -59,26 +61,37 @@ export function ServerRehydrateWatcher() {
       }
     };
 
-    void check('mount');
+    const scheduleCheck = (reason: string) => {
+      if (debounceRef.current !== null) {
+        window.clearTimeout(debounceRef.current);
+      }
+      debounceRef.current = window.setTimeout(() => {
+        debounceRef.current = null;
+        void check(reason);
+      }, CHECK_DEBOUNCE_MS);
+    };
+
+    scheduleCheck('mount');
 
     const onVisible = () => {
       if (document.visibilityState === 'visible') {
-        void check('visibility');
+        scheduleCheck('visibility');
       }
     };
-    const onFocus = () => { void check('focus'); };
+    const onFocus = () => { scheduleCheck('focus'); };
 
     window.addEventListener('visibilitychange', onVisible);
     window.addEventListener('focus', onFocus);
 
     const interval = window.setInterval(() => {
       if (document.visibilityState === 'visible') {
-        void check('poll');
+        scheduleCheck('poll');
       }
     }, POLL_MS);
 
     return () => {
       cancelled = true;
+      if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
       window.removeEventListener('visibilitychange', onVisible);
       window.removeEventListener('focus', onFocus);
       window.clearInterval(interval);

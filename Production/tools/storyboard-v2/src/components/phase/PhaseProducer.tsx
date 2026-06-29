@@ -425,10 +425,18 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   }, [activeScope.value.event_id, phase]);
 
   useEffect(() => {
-    const retry = () => { void refreshAll(); };
+    let focusTimer: number | null = null;
+    const retry = () => {
+      if (focusTimer !== null) window.clearTimeout(focusTimer);
+      focusTimer = window.setTimeout(() => {
+        focusTimer = null;
+        void refreshAll();
+      }, 200);
+    };
     window.addEventListener('focus', retry);
     document.addEventListener('visibilitychange', retry);
     return () => {
+      if (focusTimer !== null) window.clearTimeout(focusTimer);
       window.removeEventListener('focus', retry);
       document.removeEventListener('visibilitychange', retry);
     };
