@@ -981,6 +981,29 @@ def _prepare_bg_export_request(h, body: dict) -> dict | None:
         except Exception as exc:  # noqa: BLE001
             print(f"[BG] export-to-stitcher trim migrate persist failed: {exc}", flush=True)
 
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        O3GalleryExportAuthorityError,
+        normalize_o3_gallery_options,
+        assert_beat_export_gallery_authority,
+    )
+
+    gallery_errors: list[str] = []
+    for beat in beats:
+        normalize_o3_gallery_options(beat)
+        try:
+            assert_beat_export_gallery_authority(beat)
+        except O3GalleryExportAuthorityError as exc:
+            gallery_errors.append(str(exc))
+    if gallery_errors:
+        h._send_error_v59(
+            400,
+            error_code="EXPORT_GALLERY_AUTHORITY",
+            error_message="; ".join(gallery_errors),
+            retry_safe=False,
+            extra={"code": "O3_GALLERY_OPTION_IDENTITY_V1"},
+        )
+        return None
+
     scope_key = _bg_export_scope_key(arc_number, event_id, phase, str(slot_key))
     milestone_id = pctx.milestone_id if pctx and pctx.is_milestone else None
     return {

@@ -4783,13 +4783,20 @@ def o3_option_visible_in_ui_slots(option: dict, generation_mode: str) -> bool:
 
 
 def find_active_o3_option(beat: dict) -> dict | None:
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        O3GalleryOptionAmbiguousError,
+        normalize_o3_gallery_options,
+        resolve_o3_gallery_option,
+    )
+
+    normalize_o3_gallery_options(beat)
     key = beat.get("kling_o3_selected_option_key")
+    if key:
+        try:
+            return resolve_o3_gallery_option(beat, str(key))
+        except O3GalleryOptionAmbiguousError:
+            pass
     path = beat.get("kling_o3_video_path")
-    for o in beat.get("kling_o3_options") or []:
-        if not isinstance(o, dict):
-            continue
-        if key and o.get("key") == key:
-            return o
     if path:
         for o in beat.get("kling_o3_options") or []:
             if isinstance(o, dict) and o.get("video_path") == path:
@@ -4919,7 +4926,9 @@ def promote_o3_video_path_active(
     if not match:
         return False
     beat_id = str(beat.get("beat_id") or "beat")
-    key = str(match.get("key") or _kling_o3_option_key(beat_id, path))
+    from o3_gallery_option_identity import canonical_o3_option_key  # noqa: PLC0415
+
+    key = canonical_o3_option_key(beat_id, path)
     now = datetime.now(timezone.utc).isoformat()
     beat["kling_o3_selected_option_key"] = key
     beat["kling_o3_selected_at"] = now
@@ -4948,7 +4957,9 @@ def auto_select_o3_option_for_generation_mode(beat: dict, sidecar: dict, generat
         return False
     beat_id = str(beat.get("beat_id") or "beat")
     video_path = str(best["video_path"])
-    key = str(best.get("key") or _kling_o3_option_key(beat_id, video_path))
+    from o3_gallery_option_identity import canonical_o3_option_key  # noqa: PLC0415
+
+    key = canonical_o3_option_key(beat_id, video_path)
     now = datetime.now(timezone.utc).isoformat()
     beat["kling_o3_video_path"] = video_path
     beat["kling_o3_selected_option_key"] = key
@@ -12388,6 +12399,11 @@ def reconcile_o3_disk_deliveries_for_beat(beat: dict, event_dir: str | Path) -> 
     if changed:
         beat["kling_o3_options"] = options
         normalize_kling_o3_option_slots(beat)
+    from o3_gallery_option_identity import normalize_o3_gallery_options  # noqa: PLC0415
+
+    heal_logs = normalize_o3_gallery_options(beat)
+    if heal_logs:
+        changed = True
     if refresh_o3_ui_slot_layout(beat):
         changed = True
     if persist_o3_disk_enrich_on_beat(beat, event_dir, disk_paths=disk_paths):
@@ -12580,6 +12596,13 @@ def import_delivery_clip_to_beat(
         beat_is_still_insert(beat_probe)
         and resolved_source in O3_OPTION_SOURCE_STILL
     )
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        AUDIO_CONTRACT_VIDEO_ONLY,
+        probe_o3_clip_audio_contract,
+    )
+
+    if use_still_naming and probe_o3_clip_audio_contract(str(src)) != AUDIO_CONTRACT_VIDEO_ONLY:
+        use_still_naming = False
 
     if use_still_naming:
         ts = int(datetime.now(timezone.utc).timestamp())
@@ -12676,6 +12699,13 @@ def assign_kling_o3_option_to_slot(
     beat["kling_o3_options"] = options
     for opt in options:
         _sync_o3_option_gen_label(opt)
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        normalize_o3_gallery_options,
+        stamp_o3_option_audio_contract,
+    )
+
+    stamp_o3_option_audio_contract(new_opt, path=video_path)
+    normalize_o3_gallery_options(beat)
     return key
 
 
@@ -14230,7 +14260,7 @@ def _boundaries_for_pair_fade_concat(
     visual_out_ms = _load_intro_fade_out_video_tail_ms()
     visual_in_ms = _load_intro_fade_in_video_head_ms()
     for i, (beat, clip) in enumerate(zip(beats, clip_paths)):
-        dur_ms = int(round(_ffprobe_duration(clip) * 1000))
+        dur_ms = int(round(fs.export_clip_timeline_duration_s(clip) * 1000))
         out.append({
             "beat_id": beat["beat_id"],
             "start_ms": cursor_ms,
@@ -14304,13 +14334,18 @@ def resolve_segment_stitch_export_clip_paths(
             )
             from server_handlers.speech_loudnorm import apply_speech_loudnorm_export_beat_clip  # noqa: PLC0415
 
-            clip_paths.append(
-                apply_speech_loudnorm_export_beat_clip(
-                    raw_clip,
-                    beat_id=str(beat.get("beat_id") or f"beat_{i}"),
-                    scratch_dir=scratch_dir,
-                ),
+            loudnorm_clip = apply_speech_loudnorm_export_beat_clip(
+                raw_clip,
+                beat_id=str(beat.get("beat_id") or f"beat_{i}"),
+                scratch_dir=scratch_dir,
             )
+            from o3_gallery_option_identity import assert_beat_export_audio_contract  # noqa: PLC0415
+
+            assert_beat_export_audio_contract(beat, loudnorm_clip)
+            fs = _ffmpeg_stitch_module()
+            norm_out = scratch_dir / f"{beat.get('beat_id') or i}_norm_concat.mp4"
+            fs.normalize_for_concat(loudnorm_clip, norm_out)
+            clip_paths.append(norm_out)
     return clip_paths, scratch_dir
 
 
@@ -14354,6 +14389,7 @@ def concat_kling_o3_approved_beats(
     )
     fs = _ffmpeg_stitch_module()
     fs.assert_stitch_export_clips_av_aligned(clip_paths)
+    fs.assert_stitch_export_cumulative_av_aligned(clip_paths)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_path = out_dir / f"{slot_key}_kling_o3_{ts}.mp4"
     pair_fades: list[int] = []

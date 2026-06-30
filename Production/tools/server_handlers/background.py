@@ -7174,24 +7174,21 @@ def _resolve_o3_select_option(
     option_key: str,
 ) -> tuple[dict | None, list, str | None]:
     """Resolve O3 gallery option + on-disk path for select-o3-video (no sidecar lock)."""
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        O3GalleryOptionAmbiguousError,
+        normalize_o3_gallery_options,
+        resolve_o3_gallery_option_or_path,
+    )
+
     options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
-    opt = next((o for o in options if o.get("key") == option_key), None)
-    if opt is None:
-        for o in options:
-            vp = o.get("video_path") or ""
-            stem = Path(vp).stem if vp else ""
-            if stem and (stem == option_key or vp.endswith(f"/{option_key}.mp4")):
-                opt = o
-                break
-    if opt is None and option_key == f"{beat_id}_approved_o3_video" and beat.get("kling_o3_video_path"):
-        opt = {
-            "key": option_key,
-            "label": "approved O3 video",
-            "video_path": beat.get("kling_o3_video_path"),
-            "source": "approved_kling_o3_video",
-        }
-        options = [opt] + options
-    video_path = (opt or {}).get("video_path")
+    for line in normalize_o3_gallery_options(beat):
+        print(f"[bg_select_o3] {line}", flush=True)
+    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+    try:
+        opt, video_path = resolve_o3_gallery_option_or_path(beat, option_key)
+    except O3GalleryOptionAmbiguousError as exc:
+        print(f"[bg_select_o3] gallery authority blocked: {exc}", flush=True)
+        return None, options, None
     return opt, options, video_path
 
 
@@ -7278,12 +7275,16 @@ def _apply_still_draft_pointer(
     beat.pop("kling_o3_still_stitch_approved_at", None)
     bg.heal_invalid_o3_cut_all_options(beat)
     bg.hydrate_beat_cut_from_active_option(beat)
+    from o3_gallery_option_identity import canonical_o3_option_key, normalize_o3_gallery_options  # noqa: PLC0415
+
     for o in options:
-        if not o.get("key"):
-            vp = o.get("video_path") or ""
-            o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
+        vp = str(o.get("video_path") or "").strip()
+        if vp:
+            o["key"] = canonical_o3_option_key(beat_id, vp)
         o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
     beat["kling_o3_options"] = options
+    for line in normalize_o3_gallery_options(beat):
+        print(f"[bg_still_draft] {line}", flush=True)
     bg.sync_o3_selection_pipeline_fields(beat, sidecar, option=opt)
     bg.persist_o3_disk_enrich_on_beat(beat, event_dir)
 
@@ -7316,12 +7317,16 @@ def _apply_o3_video_selection(
     bg.hydrate_beat_cut_from_active_option(beat)
     bg.hydrate_beat_trim_from_active_option(beat)
     bg.invalidate_kling_o3_trim_scratch(beat_id, event_dir)
+    from o3_gallery_option_identity import canonical_o3_option_key, normalize_o3_gallery_options  # noqa: PLC0415
+
     for o in options:
-        if not o.get("key"):
-            vp = o.get("video_path") or ""
-            o["key"] = Path(vp).stem if vp else f"{beat_id}_o3_{options.index(o)}"
+        vp = str(o.get("video_path") or "").strip()
+        if vp:
+            o["key"] = canonical_o3_option_key(beat_id, vp)
         o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
     beat["kling_o3_options"] = options
+    for line in normalize_o3_gallery_options(beat):
+        print(f"[bg_select_o3] {line}", flush=True)
     bg.sync_o3_selection_pipeline_fields(beat, sidecar, option=opt)
     bg.persist_o3_disk_enrich_on_beat(beat, event_dir)
 
