@@ -136,6 +136,8 @@ archive/
 Production/E2eFix_*/
 Production/stitch_editor_cache/
 .runtime_*/
+Production/tools/.runtime_*.py
+Production/tools/batch_reframe_module_lipsync.py
 Production/tools/run_phase_b_avatar_insert_splice.py
 # Per SILENT_DEFERRALS_AUDIT_20260507.md Item 1 + Kim authorization 2026-05-07.
 # Runtime byproducts (server PIDs, fixture locks, runtime JSON state) that previously
