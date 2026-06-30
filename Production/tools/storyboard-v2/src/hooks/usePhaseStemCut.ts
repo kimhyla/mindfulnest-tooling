@@ -55,7 +55,7 @@ export function usePhaseStemCut({
 
   useEffect(() => {
     syncRefs(undefined, undefined);
-  }, [phase, scope.event_id, scope.version, syncRefs]);
+  }, [phase, scope.event_id, syncRefs]);
 
   const adoptFromEventState = useCallback((state: Record<string, unknown>) => {
     const { startS: serverStart, endS: serverEnd } = readCutFields(state, phase);

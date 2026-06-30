@@ -50,9 +50,11 @@ export function usePhaseWatercolorCues({
     setCues(next);
   }, []);
 
+  // Reset only on event/phase switch — not scope.version (scope heal bumps version
+  // after adoptFromEventState and would wipe hydrated cues).
   useEffect(() => {
     syncCues([]);
-  }, [phase, scope.event_id, scope.version, syncCues]);
+  }, [phase, scope.event_id, syncCues]);
 
   const persistCues = useCallback(async (next: WatercolorCue[]): Promise<boolean> => {
     syncCues(next);

@@ -66,4 +66,20 @@ describe('PHASE_WATERCOLOR_CUE_AUTHORITY_V1', () => {
     const merged = mergeWatercolorCuesOnHydrate(local, [], { patchInFlight: false });
     assert.equal(merged.length, 0);
   });
+
+  it('CUE-HYDRATE-SCOPE-2 — re-adopt restores server cues after blind local reset', () => {
+    // Regression: reset effect keyed on scope.version wiped cues after scope heal;
+    // refreshAll must re-adopt from server when local was erroneously cleared.
+    const server = [
+      watercolorCueFromServerSchema({
+        id: 'cue_scope_heal',
+        key: 'hands_close',
+        timestamp_ms: 15853,
+        duration_ms: 3000,
+      }),
+    ];
+    const merged = mergeWatercolorCuesOnHydrate([], server, { patchInFlight: false });
+    assert.equal(merged.length, 1);
+    assert.equal(merged[0]?.offset_ms, 15853);
+  });
 });

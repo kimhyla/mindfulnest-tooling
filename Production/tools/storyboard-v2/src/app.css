@@ -757,13 +757,13 @@ canvas.mn-lipsync-watercolor-overlay {
 }
 .mn-waveform-cue-drag-body {
   position: absolute;
-  left: 6px;
-  right: 6px;
+  left: 0;
+  right: 0;
   top: 0;
   bottom: 0;
   pointer-events: auto;
   cursor: grab;
-  z-index: 0;
+  z-index: 1;
   touch-action: none;
 }
 .mn-waveform-cue-drag-body:active {
@@ -771,6 +771,7 @@ canvas.mn-lipsync-watercolor-overlay {
 }
 .mn-waveform-cue-block:active {
   cursor: grabbing;
+}
 .mn-waveform-cue-popover-hit {
   position: absolute;
   left: 50%;

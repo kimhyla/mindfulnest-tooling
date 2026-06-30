@@ -416,7 +416,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     let cancelled = false;
     (async () => { if (!cancelled) await refreshAll(); })();
     return () => { cancelled = true; };
-  }, [activeScope.value.event_id, phase, serverRehydrateTick.value]);
+  }, [activeScope.value.event_id, activeScope.value.version, phase, serverRehydrateTick.value]);
 
   useEffect(() => {
     const onRehydrate = () => { void refreshAll(); };
