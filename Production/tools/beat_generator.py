@@ -5784,13 +5784,13 @@ def resolve_still_insert_delivery_for_tts(
     operator wrote a bare ``Name speaks: "line"`` prompt (prompt-box law).
     """
     prose = _extract_still_insert_delivery_phrases(source, speaker=speaker, spoken=spoken)
+    canonical = still_insert_canonical_delivery_phrases(speaker)
     if prose and _still_insert_prose_delivery_is_untrusted(prose):
-        canonical = still_insert_canonical_delivery_phrases(speaker)
         if canonical:
             return canonical
     if prose:
         return prose
-    return []
+    return canonical
 
 
 def resolve_still_insert_elevenlabs_profile(speaker: str) -> dict | None:
