@@ -54,6 +54,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **o3_job_busy** — block edits during generation | derived | `beat_o3_operator_busy` / `beatO3JobBusy` | terminal.json + `o3_current_job_id` lifecycle | shipped | same |
 | **kling_stitch_export_ready** — Send to Stitcher per beat | disk | `beat_kling_stitch_export_ready` / `beatKlingStitchExportReady` | `finalize_kling_delivery_clip`, `sync_kling_stitch_status_from_active_clip` | shipped | `kling_stitch_readiness.py` |
 | **still_insert_stitch_approve** — still beat export gate | explicit_approve | same contract (still branch) | `kling_o3_still_stitch_approved` | shipped | same |
+| **kling_o3_export_trim** — trim window materialized on export | disk | `prepare_beats_for_stitch_export` | `set_o3_option_trim` | shipped | `beat_generator.py` |
 | **magic_render_visible** — magic sparkle contract | disk | `magic_render_contract` compositor kwargs + durability tests | `write_magic_delivery` | shipped | `HOW_TO_MAKE_VISIBLE_MAGIC.md` |
 | **bg_export_stitcher_job** — async BG→Stitcher job truth | disk | `readBgExportBusyLatch` + poll terminal | export job API | shipped | inline `BG_EXPORT_TO_STITCHER_ASYNC_V1` |
 

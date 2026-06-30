@@ -5777,21 +5777,30 @@ def resolve_still_insert_delivery_for_tts(
     speaker: str,
     spoken: str,
 ) -> list[str]:
-    """Pick ElevenLabs v3 delivery tags — canonical lock wins over bogus author prose."""
+    """Pick ElevenLabs v3 delivery tags from the prompt box only.
+
+    Canonical O3 delivery lock applies only when author prose is untrusted
+    (``she says``, ``whispers``, etc.) — never as a silent fallback when the
+    operator wrote a bare ``Name speaks: "line"`` prompt (prompt-box law).
+    """
     prose = _extract_still_insert_delivery_phrases(source, speaker=speaker, spoken=spoken)
-    canonical = still_insert_canonical_delivery_phrases(speaker)
-    if canonical and _still_insert_prose_delivery_is_untrusted(prose):
-        return canonical
+    if prose and _still_insert_prose_delivery_is_untrusted(prose):
+        canonical = still_insert_canonical_delivery_phrases(speaker)
+        if canonical:
+            return canonical
     if prose:
         return prose
-    return canonical
+    return []
 
 
 def resolve_still_insert_elevenlabs_profile(speaker: str) -> dict | None:
     """Still+TTS ElevenLabs profile from ``character_subjects`` — not Directus Luna defaults.
 
-    Uses locked Miranda sample settings (speed 0.93 for Lorelai) so Still+TTS matches
-    Beat 18 proven O3 timbre instead of Directus ``Luna`` at speed 1.3.
+    When ``still_tts_elevenlabs_voice_id`` is set (IVC from the Kling create-voice sample),
+    Still+TTS uses that clone so timbre matches the O3 Element bind instead of the stock
+    roster preset (e.g. Bramble ``Northern Terry`` vs proven ``bramble_28.mp3`` clone).
+
+    Uses locked speed (0.93 for Lorelai) so Still+TTS matches Beat 18 proven O3 cadence.
     """
     try:
         from tools import kling_character_registry as reg
@@ -5806,13 +5815,15 @@ def resolve_still_insert_elevenlabs_profile(speaker: str) -> dict | None:
     entry = reg.get_character_entry(reg_key)
     if not entry:
         return None
-    voice_id = str(entry.get("elevenlabs_voice_id") or "").strip()
-    if not voice_id:
-        return None
     roster = getattr(elv, "ELEVENLABS_VOICE_ROSTER", {}) or {}
     roster_row = roster.get(reg_key) or {}
     if reg_key == "Lorelai" and not roster_row:
         roster_row = roster.get("Luna") or {}
+    still_bind_id = str(entry.get("still_tts_elevenlabs_voice_id") or "").strip()
+    roster_id = str(entry.get("elevenlabs_voice_id") or "").strip()
+    voice_id = still_bind_id or roster_id
+    if not voice_id:
+        return None
     lock = entry.get("voice_sample_lock") if isinstance(entry.get("voice_sample_lock"), dict) else {}
     speed = lock.get("locked_speed")
     if speed is None:
@@ -5826,8 +5837,11 @@ def resolve_still_insert_elevenlabs_profile(speaker: str) -> dict | None:
         "stability": float(roster_row.get("stability", 0.30)),
         "similarity_boost": float(roster_row.get("similarity_boost", 0.80)),
         "style": float(roster_row.get("style", 0.30)),
-        "source": "character_subjects",
+        "source": "still_tts_o3_bind_ivc" if still_bind_id else "character_subjects",
     }
+    if still_bind_id:
+        # IVC clone of Kling sample — favor timbre fidelity over expressiveness drift.
+        profile["similarity_boost"] = max(float(profile["similarity_boost"]), 0.85)
     if speed is not None:
         profile["speed"] = float(speed)
     return profile
@@ -6870,14 +6884,53 @@ def _event_id_from_event_dir(event_dir: str | Path) -> str:
     return name or "unknown"
 
 
-def migrate_segment_o3_trims_for_export(beats: list[dict]) -> bool:
-    """Convert edge cut-out rows to trim before Send to Stitcher materialize."""
+KLING_O3_EXPORT_TRIM_AUTHORITY_V1 = "KLING_O3_EXPORT_TRIM_AUTHORITY_V1"
+KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1 = "KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1"
+
+
+def assert_beat_export_trim_ready(beat: dict) -> str | None:
+    """Return error when trim intent exists but export would ship the full clip."""
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    if not vp or not os.path.isfile(vp):
+        return None
+    opt = find_o3_option_by_video_path(beat, vp)
+    wants_trim = option_has_o3_trim(opt) or still_insert_sidecar_trim_pending(beat)
+    if not wants_trim:
+        return None
+    raw_dur = _ffprobe_duration(Path(vp))
+    if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
+        return None
+    beat_id = str(beat.get("beat_id") or "beat")
+    return (
+        f"{beat_id}: trim metadata present but export would use full clip "
+        f"({KLING_O3_EXPORT_TRIM_AUTHORITY_V1})"
+    )
+
+
+def prepare_beats_for_stitch_export(beats: list[dict]) -> tuple[bool, list[str]]:
+    """Single export prep: migrate edge cuts, mirror option→beat trim, heal, validate."""
     changed = False
+    errors: list[str] = []
     for beat in beats:
         if migrate_o3_options_edge_cut_to_trim(beat):
             changed = True
+        hydrate_beat_trim_from_active_option(beat)
         if heal_invalid_kling_o3_trim(beat):
             changed = True
+        vp = str(beat.get("kling_o3_video_path") or "").strip()
+        opt = find_o3_option_by_video_path(beat, vp) if vp else None
+        if isinstance(opt, dict) and option_has_o3_trim(opt):
+            mirror_beat_trim_from_option(beat, opt)
+            changed = True
+        err = assert_beat_export_trim_ready(beat)
+        if err:
+            errors.append(err)
+    return changed, errors
+
+
+def migrate_segment_o3_trims_for_export(beats: list[dict]) -> bool:
+    """Convert edge cut-out rows to trim before Send to Stitcher materialize."""
+    changed, _errors = prepare_beats_for_stitch_export(beats)
     return changed
 
 
@@ -7528,6 +7581,10 @@ def heal_invalid_kling_o3_trim(beat: dict) -> bool:
     if effective >= 0.25 and trim_end > trim_start + 0.01:
         return False
     clear_kling_o3_beat_trim(beat)
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    opt = find_o3_option_by_video_path(beat, vp) if vp else None
+    if isinstance(opt, dict):
+        clear_o3_option_trim_fields(opt)
     return True
 
 
@@ -7684,10 +7741,11 @@ def materialize_kling_o3_trimmed_clip(
     dest.parent.mkdir(parents=True, exist_ok=True)
     event_id = _event_id_from_event_dir(event_dir or src.parent.parent)
     local_src = ensure_local_media(src, event_id=event_id)
+    # KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1 — output-side seek keeps A/V aligned for lipsync.
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-ss", f"{trim_start:.3f}",
         "-i", str(local_src),
+        "-ss", f"{trim_start:.3f}",
         "-t", f"{duration:.3f}",
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
         "-c:a", "aac", "-b:a", "192k",
@@ -13113,12 +13171,20 @@ def resolve_magic_still_render_duration(
     bg_beat_id: str,
     *,
     scene_registry: dict | None = None,
-    fallback: float = 4.0,
+    fallback: float | None = None,
     event_id: str | int | None = None,
     video_role: str = "resolution",
     module_id: int = 1,
+    manual_path: list | None = None,
 ) -> float:
-    """Duration for magic_still compositor — scene_registry pins approved nest orbital at 6.08s."""
+    """Duration for magic_still compositor — scales with YAML path length after registry pin."""
+    if fallback is None:
+        try:
+            from magic_render_contract import PRODUCTION_MAGIC_STILL_DURATION_DEFAULT
+
+            fallback = PRODUCTION_MAGIC_STILL_DURATION_DEFAULT
+        except ImportError:
+            fallback = 7.0
     try:
         from magic_render_contract import resolve_magic_still_duration_from_registry
     except ImportError:
@@ -13131,6 +13197,7 @@ def resolve_magic_still_render_duration(
             event_id=event_id or 1,
             video_role=video_role,
             fallback=fallback,
+            manual_path=manual_path,
         )
     return float(fallback)
 
@@ -14281,7 +14348,9 @@ def concat_kling_o3_approved_beats(
 
     if not beats:
         raise ValueError("no beats to export")
-    migrate_segment_o3_trims_for_export(beats)
+    _trim_changed, trim_errors = prepare_beats_for_stitch_export(beats)
+    if trim_errors:
+        raise ValueError("; ".join(trim_errors))
     out_dir = Path(event_dir) / "assembled"
     out_dir.mkdir(parents=True, exist_ok=True)
     clip_paths, scratch_dir = resolve_segment_stitch_export_clip_paths(

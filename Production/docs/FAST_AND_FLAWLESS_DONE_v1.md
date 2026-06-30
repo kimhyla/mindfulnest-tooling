@@ -27,6 +27,9 @@ Extends V2 with Phase G (RC11–RC14). No carve-outs.
 | FF-016 | Catalog invariants (RC13) | `verify_event_catalog_invariants_durability.sh` |
 | FF-017 | Warm-path deploy (RC14) | `verify_deploy_warm_path_durability.sh` + g4-pre marker |
 | FF-018 | Live fleet drag proof (RC11) | `verify_live_fleet_interaction.sh` + DROP-WC-LIVE-1 |
+| FF-019 | Beat Gen export trim authority (TR-012) | `verify_stitch_export_trim_authority_durability.sh` |
+| FF-020 | Hard refresh interim dry video (ST-020) | `STITCH_MUX_INTERIM_DRY_VIDEO_V1` in stitchJobMediaHydrate + vitest |
+| FF-021 | Post-audit export golden path | `test_stitch_export_trim_authority_v1.py` + concat trim gate |
 
 ## Non-blocking (explicit)
 

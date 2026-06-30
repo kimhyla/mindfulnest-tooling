@@ -21,6 +21,7 @@ Operator-reported Phase B drag-drop failures persisted while gates showed green 
 | **RC14d** | Stitch cache lock after client timeout | Client gives up on slow POST while server still holds `STITCH_CACHE_BUILD_LOCK_V1`; preview waits 600s then 500 | g4-pre restarts `:5112` before warm; **RC14e:** nested lock in `_mix_stitch_waveform_audio` deadlocked same-thread builder |
 | **RC15** | Sync ambient ffmpeg on save_job POST | `ensure_job_slot_defaults` injected default ambient bed on video-only merge → `rebuild_stitch_ambient_mixes_for_job` blocked HTTP 600s+ | **STITCH_SAVE_ASYNC_ARTIFACTS_V1:** save uses `fast=True`, no preset inject unless `apply_canonical_defaults`; ambient rebuild queued on background thread |
 | **RC16** | Parallel tier builds without dependency graph | RC15 async ambient + client immediate mux preview contend on `STITCH_CACHE_BUILD_LOCK_V1`; warm persists mux-only; orphan `running` artifact builds | **STITCH_ARTIFACT_ORCHESTRATOR_V1:** serialized ambient→mux per job; client polls `artifact_build`; preview/warm materialize full ladder |
+| **RC17** | Export golden-path gap | Fixture/grep gates prove trim helper exists but not multi-beat live export + refresh | **KLING_O3_EXPORT_TRIM_AUTHORITY_V1** + **FF-019..021** + `verify_stitch_export_trim_authority_durability.sh` |
 
 ---
 

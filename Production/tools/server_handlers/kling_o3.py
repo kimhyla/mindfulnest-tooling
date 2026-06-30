@@ -965,7 +965,17 @@ def _prepare_bg_export_request(h, body: dict) -> dict | None:
         except Exception as exc:  # noqa: BLE001
             print(f"[BG] export-to-stitcher trim seed persist failed: {exc}", flush=True)
 
-    if bg.migrate_segment_o3_trims_for_export(beats):
+    trim_changed, trim_errors = bg.prepare_beats_for_stitch_export(beats)
+    if trim_errors:
+        h._send_error_v59(
+            400,
+            error_code="EXPORT_TRIM_AUTHORITY",
+            error_message="; ".join(trim_errors),
+            retry_safe=False,
+            extra={"beat_ids": [e.split(":")[0] for e in trim_errors], "code": bg.KLING_O3_EXPORT_TRIM_AUTHORITY_V1},
+        )
+        return None
+    if trim_changed:
         try:
             bg.write_sidecar(sidecar)
         except Exception as exc:  # noqa: BLE001

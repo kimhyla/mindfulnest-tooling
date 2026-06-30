@@ -122,6 +122,18 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         client_read="stillBeatNeedsStitchApprove",
     ),
     AuthorityConcept(
+        id="kling_o3_export_trim",
+        status="shipped",
+        marker="KLING_O3_EXPORT_TRIM_AUTHORITY_V1",
+        question="Which trim window is materialized on Send to Stitcher?",
+        authority_shape="disk",
+        server_module="beat_generator.py",
+        server_read="prepare_beats_for_stitch_export",
+        server_write="set_o3_option_trim",
+        spec_doc="Production/docs/O3_TRIM_EXPORT_TRUTH_V1.md",
+        notes="Option trim must mirror to beat-level before concat; export fails closed on drift.",
+    ),
+    AuthorityConcept(
         id="o3_job_busy",
         status="shipped",
         marker="BG_BEAT_JOB_TRUTH_GALLERY",

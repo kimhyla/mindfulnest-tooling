@@ -45,6 +45,7 @@ for g in \
   verify_speech_loudnorm_durability \
   verify_parallel_event_isolation_durability \
   verify_stitch_slot_artifact_freshness \
+  verify_stitch_export_trim_authority_durability \
   verify_voice_reliability_durability; do
   bash "$SCRIPTS/${g}.sh"
 done

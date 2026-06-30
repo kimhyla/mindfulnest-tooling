@@ -24,6 +24,8 @@ export const STITCH_MUX_REBUILD_QUEUE_V1 = 'STITCH_MUX_REBUILD_QUEUE_V1';
 export const STITCH_AMBIENT_BAKE_ON_SAVE_V1 = 'STITCH_AMBIENT_BAKE_ON_SAVE_V1';
 /** STITCH_SFX_PLAYBACK_TRUTH_V1 — SFX slots must not bind dry /files as playback. */
 export const STITCH_SFX_PLAYBACK_TRUTH_V1 = 'STITCH_SFX_PLAYBACK_TRUTH_V1';
+/** STITCH_MUX_INTERIM_DRY_VIDEO_V1 — keep slot video visible while mux/ambient artifacts rebuild. */
+export const STITCH_MUX_INTERIM_DRY_VIDEO_V1 = 'STITCH_MUX_INTERIM_DRY_VIDEO_V1';
 /** STITCH_SLOT_TIMELINE_CLOCK_V1 — one duration for drop, cue markers, and mux offset. */
 export const STITCH_SLOT_TIMELINE_CLOCK_V1 = 'STITCH_SLOT_TIMELINE_CLOCK_V1';
 
@@ -393,8 +395,6 @@ export function resolveSlotPlaybackPreviewUrl(
   const persisted = resolvePersistedPlaybackFromArtifacts(slot);
   if (persisted) return persisted;
 
-  if (requiresMux) {
-    return undefined;
-  }
+  // STITCH_MUX_INTERIM_DRY_VIDEO_V1 — speech-only slot video stays loaded while mux bakes.
   return resolveDrySlotSourceVideoUrl(slot.video_path);
 }
