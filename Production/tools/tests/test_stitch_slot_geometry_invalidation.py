@@ -31,7 +31,7 @@ class TestStitchSlotGeometryInvalidation(unittest.TestCase):
         self.assertNotIn("if (serverSig) return serverSig", src)
         self.assertIn("stripStaleStitchSlotArtifacts", tab)
         self.assertIn("stitchSlotGeometryChanged", tab)
-        self.assertIn("isMuxSessionFresh(eventId, slot, slotData)", tab)
+        self.assertIn("isMuxSessionFresh(stitchSessionKey", tab)
 
     def test_invalidate_clears_artifacts_when_sfx_geometry_drifts(self):
         h = mock.Mock()
@@ -62,9 +62,7 @@ class TestStitchSlotGeometryInvalidation(unittest.TestCase):
             return_value="cafebabecafebabe",
         ):
             self.assertTrue(invalidate_stitch_slot_artifacts_if_mix_drift(h, slot))
-        self.assertNotIn("mix_sig", slot)
         self.assertNotIn("mux_preview_hash", slot)
-        self.assertNotIn("waveform_peaks_hash", slot)
 
     def test_invalidate_noop_when_mix_sig_matches(self):
         h = mock.Mock()

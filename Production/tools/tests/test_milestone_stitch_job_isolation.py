@@ -85,6 +85,7 @@ class PurgeLegacyMilestoneStitchJobTests(unittest.TestCase):
 
             h = MagicMock()
             h.app.stitch_state = StitchEditorState(state_path)
+            h.app._event_stitch_state = h.app.stitch_state
             removed = se.purge_legacy_milestone_stitch_jobs_from_global(h)
             self.assertEqual(removed, ["milestone1_arc1_stitch"])
             saved = json.loads(state_path.read_text(encoding="utf-8"))
@@ -182,6 +183,51 @@ class MilestoneStitchUpsertTests(unittest.TestCase):
         self.assertIn("stitch_store = stitch_state_store_for_job(h, job_name)", block)
         self.assertIn("stitch_store.mutate_state(upsert)", block)
         self.assertNotIn("h.app.stitch_state.mutate_state(upsert)", block)
+
+
+class PurgeMilestoneGlobalIsolationTests(unittest.TestCase):
+    def test_purge_milestone_never_touches_milestone_local_when_stitch_state_swapped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            prod = root / "Production"
+            event_dir = prod / "Event_2"
+            event_dir.mkdir(parents=True)
+            global_state = event_dir / "tools" / "stitch_editor_state.json"
+            global_state.parent.mkdir(parents=True, exist_ok=True)
+            global_state.write_text(json.dumps({"version": 1, "jobs": {}}), encoding="utf-8")
+            milestone_state = prod / "Milestones" / "milestone1_arc1" / "stitch_state.json"
+            milestone_state.parent.mkdir(parents=True, exist_ok=True)
+            job_name = se.stitch_milestone_job_name("milestone1_arc1")
+            milestone_state.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "jobs": {
+                            job_name: {
+                                "slots": {
+                                    "standalone": {
+                                        "video_path": "Production/Milestones/milestone1_arc1/assembled/out.mp4",
+                                    },
+                                },
+                            },
+                        },
+                    },
+                ),
+                encoding="utf-8",
+            )
+
+            from production_server import StitchEditorState  # noqa: PLC0415
+
+            h = MagicMock()
+            h.app.event_dir = event_dir
+            global_store = StitchEditorState(global_state)
+            milestone_store = StitchEditorState(milestone_state)
+            h.app.stitch_state = milestone_store  # leaked swap from prior save
+            h.app._event_stitch_state = global_store
+
+            se.purge_milestone_job_from_global_stitch_state(h, job_name)
+            saved = json.loads(milestone_state.read_text(encoding="utf-8"))
+            self.assertIn(job_name, saved["jobs"])
 
 
 class MilestoneLoadJobNoHydrateTests(unittest.TestCase):

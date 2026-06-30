@@ -281,6 +281,14 @@ def warm_mux(base: str, marker_path: Path, *, force: bool = False) -> str:
         raise RuntimeError(f"preview bootstrap failed: {last_err}")
 
     mux_hash = _poll_mux_hash(base, timeout_s=DEFAULT_POLL_TIMEOUT_S)
+    slot = _standalone_slot(base) or {}
+    amb = str(slot.get("ambient_mix_hash") or "").strip()
+    if len(amb) < 8:
+        raise RuntimeError(
+            "STITCH_ARTIFACT_ORCHESTRATOR_V1: g4-pre warm must persist ambient_mix_hash "
+            f"(got {amb!r}); preview orchestrator should materialize full ladder",
+        )
+    print(f"[g4-pre] ambient_mix_hash={amb[:12]}... mux_preview_hash={mux_hash[:12]}...")
     _restore_canonical_cue(base)
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(f"{mux_hash}\n{int(time.time())}\n", encoding="utf-8")

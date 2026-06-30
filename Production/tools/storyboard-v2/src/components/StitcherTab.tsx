@@ -93,6 +93,10 @@ import {
   STITCH_SLOT_EDIT_DISPATCH_V1,
 } from '../utils/stitchSlotEditDispatch';
 import {
+  pollStitchArtifactBuild,
+  STITCH_ARTIFACT_ORCHESTRATOR_V1,
+} from '../utils/stitchArtifactBuildPoll';
+import {
   hydrateAllSlotMediaFromJob,
   isStitchMuxPlaybackUrl,
   previewUrlMatchesPersistedMux,
@@ -1285,6 +1289,14 @@ export function StitcherTab() {
           ambient_mix_duration_ms?: number;
           cleared?: boolean;
         }>;
+        artifact_build?: {
+          build_id?: string;
+          status?: string;
+          mux_rebuild_keys?: string[];
+        };
+        edit_dispatch?: {
+          mux_rebuild_hint_keys?: string[];
+        };
       } | undefined;
       let mergedSlots = mergeStitchJobSlotsClientPatch(prevSlots, sanitized);
       if (data?.built_slots) {
@@ -1349,10 +1361,55 @@ export function StitcherTab() {
         setJob((prev) => (prev ? { ...prev, slots: refreshed } : prev));
       })();
       if (geometryChangedSlots.length > 0) {
+        const artBuild = data?.artifact_build;
+        const muxHintKeys = data?.edit_dispatch?.mux_rebuild_hint_keys
+          ?? artBuild?.mux_rebuild_keys
+          ?? [];
         const slotsNeedingMux = geometryChangedSlots.filter((slotKey) =>
           stitchSlotRequiresMuxedPreview(mergedSlots[slotKey]),
         );
-        if (slotsNeedingMux.length > 0) {
+        const orchestratorMux = slotsNeedingMux.filter((k) => muxHintKeys.includes(k));
+
+        if (
+          artBuild?.build_id
+          && (artBuild.status === 'queued' || artBuild.status === 'running')
+          && orchestratorMux.length > 0
+        ) {
+          void (async () => {
+            try {
+              await pollStitchArtifactBuild(jobName, artBuild.build_id!);
+              if (saveSeq !== stitchSaveSeqRef.current) return;
+              const refreshRes = await apiGet<{ job?: StitchJob }>(
+                'stitch_editor_job',
+                { job_name: jobName },
+                { fetchTimeoutMs: 120_000 },
+              );
+              if (!refreshRes.ok || !refreshRes.data?.job?.slots) return;
+              const refreshed = mergeStitchJobSlotsClientPatch(
+                refreshRes.data.job.slots as Record<string, StitchSlot>,
+                jobSlotsSnapshotRef.current,
+              );
+              jobSlotsSnapshotRef.current = refreshed;
+              setJob((prev) => (prev ? { ...prev, slots: refreshed } : prev));
+              for (const slotKey of orchestratorMux) {
+                const slot = refreshed[slotKey];
+                const url = resolvePersistedPlaybackFromArtifacts(slot);
+                if (url) {
+                  bindSlotPreviewUrl(slotKey, url, 'quiet_rebuild');
+                  commitMuxSession(stitchSessionKey, slotKey, {
+                    previewUrl: url,
+                    videoPath: slot?.video_path!,
+                    audioSig: stitchSlotSessionExpectedSig(slot),
+                  });
+                }
+              }
+              setStatusMsg('✓ SFX preview updated');
+            } catch (err) {
+              if (saveSeq !== stitchSaveSeqRef.current) return;
+              setStatusMsg(`✗ Preview rebuild: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          })();
+        } else if (slotsNeedingMux.length > 0) {
           scheduledMuxSlotsRef.current = new Set([
             ...scheduledMuxSlotsRef.current,
             ...slotsNeedingMux,
@@ -2344,6 +2401,7 @@ export function StitcherTab() {
               data-stitch-slot-mux-audio-sig={STITCH_SLOT_MUX_AUDIO_SIG_V1}
               data-stitch-slot-requires-muxed-preview="STITCH_SLOT_REQUIRES_MUXED_PREVIEW_V1"
               data-stitch-mux-stale-while-revalidate="STITCH_MUX_STALE_WHILE_REVALIDATE_V1"
+              data-stitch-artifact-orchestrator={STITCH_ARTIFACT_ORCHESTRATOR_V1}
               data-stitch-single-owner="STITCH_SINGLE_OWNER_V1"
               data-stitch-slot-edit-dispatch={STITCH_SLOT_EDIT_DISPATCH_V1}
               data-stitch-mux-src-identity={STITCH_MUX_SRC_IDENTITY_V1}

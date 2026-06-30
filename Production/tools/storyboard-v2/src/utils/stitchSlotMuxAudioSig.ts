@@ -103,17 +103,12 @@ export function stitchSlotSpeechPeaksSig(
   return (videoPath ?? '').trim();
 }
 
-/** Drop persisted server artifact fields after geometry edit (client mirror of server clear). */
+/** Drop persisted mux artifact fields after geometry edit (client mirror of server mux clear). */
 export function stripStaleStitchSlotArtifacts<T extends StitchSlotMuxSigInput>(
   slot: T,
 ): T {
   const next = { ...slot } as T & Record<string, unknown>;
   delete next.mix_sig;
-  delete next['ambient_mix_sig'];
-  delete next['ambient_mix_hash'];
-  delete next['ambient_mix_duration_ms'];
-  delete next['ambient_mix_video_path'];
-  delete next['ambient_mix_video_mtime_ms'];
   delete next['mux_preview_hash'];
   delete next['mux_preview_duration_ms'];
   delete next['mux_video_path'];
@@ -123,7 +118,6 @@ export function stripStaleStitchSlotArtifacts<T extends StitchSlotMuxSigInput>(
   delete next['media_artifacts_built_at'];
   delete next['_mux_preview_url'];
   delete next['_waveform_peaks_url'];
-  delete next['_ambient_mix_url'];
   return next as T;
 }
 

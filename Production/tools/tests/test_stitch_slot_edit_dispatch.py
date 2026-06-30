@@ -87,7 +87,9 @@ class StitchSlotEditDispatchTests(unittest.TestCase):
         self.assertIn("STITCH_SLOT_EDIT_DISPATCH_V1", block)
         self.assertIn("plan_stitch_save_dispatch", block)
         self.assertIn("edit_dispatch", block)
-        self.assertIn("slot_keys=ambient_keys", block)
+        self.assertIn("submit_stitch_artifact_build_plan", block)
+        self.assertIn("ambient_keys", block)
+        self.assertIn("mux_keys", block)
 
     def test_rebuild_empty_slot_keys_skips_all_ambient(self) -> None:
         src = (TOOLS / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")

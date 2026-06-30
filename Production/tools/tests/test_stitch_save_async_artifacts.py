@@ -16,7 +16,9 @@ def test_save_job_uses_fast_defaults_without_ambient_inject() -> None:
     assert "fast=True" in block
     assert "apply_ambient_presets=bool(body.get(\"apply_canonical_defaults\"))" in block
     assert "rebuild_stitch_ambient_mixes_for_job" not in block
-    assert "submit_stitch_ambient_rebuild" in block
+    assert "submit_stitch_artifact_build_plan" in block
+    assert "mux_keys" in block
+    assert "STITCH_ARTIFACT_ORCHESTRATOR_V1" in block
     assert "STITCH_SAVE_ASYNC_ARTIFACTS_V1" in block
 
 
@@ -31,12 +33,14 @@ def test_load_job_surfaces_active_artifact_build() -> None:
 
 def test_artifact_build_module_exports_marker() -> None:
     from server_handlers.stitch_artifact_build import (  # noqa: E402
+        STITCH_ARTIFACT_ORCHESTRATOR_V1,
         STITCH_SAVE_ASYNC_ARTIFACTS_V1,
-        submit_stitch_ambient_rebuild,
+        submit_stitch_artifact_build_plan,
     )
 
     assert STITCH_SAVE_ASYNC_ARTIFACTS_V1
-    assert callable(submit_stitch_ambient_rebuild)
+    assert STITCH_ARTIFACT_ORCHESTRATOR_V1
+    assert callable(submit_stitch_artifact_build_plan)
 
 
 def test_ensure_job_slot_defaults_respects_apply_ambient_presets_flag() -> None:

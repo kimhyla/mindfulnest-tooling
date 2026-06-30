@@ -35,6 +35,13 @@ grep -q "STITCH_SAVE_ASYNC_ARTIFACTS_V1" "$SCRIPTS/deploy_mux_warm_g4_pre.py" \
 grep -q "STITCH_SAVE_ASYNC_ARTIFACTS_V1" "$ROOT/Production/tools/server_handlers/stitch_editor.py" \
   || fail "stitch_editor must reference STITCH_SAVE_ASYNC_ARTIFACTS_V1"
 
+grep -q "STITCH_ARTIFACT_ORCHESTRATOR_V1" "$ROOT/Production/tools/server_handlers/stitch_artifact_build.py" \
+  || fail "stitch_artifact_build must export STITCH_ARTIFACT_ORCHESTRATOR_V1"
+grep -q "submit_stitch_artifact_build_plan" "$ROOT/Production/tools/server_handlers/stitch_editor.py" \
+  || fail "save_job/preview must use submit_stitch_artifact_build_plan"
+grep -q "STITCH_ARTIFACT_ORCHESTRATOR_V1" "$SB/src/utils/stitchArtifactBuildPoll.ts" \
+  || fail "client must poll artifact_build (stitchArtifactBuildPoll.ts)"
+
 grep -q "deploy_mux_warm_g4_pre" "$SCRIPTS/deploy_storyboard_v59.sh" \
   || fail "deploy_storyboard_v59.sh must invoke g4-pre before g.4 E2E"
 
