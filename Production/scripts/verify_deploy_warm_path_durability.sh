@@ -29,8 +29,17 @@ grep -q "ensureMuxPreviewReady" "$E2E" \
   && grep -A20 "beforeAll" "$E2E" | grep -q "ensureMuxPreviewReady" \
   && fail "beforeAll must not call ensureMuxPreviewReady — use g4-pre warm marker"
 
+grep -q "STITCH_SAVE_ASYNC_ARTIFACTS_V1" "$SCRIPTS/deploy_mux_warm_g4_pre.py" \
+  || grep -q "STITCH_SAVE_ASYNC_ARTIFACTS_V1" "$ROOT/Production/tools/server_handlers/stitch_artifact_build.py" \
+  || fail "g4-pre / stitch save must use STITCH_SAVE_ASYNC_ARTIFACTS_V1 async ambient rebuild"
+grep -q "STITCH_SAVE_ASYNC_ARTIFACTS_V1" "$ROOT/Production/tools/server_handlers/stitch_editor.py" \
+  || fail "stitch_editor must reference STITCH_SAVE_ASYNC_ARTIFACTS_V1"
+
 grep -q "deploy_mux_warm_g4_pre" "$SCRIPTS/deploy_storyboard_v59.sh" \
   || fail "deploy_storyboard_v59.sh must invoke g4-pre before g.4 E2E"
+
+grep -q "submit_stitch_ambient_rebuild" "$ROOT/Production/tools/server_handlers/stitch_editor.py" \
+  || fail "save_job must queue ambient rebuild via submit_stitch_ambient_rebuild"
 
 [[ -d "$MARKER_DIR" ]] || mkdir -p "$MARKER_DIR"
 

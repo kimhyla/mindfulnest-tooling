@@ -162,6 +162,8 @@ STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1 = "STITCH_SLOT_ASSEMBLED_DISK_HYDRATE_V1"
 # STITCH_SINGLE_OWNER_V1 — stitch_state.json job slot is sole authority after export;
 # load_job must not persist pipeline disk hydrate (assembled/*.mp4).
 STITCH_SINGLE_OWNER_V1 = "STITCH_SINGLE_OWNER_V1"
+# STITCH_SAVE_ASYNC_ARTIFACTS_V1 — save_job persists JSON; ambient ffmpeg runs async.
+STITCH_SAVE_ASYNC_ARTIFACTS_V1 = "STITCH_SAVE_ASYNC_ARTIFACTS_V1"
 # STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1 — mux/ambient bake completes on export/hydrate only;
 # load_job GET must never run ffmpeg repair.
 STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1 = "STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1"
@@ -975,7 +977,13 @@ def _slot_canonical_sfx_materialized(slot_key: str, slot: dict) -> bool:
     return True
 
 
-def ensure_job_slot_defaults(h, slots, *, fast: bool = False) -> bool:
+def ensure_job_slot_defaults(
+    h,
+    slots,
+    *,
+    fast: bool = False,
+    apply_ambient_presets: bool = True,
+) -> bool:
     """Sync durations, ambient presets, canonical tail SFX, and phase_a path."""
     if not isinstance(slots, dict):
         return False
@@ -994,7 +1002,7 @@ def ensure_job_slot_defaults(h, slots, *, fast: bool = False) -> bool:
             changed = True
         if not fast and sync_stitch_slot_video_dur_ms(h, slot):
             changed = True
-        if apply_stitch_slot_default_ambient_preset(slot_key, slot):
+        if apply_ambient_presets and apply_stitch_slot_default_ambient_preset(slot_key, slot):
             changed = True
         if slot_key in STITCH_SLOT_CANONICAL_DEFAULT_SFX:
             if fast and _slot_canonical_sfx_materialized(slot_key, slot):
@@ -2610,6 +2618,16 @@ def handle_stitch_load_job(h, name: str)-> None:
         payload["module_final_cache_key"] = module_final_cache_key
         if isinstance(response_job, dict):
             response_job["module_final_cache_key"] = module_final_cache_key
+    from server_handlers.stitch_artifact_build import (  # noqa: PLC0415
+        STITCH_SAVE_ASYNC_ARTIFACTS_V1,
+        build_poll_payload,
+        find_active_build_for_stitch_job,
+    )
+
+    active_artifact = find_active_build_for_stitch_job(h.app.event_dir, name)
+    if active_artifact:
+        payload["artifact_build"] = build_poll_payload(active_artifact)
+        payload["async_artifact_code"] = STITCH_SAVE_ASYNC_ARTIFACTS_V1
     return h._send_json(200, payload)
 
 
@@ -3139,7 +3157,12 @@ def handle_stitch_save_job(h, body: dict)-> None:
         else:
             slots_out = slots
         if isinstance(slots_out, dict):
-            ensure_job_slot_defaults(h, slots_out)
+            ensure_job_slot_defaults(
+                h,
+                slots_out,
+                fast=True,
+                apply_ambient_presets=bool(body.get("apply_canonical_defaults")),
+            )
         normalize_job_slots_audio(slots_out if isinstance(slots_out, dict) else {})
         jobs[name] = {
             "created_at": existing.get("created_at", now_iso),
@@ -3173,9 +3196,33 @@ def handle_stitch_save_job(h, body: dict)-> None:
             edit_kind_hint=edit_kind_hint,
         )
         ambient_keys = dispatch.get("ambient_rebuild_keys") or []
-        built_slots = rebuild_stitch_ambient_mixes_for_job(
-            h, name, slot_keys=ambient_keys,
-        )
+        built_slots: dict = {}
+        artifact_build: dict = {
+            "code": STITCH_SAVE_ASYNC_ARTIFACTS_V1,
+            "status": "idle",
+            "ambient_rebuild_keys": ambient_keys,
+        }
+        if ambient_keys:
+            from server_handlers.stitch_artifact_build import (  # noqa: PLC0415
+                build_poll_payload,
+                submit_stitch_ambient_rebuild,
+            )
+
+            _pin = {
+                "pinned_generation": getattr(h.app, "event_generation", None),
+                "pinned_event_dir": h.app.event_dir,
+                "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+                "_handler": "handle_stitch_save_job",
+            }
+            queued = submit_stitch_ambient_rebuild(
+                h,
+                stitch_job_name=name,
+                slot_keys=ambient_keys,
+                pin=_pin,
+            )
+            if queued:
+                artifact_build = build_poll_payload(queued)
+                artifact_build["status"] = queued.get("status") or "queued"
     finally:
         if orig_stitch_state is not None:
             h.app.stitch_state = orig_stitch_state
@@ -3192,7 +3239,9 @@ def handle_stitch_save_job(h, body: dict)-> None:
         "saved_video_path": (saved_standalone.get("video_path") or "").strip(),
         "built_slots": built_slots,
         "edit_dispatch": dispatch,
+        "artifact_build": artifact_build,
         "code": STITCH_AMBIENT_BAKE_ON_SAVE_V1,
+        "async_artifact_code": STITCH_SAVE_ASYNC_ARTIFACTS_V1,
         "dispatch_code": STITCH_SLOT_EDIT_DISPATCH_V1,
         "single_owner_code": STITCH_SINGLE_OWNER_V1,
         "partition_code": STITCH_SCOPE_PARTITION_V1,
