@@ -12,18 +12,21 @@ fail() { echo "[live-fleet-interaction] FATAL: $1" >&2; exit 1; }
 [[ -f "$SB/e2e/phase_g_interaction_live.spec.ts" ]] \
   || fail "missing phase_g_interaction_live.spec.ts"
 
-declare -A PORT_EVENT=(
-  [5111]=Event_1
-  [5112]=Event_2
-  [5113]=Event_3
-  [5114]=Event_4
-  [5115]=Event_5
-  [5116]=Event_6
-)
+port_event_for() {
+  case "$1" in
+    5111) echo Event_1 ;;
+    5112) echo Event_2 ;;
+    5113) echo Event_3 ;;
+    5114) echo Event_4 ;;
+    5115) echo Event_5 ;;
+    5116) echo Event_6 ;;
+    *) echo "Event_?" ;;
+  esac
+}
 
 LIVE_ANY=0
 for port in 5111 5112 5113 5114 5115 5116; do
-  event="${PORT_EVENT[$port]}"
+  event="$(port_event_for "$port")"
   if ! curl -sf "http://localhost:${port}/api/event/current" >/dev/null 2>&1; then
     echo "[live-fleet-interaction] SKIP :${port} (${event}) — server down"
     continue
