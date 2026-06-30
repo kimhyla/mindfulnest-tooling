@@ -24,6 +24,7 @@ import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
 import { serverRehydrateTick, activeTab } from '../state/refreshSignals';
 import {
+  stitchActiveKey,
   stitchCachedJob,
   stitchJobSessionHasCache,
   stitchJobLoading,
@@ -2234,7 +2235,8 @@ export function StitcherTab() {
   })();
 
   const showStitcherLoading =
-    (loading || stitchJobLoading.value) && !stitchJobSessionHasCache();
+    (loading || (stitchJobLoading.value && stitchActiveKey.value === stitchSessionKey))
+    && !stitchJobSessionHasCache();
 
   return (
     <section

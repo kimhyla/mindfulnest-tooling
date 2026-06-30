@@ -266,6 +266,61 @@ test.describe('PHASE_WAVEFORM_PLAY — watercolor cue resize handles (WAVEFORM_C
     expect(endOffset).toBeLessThan(startOffset - 500);
     expect(endOffset).toBeGreaterThanOrEqual(0);
   });
+
+  test('CUE-MOVE-1 — drag cue body repositions offset without changing duration', async ({ page }) => {
+    await mockAudioFiles(page, 90);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: JSON.stringify([
+        {
+          id: 'cue_move_test',
+          key: 'hands_close',
+          timestamp_ms: 10000,
+          duration_ms: 4000,
+          cue_type: 'png',
+        },
+      ]),
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const cue = page.locator('[data-testid="cue-marker-cue_move_test"]');
+    await expect(cue).toBeVisible();
+
+    const startOffset = Number(await cue.getAttribute('data-offset-ms'));
+    const startDuration = Number(await cue.getAttribute('data-duration-ms'));
+    expect(startOffset).toBe(10000);
+    expect(startDuration).toBe(4000);
+
+    const dragBody = page.locator('[data-testid="cue-drag-body-cue_move_test"]');
+    await expect(dragBody).toBeVisible();
+    const box = await dragBody.boundingBox();
+    expect(box).not.toBeNull();
+    const startX = box!.x + Math.max(4, box!.width * 0.25);
+    const y = box!.y + box!.height * 0.5;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX + 100, y, { steps: 10 });
+    await page.waitForTimeout(80);
+    const midOffset = Number(await cue.getAttribute('data-offset-ms'));
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const endOffset = Number(await cue.getAttribute('data-offset-ms'));
+    const endDuration = Number(await cue.getAttribute('data-duration-ms'));
+
+    expect(midOffset).toBeGreaterThan(startOffset + 800);
+    expect(endOffset).toBeGreaterThan(startOffset + 800);
+    expect(endDuration).toBe(startDuration);
+    await expect(waveform).toHaveAttribute('data-waveform-cue-move-v1', 'CUE-MOVE-1');
+  });
 });
 
 test.describe('PHASE_WATERCOLOR_CUE_AUTHORITY_V1 — hydrate merge', () => {

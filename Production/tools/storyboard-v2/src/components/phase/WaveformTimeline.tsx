@@ -27,8 +27,8 @@
 //           isDraggingSeekRef + lastScrubMsRef — video.currentTime at 0 fights drag.
 //   DROP-CAPTURE-1  HTML5 drop on wrapper bubble misses WaveSurfer canvas child;
 //           bindDropTargetCapture on wrapperRef (capture phase).
-//   CUE-HANDLE-1  cue-block body pointer-events:none REQUIRES cue-block-handle
-//           pointer-events:auto (stem-trim pattern). Partial copy regresses resize.
+//   CUE-HANDLE-1  cue-block body pointer-events:auto for drag-to-move (CUE-MOVE-1);
+//           handles + popover hit stay interactive; body in shouldSkipSeek.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
 //           same stale-duration class as SEEK (ws.getDuration() can be 0).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -40,8 +40,7 @@
 //  - Click-to-seek on the waveform
 //  - Render absolute-positioned cue markers from `phase_X_watercolor_cues_json`
 //
-// Phase C will extend this with: drag-drop watercolor → cue create, cue
-// drag-to-reposition, popover on marker click.
+// Phase C: drag-drop watercolor → cue create (DROP-CAPTURE-1); cue drag-to-reposition (CUE-MOVE-1).
 //
 // Cursor v8 Q1: WaveSurfer.create / destroy cycle leaves no WebAudio leaks —
 // every effect that creates an instance returns a cleanup that calls .destroy().
@@ -976,7 +975,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (!(target instanceof HTMLElement)) return false;
       return Boolean(
         target.closest(
-          '.mn-waveform-source-label, .mn-waveform-cue-block-handle, .mn-waveform-cue-popover-hit, .mn-waveform-stem-trim-handle',
+          '.mn-waveform-source-label, .mn-waveform-cue-drag-body, .mn-waveform-cue-block, .mn-waveform-cue-block-handle, .mn-waveform-cue-popover-hit, .mn-waveform-stem-trim-handle',
         ),
       );
     };
@@ -1177,6 +1176,62 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     handle.addEventListener('pointermove', applyPreview);
     handle.addEventListener('pointerup', onUp);
     handle.addEventListener('pointercancel', onUp);
+  };
+
+  // Body drag: move entire cue along timeline — offset shifts, duration fixed (CUE-MOVE-1).
+  const onCueBodyPointerDown = (e: PointerEvent, cue: WatercolorCue) => {
+    const target = e.target as HTMLElement;
+    if (target.closest('.mn-waveform-cue-block-handle')) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const durMs = resolveTimelineDurationMs();
+    if (durMs <= 0) return;
+    const duration = cue.duration_ms ?? MIN_CUE_DURATION_MS;
+    const block = e.currentTarget as HTMLDivElement;
+    block.setPointerCapture(e.pointerId);
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return;
+
+    const startPointerX = e.clientX;
+    const startOffset = cue.offset_ms;
+    const boxWidth = wrapper.getBoundingClientRect().width;
+    let moved = false;
+
+    const applyPreview = (evt: PointerEvent) => {
+      if (Math.abs(evt.clientX - startPointerX) > 3) moved = true;
+      const deltaMs = ((evt.clientX - startPointerX) / boxWidth) * durMs;
+      const newOffset = Math.max(
+        0,
+        Math.min(durMs - duration, Math.round(startOffset + deltaMs)),
+      );
+      previewCueRange(cue.id, newOffset, duration);
+    };
+
+    const onUp = (upEvt: PointerEvent) => {
+      if (!moved) {
+        if (target.closest('.mn-waveform-cue-popover-hit')) {
+          onCueClick?.(cue.id, { x: upEvt.clientX, y: upEvt.clientY });
+        }
+        block.removeEventListener('pointermove', applyPreview);
+        block.removeEventListener('pointerup', onUp);
+        block.removeEventListener('pointercancel', onUp);
+        return;
+      }
+      const deltaMs = ((upEvt.clientX - startPointerX) / boxWidth) * durMs;
+      const newOffset = Math.max(
+        0,
+        Math.min(durMs - duration, Math.round(startOffset + deltaMs)),
+      );
+      setDragDraft(null);
+      emitCueRange(cue.id, newOffset, duration);
+      block.removeEventListener('pointermove', applyPreview);
+      block.removeEventListener('pointerup', onUp);
+      block.removeEventListener('pointercancel', onUp);
+    };
+
+    block.addEventListener('pointermove', applyPreview);
+    block.addEventListener('pointerup', onUp);
+    block.addEventListener('pointercancel', onUp);
   };
 
   const onStemCutLeftHandlePointerDown = (e: PointerEvent) => {
@@ -1471,6 +1526,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
                 title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s · ${((cue.duration_ms ?? 3000) / 1000).toFixed(1)}s`}
               >
                 <div
+                  class="mn-waveform-cue-drag-body"
+                  data-testid={`cue-drag-body-${cue.id}`}
+                  title="Drag to move cue"
+                  onPointerDown={(e: PointerEvent) => onCueBodyPointerDown(e, cue)}
+                />
+                <div
                   class="mn-waveform-cue-popover-hit"
                   data-testid={`cue-popover-hit-${cue.id}`}
                   title="Click to edit cue"
@@ -1525,6 +1586,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-stem-cut-end-ms={Math.round(displayStemCut.end_ms)}
       data-phase-waveform-pause-v1="PHASE_WAVEFORM_PAUSE_V1"
       data-waveform-cue-handle-v1="WAVEFORM_CUE_HANDLE_V1"
+      data-waveform-cue-move-v1="CUE-MOVE-1"
       data-mix-extracting={mixExtracting ? 'true' : 'false'}
       {...(displayOnly ? { 'data-display-only-waveform': 'STITCH_UNIFIED_PLAYBACK_V1' } : {})}
       {...(displayOnly && masterVideoSrc ? { 'data-stitch-composer-master-video-sync': 'STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1' } : {})}
@@ -1633,6 +1695,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
             }}
             title={`${cue.watercolor_key} @ ${(cue.offset_ms / 1000).toFixed(1)}s · ${((cue.duration_ms ?? 3000) / 1000).toFixed(1)}s`}
           >
+            <div
+              class="mn-waveform-cue-drag-body"
+              data-testid={`cue-drag-body-${cue.id}`}
+              title="Drag to move cue"
+              onPointerDown={(e: PointerEvent) => onCueBodyPointerDown(e, cue)}
+            />
             <div
               class="mn-waveform-cue-popover-hit"
               data-testid={`cue-popover-hit-${cue.id}`}
