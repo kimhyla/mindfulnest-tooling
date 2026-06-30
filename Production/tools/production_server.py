@@ -13085,45 +13085,41 @@ body {{padding-top:44px!important;}}
                 pass
 
         if not out_path.is_file():
-            from credentials_lib.stitch_cache_build import (  # noqa: PLC0415
-                run_stitch_cache_build,
-                stitch_cache_build_lock,
-            )
+            from credentials_lib.stitch_cache_build import run_stitch_cache_build  # noqa: PLC0415
             from server_handlers.stitch_media_artifacts import stitch_collect_referenced_cache_stems  # noqa: PLC0415
 
             def _preview_ready() -> bool:
                 return out_path.is_file() and preview_cache_is_valid(out_path, expected_s)
 
             def _build_preview() -> None:
-                with stitch_cache_build_lock(cache_dir):
-                    if _preview_ready():
-                        return
-                    if len(slot_finals) == 1:
-                        import shutil as _shutil  # noqa: PLC0415
+                if _preview_ready():
+                    return
+                if len(slot_finals) == 1:
+                    import shutil as _shutil  # noqa: PLC0415
 
-                        tmp = out_path.parent / (
-                            f"{out_path.stem}.tmp.{os.getpid()}{out_path.suffix}"
-                        )
-                        _shutil.copy(slot_finals[0], tmp)
-                        os.replace(tmp, out_path)
-                        from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
+                    tmp = out_path.parent / (
+                        f"{out_path.stem}.tmp.{os.getpid()}{out_path.suffix}"
+                    )
+                    _shutil.copy(slot_finals[0], tmp)
+                    os.replace(tmp, out_path)
+                    from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
 
-                        ensure_mp4_playback_timestamps(out_path)
-                    else:
-                        concat_with_xfade_clips(slot_finals, out_path)
+                    ensure_mp4_playback_timestamps(out_path)
+                else:
+                    concat_with_xfade_clips(slot_finals, out_path)
 
-                    pin_stems = stitch_collect_referenced_cache_stems(
-                        self.app.stitch_state.read_state() or {},
-                    )
-                    pin_stems.add(out_hash)
-                    lru_cleanup(
-                        cache_dir, keep=20, pattern=r"^stitch_preview_.*\.mp4$",
-                        pin_stems=pin_stems,
-                    )
-                    lru_cleanup(
-                        cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$",
-                        pin_stems=pin_stems,
-                    )
+                pin_stems = stitch_collect_referenced_cache_stems(
+                    self.app.stitch_state.read_state() or {},
+                )
+                pin_stems.add(out_hash)
+                lru_cleanup(
+                    cache_dir, keep=20, pattern=r"^stitch_preview_.*\.mp4$",
+                    pin_stems=pin_stems,
+                )
+                lru_cleanup(
+                    cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$",
+                    pin_stems=pin_stems,
+                )
 
             run_stitch_cache_build(cache_dir, ready=_preview_ready, build=_build_preview)
         else:
@@ -13402,19 +13398,14 @@ body {{padding-top:44px!important;}}
     # 600x540 for Phase B; these dicts override per-phase for the call site.
     # Closes inventory v2 PB-17 + PA-19 WIRED-BUT-BROKEN class.
     #
-    # wc_v6 position fix (2026-05-28): Phase B lipsync base is 720×544.
-    # NORMALIZATION_VF_EXPR scales it to 953×720 within the 1280×720 canvas,
-    # centering the content with x_offset=164px on each side (black letterbox).
-    # Old frame_x["b"]=40 fell inside the left black bar → overlay never visible
-    # on the actual content. Corrected values match the CSS overlay at left=2%,
-    # top=4%, width=35% of the video (LD-821 CSS overlay architecture):
-    #   frame_x["b"] = 164 (content_left) + round(2% × 953) = 183 → 185
-    #   frame_y       = round(4% × 720) = 29 → 30
-    #   frame_max_w["b"] = round(35% × 953) = 334 → 340
-    _PHASE_FRAME_X = {"b": 185, "a": 800}
-    _PHASE_FRAME_Y = 30
-    _PHASE_FRAME_MAX_W = {"b": 340, "a": 480}
+    # wc_v14 (2026-06-30): Full-bleed 16:9 module lipsync (no side letterbox).
+    # Canonical watercolor bbox — equal margin from canvas top + side edge (36px).
+    # max_h = 75% frame (540px); max_w = 520px (~41%). Phase A mirrors from right.
+    _PHASE_WATERCOLOR_CANVAS_MARGIN = 36
+    _PHASE_FRAME_MAX_W = {"b": 520, "a": 520}
     _PHASE_FRAME_MAX_H = {"b": 540, "a": 540}
+    _PHASE_FRAME_X = {"b": 36, "a": 724}
+    _PHASE_FRAME_Y = 36
 
     def _handle_phase_b_preview(self, body: dict) -> None:
         from server_handlers.phases import handle_phase_b_preview

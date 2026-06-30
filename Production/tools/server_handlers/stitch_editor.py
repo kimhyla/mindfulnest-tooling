@@ -1507,17 +1507,16 @@ def _mix_stitch_waveform_audio(
         )
 
     def _build_mix() -> None:
-        with stitch_cache_build_lock(cache_dir):
-            if _mix_ready():
-                return
-            atomic_ffmpeg_output(
-                mix_cmd,
-                out_path,
-                expected_duration_s=expected_s,
-                validator=lambda p, exp: stitch_audio_cache_is_valid(
-                    p, exp, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
-                ),
-            )
+        if _mix_ready():
+            return
+        atomic_ffmpeg_output(
+            mix_cmd,
+            out_path,
+            expected_duration_s=expected_s,
+            validator=lambda p, exp: stitch_audio_cache_is_valid(
+                p, exp, min_ratio=STITCH_AUDIO_DUR_MIN_RATIO,
+            ),
+        )
 
     try:
         run_stitch_cache_build(cache_dir, ready=_mix_ready, build=_build_mix)

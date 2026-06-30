@@ -24,7 +24,7 @@ DEFAULT_PREVIEW_TIMEOUT_S = float(
     __import__("os").environ.get("MN_MUX_WARM_PREVIEW_TIMEOUT_S", "900"),
 )
 DEFAULT_JOB_POST_TIMEOUT_S = float(
-    __import__("os").environ.get("MN_MUX_WARM_JOB_POST_TIMEOUT_S", "600"),
+    __import__("os").environ.get("MN_MUX_WARM_JOB_POST_TIMEOUT_S", "1200"),
 )
 DEFAULT_POLL_TIMEOUT_S = float(
     __import__("os").environ.get("MN_MUX_WARM_POLL_TIMEOUT_S", "900"),
@@ -98,6 +98,12 @@ def _drain_event_stitch_load_job(base: str) -> None:
     print(f"[g4-pre] {EVENT_STITCH_JOB} load_job drain ok")
 
 
+def _drain_milestone_load_job(base: str) -> None:
+    print(f"[g4-pre] drain {JOB_NAME} load_job ...")
+    _standalone_slot(base)
+    print(f"[g4-pre] {JOB_NAME} load_job drain ok")
+
+
 def _standalone_slot(base: str) -> dict | None:
     status, payload = _request(base, "GET", f"/api/stitch_editor/job/{JOB_NAME}", timeout=300.0)
     if status != 200 or not isinstance(payload, dict):
@@ -147,19 +153,23 @@ def _post_standalone(base: str, slot: dict) -> dict:
 def _bootstrap_video(base: str) -> dict:
     if not MILESTONE_ASSEMBLED_DIR.is_dir():
         raise RuntimeError(f"milestone assembled dir missing: {MILESTONE_ASSEMBLED_DIR}")
-    candidates = sorted(
+    finals = sorted(
+        [p.name for p in MILESTONE_ASSEMBLED_DIR.glob("*_final.mp4")],
+        reverse=True,
+    )
+    standalones = sorted(
         [p.name for p in MILESTONE_ASSEMBLED_DIR.glob("standalone_*.mp4")],
         reverse=True,
     )
+    candidates = finals + [s for s in standalones if s not in finals]
     if not candidates:
-        raise RuntimeError("no standalone_*.mp4 in milestone assembled dir")
+        raise RuntimeError("no *_final.mp4 or standalone_*.mp4 in milestone assembled dir")
     video_path = f"Production/Milestones/milestone1_arc1/assembled/{candidates[0]}"
+    print(f"[g4-pre] bootstrap standalone video_path={video_path} (video-only POST; ambient on preview) ...")
     return _post_standalone(
         base,
         {
             "video_path": video_path,
-            "ambient_bed": "Intro video ambient bed",
-            "ambient_volume": 0.15,
             "sfx_cues": [],
         },
     )
@@ -212,8 +222,7 @@ def warm_mux(base: str, marker_path: Path, *, force: bool = False) -> str:
 
     _drain_event_stitch_load_job(base)
 
-    print("[g4-pre] drain milestone load_job ...")
-    _standalone_slot(base)
+    _drain_milestone_load_job(base)
 
     slot = _ensure_video(base)
     mux_hash = str(slot.get("mux_preview_hash") or "").strip()
@@ -229,6 +238,8 @@ def warm_mux(base: str, marker_path: Path, *, force: bool = False) -> str:
         cues = []
     slot_for_preview = {
         **slot,
+        "ambient_bed": slot.get("ambient_bed") or "Intro video ambient bed",
+        "ambient_volume": slot.get("ambient_volume") if slot.get("ambient_volume") is not None else 0.15,
         "sfx_cues": cues
         if any(str(c.get("id")) == CANONICAL_CUE["id"] for c in cues if isinstance(c, dict))
         else [*cues, CANONICAL_CUE],

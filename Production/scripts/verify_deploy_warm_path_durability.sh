@@ -11,8 +11,12 @@ fail() { echo "[deploy-warm-path-durability] FATAL: $1" >&2; exit 1; }
 
 [[ -x "$SCRIPTS/deploy_mux_warm_g4_pre.sh" ]] || fail "missing deploy_mux_warm_g4_pre.sh"
 [[ -f "$SCRIPTS/deploy_mux_warm_g4_pre.py" ]] || fail "missing deploy_mux_warm_g4_pre.py"
+grep -q "DEPLOY_MUX_WARM_G4_PRE_V1" "$SCRIPTS/deploy_mux_warm_g4_pre.py" \
+  || fail "deploy_mux_warm_g4_pre.py missing marker comment"
 grep -q "Event_2_stitch" "$SCRIPTS/deploy_mux_warm_g4_pre.py" \
   || fail "deploy_mux_warm_g4_pre.py must drain Event_2_stitch before milestone ops (contention)"
+grep -q "MN_MUX_WARM_RESTART" "$SCRIPTS/deploy_mux_warm_g4_pre.sh" \
+  || fail "deploy_mux_warm_g4_pre.sh must gate restart behind MN_MUX_WARM_RESTART (RC14d optional)"
 
 grep -q "deploy_mux_warm_g4_pre" "$SCRIPTS/verify_stitch_sfx_playback_truth_live_e2e.sh" \
   || fail "verify_stitch_sfx_playback_truth_live_e2e.sh must call g4-pre"

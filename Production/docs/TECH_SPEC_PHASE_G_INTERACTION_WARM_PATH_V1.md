@@ -110,7 +110,7 @@ Deploy hook: run bootstrap + catalog verify after fanout.
 
 1. **Drain** `GET /api/stitch_editor/job/Event_2_stitch` (300s max) — STITCH_LIVE_E2E_EVENT_WARM_V1; milestone POST/GET blocks behind Event_2 auto-bake without this step (**RC14b contention** — caused g4-pre timeout when skipped).
 2. `GET /api/stitch_editor/job/milestone_milestone1_arc1_stitch` — hydrate milestone job.
-3. Bootstrap standalone `video_path` from assembled `standalone_*.mp4` if missing.
+3. Bootstrap standalone `video_path` from assembled `standalone_*.mp4` if missing — **RC14c:** first POST with `ambient_bed` runs ffmpeg ambient rebuild (job POST timeout **1200s** default).
 4. `POST /api/stitch_editor/preview` for milestone standalone if `mux_preview_hash` missing (900s client timeout default).
 5. Poll `GET job` until `standalone.mux_preview_hash` ≥ 8 hex chars (900s max).
 6. Write marker: `Production/.deploy_mux_warm/Event_2_milestone.ok` with hash + timestamp.

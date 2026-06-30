@@ -17,6 +17,8 @@ Operator-reported Phase B drag-drop failures persisted while gates showed green 
 | **RC13** | Catalog/bootstrap invariants | Empty per-event watercolors or stale library session cache | `EVENT_WC_SEED_V1`, `verify_event_catalog_invariants_durability.sh`, Library cache v4 reconcile |
 | **RC14** | Cold-path in hot gates | ffmpeg mux bake inside Playwright `beforeAll` (600s budget) | `deploy_mux_warm_g4_pre.sh`, fast-fail live E2E |
 | **RC14b** | Milestone vs event stitch contention | g4-pre POST/GET blocked behind `Event_2_stitch` load_job auto-bake; urllib 300s timeout masquerades as generic "timed out" | g4-pre must drain `Event_2_stitch` first; preview timeout 900s |
+| **RC14c** | Ambient bake on milestone bootstrap POST | First `POST /job` with `video_path` + `ambient_bed` runs `rebuild_stitch_ambient_mixes_for_job` (ffmpeg); exceeds 600s on `:5112` | g4-pre job POST timeout 1200s; log bootstrap step before POST |
+| **RC14d** | Stitch cache lock after client timeout | Client gives up on slow POST while server still holds `STITCH_CACHE_BUILD_LOCK_V1`; preview waits 600s then 500 | g4-pre restarts `:5112` before warm; **RC14e:** nested lock in `_mix_stitch_waveform_audio` deadlocked same-thread builder |
 
 ---
 

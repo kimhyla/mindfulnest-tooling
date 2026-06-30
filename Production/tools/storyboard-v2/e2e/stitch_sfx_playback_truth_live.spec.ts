@@ -134,13 +134,19 @@ async function bootstrapStandaloneVideoFromAssembled(
   if (!fs.existsSync(MILESTONE_ASSEMBLED_DIR)) {
     throw new Error('milestone assembled dir missing for bootstrap');
   }
-  const candidates = fs
+  const finals = fs
+    .readdirSync(MILESTONE_ASSEMBLED_DIR)
+    .filter((name) => name.endsWith('_final.mp4'))
+    .sort()
+    .reverse();
+  const standalones = fs
     .readdirSync(MILESTONE_ASSEMBLED_DIR)
     .filter((name) => name.startsWith('standalone_') && name.endsWith('.mp4'))
     .sort()
     .reverse();
+  const candidates = [...finals, ...standalones.filter((n) => !finals.includes(n))];
   if (!candidates.length) {
-    throw new Error('no standalone_*.mp4 in milestone assembled dir');
+    throw new Error('no *_final.mp4 or standalone_*.mp4 in milestone assembled dir');
   }
   const videoPath = path.posix.join(
     'Production/Milestones/milestone1_arc1/assembled',
