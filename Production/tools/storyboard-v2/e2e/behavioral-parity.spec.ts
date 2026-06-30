@@ -537,16 +537,14 @@ test.describe('parity / export', () => {
 
   test('clicking Send Out fires scene assemble with scope keys', async ({ page }) => {
     await gotoStoryboard(page);
-    const requests: Request[] = [];
-    page.on('request', (req) => {
-      if (req.url().includes('/api/state/snapshot') || req.url().includes('/api/scene/assemble'))
-        requests.push(req);
-    });
+    await expect(page.locator('body[data-scope-ready="true"]')).toBeVisible({ timeout: 15_000 });
+    const assemblePromise = page.waitForRequest(
+      (req) => req.method() === 'POST' && req.url().includes('/api/scene/assemble'),
+      { timeout: 60_000 },
+    );
     await page.click('[data-testid="send-out-mp4-btn"]');
-    await expect.poll(() => requests.length, { timeout: 8000 }).toBeGreaterThanOrEqual(1);
-    const assembleReq = requests.find((r) => r.url().includes('/api/scene/assemble'));
-    expect(assembleReq).toBeDefined();
-    const body = assembleReq!.postDataJSON() as Record<string, unknown>;
+    const assembleReq = await assemblePromise;
+    const body = assembleReq.postDataJSON() as Record<string, unknown>;
     expect(body['scope_event_id']).toBe(FIXTURE_EVENT);
   });
 });

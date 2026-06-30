@@ -90,6 +90,7 @@ export async function protectBeatText(
         text: originalText,
         skip_tts_regen: true, // never regen TTS in test cleanup
       },
+      timeout: 30_000,
     });
   };
 

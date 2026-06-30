@@ -16,7 +16,8 @@ if str(TOOLS) not in sys.path:
 from phase_module_lipsync_delivery import (  # noqa: E402
     PHASE_MODULE_LIPSYNC_DELIVERY_HEIGHT,
     PHASE_MODULE_LIPSYNC_DELIVERY_PROFILE,
-    PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V1,
+    PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT,
+    PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V3,
     PHASE_MODULE_LIPSYNC_DELIVERY_WIDTH,
     finalize_phase_module_lipsync_delivery,
 )
@@ -24,9 +25,43 @@ from phase_module_lipsync_delivery import (  # noqa: E402
 
 def test_phase_module_lipsync_delivery_constants():
     assert PHASE_MODULE_LIPSYNC_DELIVERY_PROFILE == "voice_first_upscale"
-    assert PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V1 == "PHASE_MODULE_LIPSYNC_DELIVERY_V1"
+    assert PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V3 == "PHASE_MODULE_LIPSYNC_DELIVERY_V3"
+    assert PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT == PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V3
     assert PHASE_MODULE_LIPSYNC_DELIVERY_WIDTH == 1280
     assert PHASE_MODULE_LIPSYNC_DELIVERY_HEIGHT == 720
+
+
+def test_adaptive_sacrifice_detects_arlo_probe_subtitle_band():
+    from phase_module_lipsync_delivery import resolve_module_lipsync_sacrifice_ratio
+
+    raw = Path(
+        "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
+        "Claude Mindfulnest Project Files/Production/Event_4/"
+        "phase_a_probe3s_20260630-170636_RAW_wavespeed.mp4"
+    )
+    if not raw.is_file():
+        pytest.skip("Event_4 Arlo probe raw not on disk")
+    ratio, source, band_top = resolve_module_lipsync_sacrifice_ratio(raw, 1072, ss=1.5)
+    assert source == "adaptive_band"
+    assert band_top is not None
+    assert ratio > 0.12
+    assert ratio <= 0.22
+
+
+def test_adaptive_sacrifice_falls_back_on_clean_cedric_probe():
+    from phase_module_lipsync_delivery import resolve_module_lipsync_sacrifice_ratio
+
+    raw = Path(
+        "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
+        "Claude Mindfulnest Project Files/Production/Event_4/"
+        "phase_b_probe3s_20260630-164139_RAW_wavespeed.mp4"
+    )
+    if not raw.is_file():
+        pytest.skip("Event_4 Cedric probe raw not on disk")
+    ratio, source, band_top = resolve_module_lipsync_sacrifice_ratio(raw, 1072, ss=1.5)
+    assert source == "fixed_min"
+    assert ratio == pytest.approx(0.12)
+    assert band_top is None
 
 
 def test_phases_write_complete_calls_delivery_finalize():
@@ -39,7 +74,7 @@ def test_phases_write_complete_calls_delivery_finalize():
 def test_phase_preview_hash_includes_delivery_recipe():
     src = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
     assert "lipsync_delivery:" in src
-    assert "PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V1" in src
+    assert "PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT" in src
 
 
 def test_finalize_phase_module_lipsync_delivery_invokes_voice_first(tmp_path: Path):
@@ -50,28 +85,69 @@ def test_finalize_phase_module_lipsync_delivery_invokes_voice_first(tmp_path: Pa
     delivery.write_bytes(b"delivery")
 
     def _fake_encode(src, dst, **kwargs):
-        assert kwargs.get("delivery_profile") == "voice_first_upscale"
-        assert kwargs.get("sharpen") is True
+        assert kwargs.get("include_audio") is True
+        assert "crop=" in kwargs.get("vf", "")
         dst.write_bytes(b"encoded")
         return dst
 
     with mock.patch(
-        "video_delivery.encode_delivery_video",
+        "video_delivery._run_single_delivery_encode",
         side_effect=_fake_encode,
     ) as enc, mock.patch(
+        "phase_module_lipsync_delivery.plan_module_lipsync_reframe_v3",
+        return_value={
+            "mode": "canonical_v3",
+            "frame_w": 1920,
+            "frame_h": 1072,
+            "active_h": 943,
+            "sacrifice_zone_ratio": 0.12,
+            "nose_y_px": 380,
+            "nose_source": "probe",
+            "target_nose_y_ratio": 0.30,
+            "horizontal_bias": -0.10,
+            "crop_w": 1676,
+            "crop_h": 943,
+            "crop_x": 98,
+            "crop_y": 98,
+            "bottom_crop_ratio": 0.12,
+        },
+    ), mock.patch(
+        "phase_module_lipsync_delivery.plan_module_lipsync_reframe",
+        side_effect=lambda p: {
+            "mode": "canonical_v3",
+            "frame_w": 1920,
+            "frame_h": 1072,
+            "active_h": 943,
+            "sacrifice_zone_ratio": 0.12,
+            "nose_y_px": 380,
+            "nose_source": "probe",
+            "target_nose_y_ratio": 0.30,
+            "horizontal_bias": -0.10,
+            "crop_w": 1676,
+            "crop_h": 943,
+            "crop_x": 98,
+            "crop_y": 98,
+            "bottom_crop_ratio": 0.12,
+        },
+    ), mock.patch(
         "phase_module_lipsync_delivery._probe_video_size",
-        side_effect=[(720, 544), (1280, 720)],
+        side_effect=[(1920, 1072), (1280, 720)],
     ), mock.patch(
         "phase_module_lipsync_delivery._probe_bitrate",
         return_value=1_800_000,
+    ), mock.patch(
+        "video_delivery._has_audio",
+        return_value=True,
     ):
         meta = finalize_phase_module_lipsync_delivery(raw)
 
     enc.assert_called_once()
     assert raw.read_bytes() == b"encoded"
     assert meta["delivery_profile"] == PHASE_MODULE_LIPSYNC_DELIVERY_PROFILE
-    assert meta["raw_width"] == 720
+    assert meta["delivery_recipe"] == PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V3
+    assert meta["raw_width"] == 1920
     assert meta["width"] == 1280
+    assert "force_original_aspect_ratio=increase" not in enc.call_args.kwargs.get("vf", "")
 
 
 def test_stitch_bake_core_calls_phase_b_delivery_preflight():

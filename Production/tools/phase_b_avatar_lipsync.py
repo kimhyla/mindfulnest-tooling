@@ -21,7 +21,7 @@ AVATAR_USD_PER_SEC = 0.1122
 CANONICAL_CEDRIC_STILL_REL = (
     Path("NEW STYLE CHARACTERS")
     / "CEDRIC"
-    / "ChatGPT Image Jun 21, 2026, 10_45_20 PM.png"
+    / "cedric_still_wide_16x9_v1.png"
 )
 
 # Shared by Beat Gen Avatar Pro, Phase A, and Phase B — one PROHIBIT block for all Kling Avatar Pro submits.

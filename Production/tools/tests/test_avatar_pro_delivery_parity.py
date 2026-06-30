@@ -15,7 +15,7 @@ if str(TOOLS) not in sys.path:
 from beat_avatar_lipsync import encode_avatar_pro_delivery  # noqa: E402
 from phase_module_lipsync_delivery import (  # noqa: E402
     PHASE_MODULE_LIPSYNC_DELIVERY_PROFILE,
-    PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V1,
+    PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT,
     finalize_phase_module_lipsync_delivery,
 )
 
@@ -43,7 +43,7 @@ def test_encode_avatar_pro_delivery_invokes_shared_finalize(tmp_path: Path):
 
     fake_meta = {
         "delivery_profile": PHASE_MODULE_LIPSYNC_DELIVERY_PROFILE,
-        "delivery_recipe": PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V1,
+        "delivery_recipe": PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT,
         "sharpen": True,
         "width": 1280,
         "height": 720,

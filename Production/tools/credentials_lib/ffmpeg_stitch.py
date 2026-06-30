@@ -112,7 +112,7 @@ DEFAULT_FINAL_PAIR_FADE_MS = 2800
 # Bump whenever the overlay filter construction in render_watercolor_overlay
 # changes semantics (animation preset easing, chromakey params, scale behavior).
 # ---------------------------------------------------------------------------
-WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v13_hand_only_split"
+WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v17_fullbleed_rounded_canonical"
 # v13 (2026-05-28): Split rub applies to hand pigment only — cream paper +
 # black border stay fixed. Fixes v2-class "frame sliced in half" shear.
 # v7 (2026-05-28): tpad start alignment + cue_hold_s-derived stop_duration.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Avatar Pro still prep — 1920×1080 scale-to-fit + pad (category choke point)."""
+"""Avatar Pro still prep — 1920×1080 scale-to-fill + center crop (category choke point)."""
 
 from __future__ import annotations
 

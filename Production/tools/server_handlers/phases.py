@@ -2761,6 +2761,7 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
 
     from phase_a_avatar_lipsync import (  # noqa: WPS433
         ARLO_WIZARD_DESK_PROMPT,
+        PHASE_A_AVATAR_NEGATIVE_PROMPT,
         PHASE_A_LIPSYNC_METHOD_AVATAR,
         PHASE_A_LIPSYNC_ROUTE_SINGLE_FULL_STEM,
         estimate_avatar_pro_usd,
@@ -2822,6 +2823,7 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             still_path,
             audio_for_lipsync,
             ARLO_WIZARD_DESK_PROMPT,
+            negative_prompt=PHASE_A_AVATAR_NEGATIVE_PROMPT,
         )
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
@@ -3361,12 +3363,12 @@ def _phase_ensure_overlay_mp4(
 
     render_base_mtime = os.path.getmtime(str(render_base_path))
     normalized_cues_json = _v2_validate_watercolor_cues_json(cues_json)
-    from phase_module_lipsync_delivery import PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V1  # noqa: PLC0415
+    from phase_module_lipsync_delivery import PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT  # noqa: PLC0415
 
     hash_parts = [
         "recipe:v3",
         f"wc_overlay:{WATERCOLOR_OVERLAY_RECIPE_HASH}",
-        f"lipsync_delivery:{PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V1}",
+        f"lipsync_delivery:{PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT}",
         f"phase:{phase}",
         f"frame_x:{frame_x}",
         f"frame_y:{frame_y}",

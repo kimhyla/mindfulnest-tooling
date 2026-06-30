@@ -30,4 +30,16 @@ def test_reject_background_folder_still(tmp_path: Path) -> None:
 def test_canonical_still_rel_is_arlo_folder() -> None:
     assert "ARLO" in PHASE_A_ARLO_CANONICAL_STILL_REL
     assert "BACKGROUND" not in PHASE_A_ARLO_CANONICAL_STILL_REL
-    assert "01_12_53" in PHASE_A_ARLO_CANONICAL_STILL_REL
+    assert "wide_16x9" in PHASE_A_ARLO_CANONICAL_STILL_REL
+
+
+def test_horizontal_crop_bias_shifts_left_for_watercolor_margin() -> None:
+    from phase_module_lipsync_delivery import (
+        PHASE_MODULE_LIPSYNC_HORIZONTAL_BIAS,
+        apply_horizontal_crop_bias,
+    )
+
+    assert PHASE_MODULE_LIPSYNC_HORIZONTAL_BIAS < 0
+    centered = apply_horizontal_crop_bias(1920, 1676, bias=0.0)
+    shifted = apply_horizontal_crop_bias(1920, 1676)
+    assert shifted < centered

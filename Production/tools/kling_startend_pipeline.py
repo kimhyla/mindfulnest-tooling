@@ -290,11 +290,10 @@ def ensure_avatar_still_dimensions(
     target_w: int | None = None,
     target_h: int | None = None,
 ) -> tuple[bytes, str, tuple[int, int]]:
-    """Scale-to-fit + letterbox/pillarbox to Avatar Pro input canvas (1920×1080).
+    """Scale-to-fill + center crop to Avatar Pro input canvas (1920×1080).
 
-    Single choke point for Beat Gen, Phase A, and Phase B Avatar submits
-    (``LipSyncClient.submit_avatar_pro``). Uses ``video_delivery.LIPSYNC_INPUT_*``
-    so still prep matches lipsync delivery encode geometry.
+    Uses cover (not letterbox pad) so Kling output does not inherit side black bars.
+    Single choke point for Beat Gen, Phase A, and Phase B Avatar submits.
     """
     from PIL import Image  # type: ignore
     from video_delivery import LIPSYNC_INPUT_HEIGHT, LIPSYNC_INPUT_WIDTH  # noqa: WPS433
@@ -307,26 +306,31 @@ def ensure_avatar_still_dimensions(
     if w == target_w and h == target_h:
         return img_bytes, f"OK {w}x{h}", (w, h)
 
-    scale = min(target_w / w, target_h / h)
+    scale = max(target_w / w, target_h / h)
     scaled_w = max(1, int(round(w * scale)))
     scaled_h = max(1, int(round(h * scale)))
     if scale != 1.0:
         img = img.resize((scaled_w, scaled_h), Image.LANCZOS)
+
+    left = max(0, (scaled_w - target_w) // 2)
+    # Headroom-first cover crop: when trimming height, discard bottom (desk), not top.
+    if scaled_h > target_h:
+        top = 0
     else:
-        scaled_w, scaled_h = w, h
+        top = max(0, (scaled_h - target_h) // 2)
+    img = img.crop((left, top, left + target_w, top + target_h))
 
     if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
         img = img.convert("RGBA")
-        canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 255))
-        canvas.paste(img, ((target_w - scaled_w) // 2, (target_h - scaled_h) // 2), img)
     else:
         img = img.convert("RGB")
-        canvas = Image.new("RGB", (target_w, target_h), (0, 0, 0))
-        canvas.paste(img, ((target_w - scaled_w) // 2, (target_h - scaled_h) // 2))
 
     buf = io.BytesIO()
-    canvas.save(buf, format="PNG")
-    info = f"avatar_still {w}x{h} → {target_w}x{target_h} (scaled {scaled_w}x{scaled_h})"
+    img.save(buf, format="PNG")
+    info = (
+        f"avatar_still {w}x{h} → {target_w}x{target_h} "
+        f"(cover scaled {scaled_w}x{scaled_h}, crop {left},{top})"
+    )
     return buf.getvalue(), info, (target_w, target_h)
 
 

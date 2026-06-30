@@ -13398,14 +13398,14 @@ body {{padding-top:44px!important;}}
     # 600x540 for Phase B; these dicts override per-phase for the call site.
     # Closes inventory v2 PB-17 + PA-19 WIRED-BUT-BROKEN class.
     #
-    # wc_v14 (2026-06-30): Full-bleed 16:9 module lipsync (no side letterbox).
-    # Canonical watercolor bbox — equal margin from canvas top + side edge (36px).
-    # max_h = 75% frame (540px); max_w = 520px (~41%). Phase A mirrors from right.
-    _PHASE_WATERCOLOR_CANVAS_MARGIN = 36
-    _PHASE_FRAME_MAX_W = {"b": 520, "a": 520}
-    _PHASE_FRAME_MAX_H = {"b": 540, "a": 540}
-    _PHASE_FRAME_X = {"b": 36, "a": 724}
-    _PHASE_FRAME_Y = 36
+    # wc_v17 (2026-06-30): Full-bleed 16:9 canvas — rounded operator red-box canonical.
+    # 64px top/left margin (Phase B); Phase A x=870 keeps portrait elbow placement.
+    # Max bbox 368×508 (~346×508 scaled portrait at spell_title cue).
+    _PHASE_WATERCOLOR_CANVAS_MARGIN = 64
+    _PHASE_FRAME_MAX_W = {"b": 368, "a": 368}
+    _PHASE_FRAME_MAX_H = {"b": 508, "a": 508}
+    _PHASE_FRAME_X = {"b": 64, "a": 870}
+    _PHASE_FRAME_Y = 64
 
     def _handle_phase_b_preview(self, body: dict) -> None:
         from server_handlers.phases import handle_phase_b_preview

@@ -63,5 +63,7 @@ def test_arlo_wizard_desk_prompt_frozen_bg():
     assert "AUDIO-TO-TEXT PROHIBIT" in ARLO_WIZARD_DESK_PROMPT
     assert "no rippling, warping, or morphing" in ARLO_WIZARD_DESK_PROMPT
     assert "Only Arlo moves" in ARLO_WIZARD_DESK_PROMPT
-    assert "small hand gestures" in ARLO_WIZARD_DESK_PROMPT
-    assert "baked into the input still" in ARLO_WIZARD_DESK_PROMPT
+    assert "distinct fingers" in ARLO_WIZARD_DESK_PROMPT
+    assert "No stump paws" in ARLO_WIZARD_DESK_PROMPT
+    assert "text-free" in ARLO_WIZARD_DESK_PROMPT
+    assert "NOT a tutorial" in ARLO_WIZARD_DESK_PROMPT

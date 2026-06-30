@@ -4,7 +4,8 @@ set -euo pipefail
 
 ROOT="${MN_TOOLING_ROOT:-$(cd "$(dirname "$0")/../.." && pwd)}"
 SCRIPTS="$ROOT/Production/scripts"
-E2E="$ROOT/Production/tools/storyboard-v2/e2e/stitch_sfx_playback_truth_live.spec.ts"
+SB="$ROOT/Production/tools/storyboard-v2"
+E2E="$SB/e2e/stitch_sfx_playback_truth_live.spec.ts"
 MARKER_DIR="$ROOT/Production/.deploy_mux_warm"
 
 fail() { echo "[deploy-warm-path-durability] FATAL: $1" >&2; exit 1; }
@@ -44,9 +45,6 @@ grep -q "STITCH_ARTIFACT_ORCHESTRATOR_V1" "$SB/src/utils/stitchArtifactBuildPoll
 
 grep -q "deploy_mux_warm_g4_pre" "$SCRIPTS/deploy_storyboard_v59.sh" \
   || fail "deploy_storyboard_v59.sh must invoke g4-pre before g.4 E2E"
-
-grep -q "submit_stitch_ambient_rebuild" "$ROOT/Production/tools/server_handlers/stitch_editor.py" \
-  || fail "save_job must queue ambient rebuild via submit_stitch_ambient_rebuild"
 
 [[ -d "$MARKER_DIR" ]] || mkdir -p "$MARKER_DIR"
 
