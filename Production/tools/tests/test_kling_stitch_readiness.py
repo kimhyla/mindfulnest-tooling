@@ -97,7 +97,7 @@ class KlingStitchReadinessTests(unittest.TestCase):
     def test_bgtab_embeds_contract_marker(self):
         text = BG_TAB.read_text(encoding="utf-8")
         self.assertIn("data-kling-stitch-readiness-v1", text)
-        self.assertNotIn("Approve Kling clip", text)
+        self.assertNotIn("Approve this beat", text)
 
     def test_align_active_delivery_clip(self):
         import tempfile

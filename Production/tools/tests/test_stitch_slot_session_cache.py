@@ -16,6 +16,8 @@ def test_session_cache_module_exists() -> None:
     assert "STITCH_PREVIEW_LS_HYDRATE_V1" in src
     assert "hydrateMuxFromLocalStorage" in src
     assert "isMuxSessionFresh" in src
+    assert "stitchSlotServerArtifactReady" in src
+    assert "purgeStitchSlotPlaybackCache" in src
     assert "isWaveformSessionFresh" in src
     assert "reconcileStitchSlotSession" in src
 
@@ -61,6 +63,16 @@ def test_display_only_waveform_peaks_stable_on_sfx_edit() -> None:
     assert "displayOnly" in effect
     assert "displayOnly\n    ? [" in effect or "displayOnly\n    ?[" in effect.replace(" ", "")
     assert "sfx_cues: cues" not in effect.split("displayOnly\n        ? { video_path: videoPath }", 1)[0]
+
+
+def test_preview_handler_does_not_force_ambient_rebuild() -> None:
+    """STITCH_SLOT_SESSION_CACHE_V1 — UI Review must reuse se_slot_* cache; export-only force rebuild."""
+    editor = (REPO / "tools" / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")
+    preview = editor.split("def handle_stitch_preview", 1)[1].split("\ndef ", 1)[0]
+    assert "force_ambient_mix_rebuild" not in preview
+    export = editor.split("def build_stitch_slot_mux_preview_file", 1)[1].split("\ndef ", 1)[0]
+    assert "force_ambient_mix_rebuild" in export
+    assert "STITCH_AMBIENT_FORCE_REBUILD_ON_EXPORT_V1" in editor
 
 
 def test_save_job_slots_optimistic_before_refresh() -> None:

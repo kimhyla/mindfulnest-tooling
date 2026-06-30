@@ -63,6 +63,53 @@ from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
 # In-process library list cache — disk is authority; fingerprint invalidates on upload/delete.
 _LIBRARY_LIST_CACHE: dict[str, tuple[str, dict]] = {}
 
+_CLOUD_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
+
+
+def _cloud_path_mtime(path: str, *, default: float = 0.0) -> float:
+    """Dropbox/FUSE-safe mtime — errno 11/35 retry (LIBRARY_CLOUD_IO_V1)."""
+    last: OSError | None = None
+    for attempt in range(5):
+        try:
+            return os.path.getmtime(path)
+        except OSError as exc:
+            last = exc
+            if exc.errno not in _CLOUD_IO_TRANSIENT_ERRNOS or attempt >= 4:
+                break
+            time.sleep(0.12 * (attempt + 1))
+    if last:
+        raise last
+    return default
+
+
+def _cloud_listdir(path: str) -> list[str]:
+    """Dropbox/FUSE-safe listdir — errno 11/35 retry (LIBRARY_CLOUD_IO_V1)."""
+    last: OSError | None = None
+    for attempt in range(5):
+        try:
+            return os.listdir(path)
+        except OSError as exc:
+            last = exc
+            if exc.errno not in _CLOUD_IO_TRANSIENT_ERRNOS or attempt >= 4:
+                break
+            time.sleep(0.12 * (attempt + 1))
+    if last:
+        raise last
+    return []
+
+
+def _cloud_is_file(path: Path | str) -> bool:
+    """Dropbox/FUSE-safe is_file — errno 11/35 retry (LIBRARY_CLOUD_IO_V1)."""
+    p = Path(path)
+    for attempt in range(5):
+        try:
+            return p.is_file()
+        except OSError as exc:
+            if exc.errno not in _CLOUD_IO_TRANSIENT_ERRNOS or attempt >= 4:
+                return False
+            time.sleep(0.12 * (attempt + 1))
+    return False
+
 
 def _library_list_cache_key(library_event_dir: Path, app_event_id: str) -> str:
     return f"{library_event_dir.name}:{app_event_id}"
@@ -492,7 +539,7 @@ def handle_cr_library(h)-> None:
     sources_dir = str(event_images_sources_dir(library_event_dir))
     _src_names: list[str] = []
     if os.path.isdir(sources_dir):
-        _src_names = [f for f in os.listdir(sources_dir)
+        _src_names = [f for f in _cloud_listdir(sources_dir)
                       if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))]
     if _src_names:
         try:
@@ -508,7 +555,7 @@ def handle_cr_library(h)-> None:
 
     if os.path.isdir(sources_dir):
         _src_names.sort(
-            key=lambda f: -os.path.getmtime(os.path.join(sources_dir, f)))
+            key=lambda f: -_cloud_path_mtime(os.path.join(sources_dir, f)))
         for fname in _src_names:
             fp = os.path.join(sources_dir, fname)
             item = _read_image_meta(fp, "source")
@@ -529,7 +576,7 @@ def handle_cr_library(h)-> None:
         if not filename:
             continue
         fp = baseline_dir / filename
-        if not fp.is_file():
+        if not _cloud_is_file(fp):
             print(f"[library] baseline missing on disk: {fp}", flush=True)
             continue
         key = meta.get("key") or os.path.splitext(filename)[0]
@@ -550,14 +597,14 @@ def handle_cr_library(h)-> None:
     # --- Tier 2: cropped delivery images (event-scoped) ---
     crops_dir = str(event_images_crops_dir(library_event_dir))
     if os.path.isdir(crops_dir):
-        for fname in sorted(os.listdir(crops_dir)):
+        for fname in sorted(_cloud_listdir(crops_dir)):
             if fname.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
                 _append(_read_image_meta(os.path.join(crops_dir, fname), "cropped"))
 
     # --- Tier 3: character reference masters (global reference) ---
     char_dir = str(prod_root / "Character_Assets")
     if os.path.isdir(char_dir):
-        for fname in sorted(os.listdir(char_dir)):
+        for fname in sorted(_cloud_listdir(char_dir)):
             if fname.endswith("_reference_master.png"):
                 item = _read_image_meta(os.path.join(char_dir, fname), "character_master")
                 if item:
@@ -580,7 +627,7 @@ def handle_cr_library(h)-> None:
             rels.extend(str(r) for r in (cfg.get("refer_images") or []))
             for rel in rels:
                 fp = prod_root / rel
-                if not fp.is_file():
+                if not _cloud_is_file(fp):
                     continue
                 real_fp = os.path.realpath(str(fp))
                 if real_fp in seen_pose:

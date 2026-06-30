@@ -20,6 +20,7 @@ from kling_startend_pipeline import kling_poll_fresh, load_api_keys, log  # noqa
 from lipsync_sender import LipSyncClient  # noqa: E402
 from phase_a_avatar_lipsync import (  # noqa: E402
     ARLO_WIZARD_DESK_PROMPT,
+    PHASE_A_AVATAR_NEGATIVE_PROMPT,
     PHASE_A_AVATAR_ROUTE_CODE,
     PHASE_A_LIPSYNC_METHOD_AVATAR,
     PHASE_A_LIPSYNC_ROUTE_SINGLE_FULL_STEM,
@@ -88,7 +89,10 @@ def main() -> int:
         task_id = args.resume_task_id.strip()
         log(f"resume poll task_id={task_id}")
     else:
-        task_id = client.submit_avatar_pro(still, audio_for_lipsync, args.prompt)
+        task_id = client.submit_avatar_pro(
+            still, audio_for_lipsync, args.prompt,
+            negative_prompt=PHASE_A_AVATAR_NEGATIVE_PROMPT,
+        )
         log(f"submitted task_id={task_id}")
 
     result = kling_poll_fresh(client, task_id)

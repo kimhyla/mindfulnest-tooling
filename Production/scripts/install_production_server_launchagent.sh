@@ -7,7 +7,7 @@
 # SERVER_LAUNCHD_SINGLE_OWNER_V1 — launchd is the ONLY supervisor for dedicated ports.
 # Deploy/start scripts must NOT also nohup-spawn production_server.py (dual owner = restart storm).
 #
-# EVENT_SERVER_COLD_BOOT_WAIT_V1 — soft kickstart + 90s wait before hard -k kickstart.
+# EVENT_SERVER_COLD_BOOT_WAIT_V1 — soft kickstart + 180s wait before hard -k kickstart.
 # Hard -k during a slow cold boot caused restart storms (Event_3 :5113).
 #
 # LD-505_TOOLING_CODE_ROOT_V1 — ProgramArguments use mindfulnest-tooling
@@ -118,6 +118,7 @@ skip = {
     "PRODUCTION_SERVER_SINGLE_MACHINE", "MN_EVENT_PIN_IGNORE",
     "MN_LAUNCHD_MANAGED", "MN_TOOLING_ROOT", "MN_DROPBOX_ROOT",
     "MN_O3_GENERATE_MODE", "MN_BEATGEN_AVATAR_DISABLED",
+    "MN_SIDECAR_MIRROR_PATH",
 }
 for k, v in env.items():
     if k in skip or not v:
@@ -138,6 +139,7 @@ skip = {
     "PRODUCTION_SERVER_SINGLE_MACHINE", "MN_EVENT_PIN_IGNORE",
     "MN_LAUNCHD_MANAGED", "MN_TOOLING_ROOT", "MN_DROPBOX_ROOT",
     "MN_O3_GENERATE_MODE", "MN_BEATGEN_AVATAR_DISABLED",
+    "MN_SIDECAR_MIRROR_PATH",
 }
 merged: dict[str, str] = {}
 for candidate in sorted(agents_dir.glob("com.mindfulnest.production-server-event*.plist")):
@@ -235,6 +237,8 @@ cat > "$PLIST_NEW" <<PLIST
 		<string>1</string>
 		<key>MN_BEATGEN_DB_PATH</key>
 		<string>${HOME}/.mindfulnest/state/beatgen_${EVENT_SLUG}.db</string>
+		<key>MN_SIDECAR_MIRROR_PATH</key>
+		<string>${HOME}/.mindfulnest/mirror/beatgen_${EVENT_SLUG}.json</string>
 ${PRESERVE_ENV}${LIPSYNC_R2_PLIST}	</dict>
 </dict>
 </plist>

@@ -59,14 +59,13 @@ def _parse_ts_server_bbox() -> dict[str, dict[str, int]]:
 
 
 def test_watercolor_overlay_canvas_relative_percentages() -> None:
-    """CSS overlay % must be canvas-relative (1280×720), not content-box-relative."""
+    """v17 full-bleed rounded bbox 368×508 at (64, 64) Phase B."""
     bbox_b = _parse_ts_server_bbox()["b"]
-    left = (bbox_b["frameX"] / 1280) * 100
-    assert abs(left - 14.453125) < 0.01
-    assert abs((bbox_b["maxH"] / 720) * 100 - 75.0) < 0.01
-    # Wrong content-box formula would yield ~2.2% (lands in letterbox bars).
-    wrong_left = ((bbox_b["frameX"] - 163.5) / 953) * 100
-    assert wrong_left < 5.0
+    assert bbox_b["frameX"] == 64
+    assert bbox_b["frameY"] == 64
+    assert bbox_b["maxW"] == 368
+    assert bbox_b["maxH"] == 508
+    assert abs((bbox_b["maxH"] / 720) * 100 - 70.555555) < 0.01
 
 
 def test_watercolor_overlay_geometry_matches_production_server() -> None:
@@ -75,9 +74,18 @@ def test_watercolor_overlay_geometry_matches_production_server() -> None:
     assert ts == server
 
 
-def test_watercolor_overlay_max_height_is_seventy_five_percent_of_frame() -> None:
-    """540/720 server frame_max_h — never regress to 55% CSS cap."""
+def test_watercolor_overlay_recipe_version_wc_v17() -> None:
+    """Preview cache bust must track canonical bbox — bump invalidates stale phase_*_preview hashes."""
+    stitch = (TOOLS / "credentials_lib/ffmpeg_stitch.py").read_text(encoding="utf-8")
+    assert 'WATERCOLOR_OVERLAY_RECIPE_VERSION = "wc_v17_fullbleed_rounded_canonical"' in stitch
+    bbox_a = _parse_ts_server_bbox()["a"]
+    assert bbox_a["frameX"] == 870
+    assert bbox_a["frameY"] == 64
+
+
+def test_watercolor_overlay_max_height_is_seventy_percent_of_frame() -> None:
+    """508/720 server frame_max_h — operator red-box canonical."""
     bbox = _parse_ts_server_bbox()
     for phase in ("a", "b"):
         pct = (bbox[phase]["maxH"] / 720) * 100
-        assert pct == 75.0
+        assert abs(pct - 70.555555) < 0.01

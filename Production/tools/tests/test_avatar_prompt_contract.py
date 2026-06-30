@@ -35,6 +35,7 @@ def test_avatar_prompt_contract_lorelai_continuity_sidecar():
     assert AVATAR_PRO_PROHIBIT in prompt
     assert "no Chinese characters" in prompt
     assert "no subtitles" in prompt
+    assert "AUDIO-TO-TEXT PROHIBIT" in prompt
     assert "TRIPOD LOCK" in prompt
     assert "looks briefly surprised" in prompt
     assert "input portrait of Loral" in prompt
@@ -82,4 +83,5 @@ def test_phase_b_static_prompt_shares_avatar_pro_prohibit():
     assert AVATAR_PRO_PROHIBIT in STATIC_BG_PROMPT
     assert PHASE_B_BACKGROUND_IDLE_LOCK in STATIC_BG_PROMPT
     assert "no Chinese characters" in STATIC_BG_PROMPT
-    assert "BACKGROUND IDLE LOCK" in STATIC_BG_PROMPT
+    assert "TRIPOD LOCK" in STATIC_BG_PROMPT
+    assert "Do NOT animate steam" in STATIC_BG_PROMPT

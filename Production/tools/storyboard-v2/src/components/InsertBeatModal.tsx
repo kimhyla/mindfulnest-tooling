@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'preact/hooks';
 import { Modal } from './ui/Modal';
 
+// Keep in sync with BgTab / StoryboardTab KNOWN_SPEAKERS (LD CHARACTER_DROPDOWN_RESTORED_V1).
 const INSERT_SPEAKERS = [
   'Cedric', 'Arlo', 'Tessa', 'Lorelai', 'Benson',
+  'Ember', 'Bork', 'Bramble', 'Grizzle', 'Oliver',
 ] as const;
 
 export interface InsertBeatPlanRow {

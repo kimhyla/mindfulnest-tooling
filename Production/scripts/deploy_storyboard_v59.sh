@@ -530,12 +530,25 @@ MN_LIBRARY_PANEL_LIVE_EVENT="$event_id" MN_SERVER_PORT="$SERVER_PORT" \
     || exit 1
 echo "[deploy] (g.3) library panel_tabs live contract ok"
 
+echo "[deploy] (g.3.5) catalog invariants — bootstrap watercolors + verify (${event_id}) ..."
+python3 "$SRC_TOOLING/Production/scripts/bootstrap_event_watercolors.py" --event "$event_id" \
+    || exit 1
+MN_SERVER_PORT="$SERVER_PORT" MN_CATALOG_EVENT="$event_id" \
+    bash "$SRC_TOOLING/Production/scripts/verify_event_catalog_invariants_durability.sh" \
+    || exit 1
+echo "[deploy] (g.3.5) catalog invariants ok"
+
 # (g.4) STITCH_SFX_PLAYBACK_TRUTH live milestone E2E — post-deploy only (needs fresh bundle + mux)
 # Event_2 milestone fixture only — dedicated Event_N ports pin scope; skip on other targets.
 if [[ -x "$SRC_TOOLING/Production/scripts/verify_stitch_sfx_playback_truth_live_e2e.sh" ]]; then
     if [[ "$event_id" != "Event_2" ]]; then
         echo "[deploy] (g.4) SKIP stitch SFX live E2E — milestone fixture is Event_2-only (target=$event_id)"
     else
+        echo "[deploy] (g.4-pre) mux warm for milestone E2E (DEPLOY_MUX_WARM_G4_PRE_V1) ..."
+        MN_SERVER_PORT="$SERVER_PORT" MN_STORYBOARD_BASE="http://127.0.0.1:${SERVER_PORT}" \
+            bash "$SRC_TOOLING/Production/scripts/deploy_mux_warm_g4_pre.sh" \
+            || exit 1
+        echo "[deploy] (g.4-pre) mux warm ok"
         echo "[deploy] (g.4-pre) ensure Playwright browsers for live E2E ..."
         bash "$SRC_TOOLING/Production/scripts/ensure_storyboard_playwright_browsers.sh"
         echo "[deploy] (g.4) stitch SFX playback truth live E2E on :${SERVER_PORT} ..."
@@ -581,7 +594,12 @@ curl -sS -o /dev/null --max-time 15 \
 echo "[deploy] (h) O3 capability smoke via /api/bg/session-state ..."
 O3_OK="fail"
 for attempt in 1 2 3 4 5 6; do
-    O3_OK=$(curl -sS --max-time 15 \
+    # Re-pin after launchd handoff — dedicated port may boot on a different event.
+    curl -sS -o /dev/null --max-time 15 \
+        -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
+        -H "Content-Type: application/json" \
+        -d "{\"event_id\":\"${event_id}\"}" || true
+    O3_OK=$(curl -sS --max-time 60 \
         "http://localhost:${SERVER_PORT}/api/bg/session-state?scope_event_id=${event_id}&scope_video_role=intro" \
         | python3 -c "import sys,json; c=json.load(sys.stdin).get('capabilities') or {}; print('ok' if c.get('update_beat_locked') and c.get('sidecar_file_lock') else 'fail')" \
         2>/dev/null || echo "fail")
@@ -589,7 +607,7 @@ for attempt in 1 2 3 4 5 6; do
         break
     fi
     echo "[deploy] (h) O3 smoke not ready (attempt ${attempt}/6, got: ${O3_OK}) — waiting for launchd handoff ..."
-    sleep 2
+    sleep 5
 done
 if [[ "$O3_OK" != "ok" ]]; then
     echo "FATAL: live server capabilities missing update_beat_locked/sidecar_file_lock (got: $O3_OK)" >&2

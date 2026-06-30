@@ -4,6 +4,7 @@
  * Maps to per-option trim_start_s + trim_back_s (start crop + end crop together).
  */
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
+import { shouldPreserveBgO3CutDraft } from '../../utils/bgO3CutSession.ts';
 
 const MIN_KEEP_S = 0.25;
 
@@ -79,12 +80,15 @@ export function isValidO3CutWindow(
 export interface BgO3CutOverlayProps {
   beatIndex: number;
   optionIndex: number;
+  beatId: string;
   durationS: number;
   /** Absolute time where kept region begins (trim_start). */
   keepStartS: number;
   /** Absolute time where kept region ends (duration - trim_back). */
   keepEndS: number;
   editable: boolean;
+  onDragStart?: () => void;
+  onDragEnd?: () => void;
   onKeepDraftChange: (keepStartS: number, keepEndS: number) => void;
   onKeepRejected?: (reason: string) => void;
 }
@@ -98,10 +102,13 @@ function relXFromPointer(container: HTMLElement, evt: PointerEvent): number {
 export function BgO3CutOverlay({
   beatIndex,
   optionIndex,
+  beatId,
   durationS,
   keepStartS,
   keepEndS,
   editable,
+  onDragStart,
+  onDragEnd,
   onKeepDraftChange,
   onKeepRejected,
 }: BgO3CutOverlayProps) {
@@ -109,8 +116,9 @@ export function BgO3CutOverlay({
   const [draft, setDraft] = useState<{ startS: number; endS: number } | null>(null);
 
   useEffect(() => {
+    if (shouldPreserveBgO3CutDraft(beatId, optionIndex, draft !== null)) return;
     setDraft(null);
-  }, [keepStartS, keepEndS, durationS]);
+  }, [beatId, optionIndex, draft, keepStartS, keepEndS, durationS]);
 
   const normalizedKeep = normalizeO3KeepWindow(durationS, keepStartS, keepEndS);
   const display = draft ?? normalizedKeep;
@@ -141,6 +149,7 @@ export function BgO3CutOverlay({
     e.stopPropagation();
     e.preventDefault();
     if (!editable || durationS <= 0) return;
+    onDragStart?.();
     const handle = e.currentTarget as HTMLDivElement;
     handle.setPointerCapture(e.pointerId);
     const container = overlayRef.current;
@@ -158,6 +167,7 @@ export function BgO3CutOverlay({
     const onUp = (upEvt: PointerEvent) => {
       const newStart = relXFromPointer(container, upEvt) * durationS;
       commitDraft(Math.max(0, Math.min(endS - MIN_KEEP_S, newStart)), endS);
+      onDragEnd?.();
       handle.removeEventListener('pointermove', applyPreview);
       handle.removeEventListener('pointerup', onUp);
       handle.removeEventListener('pointercancel', onUp);
@@ -172,6 +182,7 @@ export function BgO3CutOverlay({
     e.stopPropagation();
     e.preventDefault();
     if (!editable || durationS <= 0) return;
+    onDragStart?.();
     const handle = e.currentTarget as HTMLDivElement;
     handle.setPointerCapture(e.pointerId);
     const container = overlayRef.current;
@@ -189,6 +200,7 @@ export function BgO3CutOverlay({
     const onUp = (upEvt: PointerEvent) => {
       const newEnd = relXFromPointer(container, upEvt) * durationS;
       commitDraft(startS, Math.max(startS + MIN_KEEP_S, Math.min(durationS, newEnd)));
+      onDragEnd?.();
       handle.removeEventListener('pointermove', applyPreview);
       handle.removeEventListener('pointerup', onUp);
       handle.removeEventListener('pointercancel', onUp);

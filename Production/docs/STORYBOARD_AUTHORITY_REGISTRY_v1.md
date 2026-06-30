@@ -65,6 +65,15 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_playback_url** — composer video when SFX exist | derived | `resolveSlotPlaybackPreviewUrl` | mux artifact bake | shipped | `TECH_SPEC_STITCH_SFX_PLAYBACK_TRUTH_V1.md` |
 | **stitch_single_owner** — who mutates slot video post-export | disk | `STITCH_SINGLE_OWNER_V1` load_job read-only | export path owns ingest | shipped | `TECH_SPEC_STITCH_SINGLE_OWNER_V1.md` |
 
+### Phase producer (Tier D — operator edit surfaces)
+
+| Concept | Shape | Read gate | Write path | Status | Spec |
+|---------|-------|-----------|------------|--------|------|
+| **phase_watercolor_cue_geometry** — waveform cue markers during edit + refresh | disk | `mergeWatercolorCuesOnHydrate` / `usePhaseWatercolorCues` | `v2_module_patch` → `phase_*_watercolor_cues_json` | shipped | `TIER_D_OPERATOR_EDIT_SURFACES_v1.md` |
+| **phase_stem_cut_geometry** — stem cut handles during edit + refresh | disk | `mergeOperatorFieldOnHydrate` / `usePhaseStemCut` | `v2_module_patch` → `phase_*_voice_stem_cut_*_s` | shipped | `TECH_SPEC_OPERATOR_EDIT_AUTHORITY_v1.md` |
+| **phase_script_draft** — script textarea during poll/focus refresh | disk | `useProtectedPromptField` | `v2_module_patch` → `phase_*_script` | shipped | `TECH_SPEC_OPERATOR_EDIT_AUTHORITY_v1.md` |
+| **stitch_sfx_cue_geometry** — slot SFX rail geometry | disk | `mergeStitchJobSlotsClientPatch` | `stitch_save_job` slot `sfx_cues` | shipped | `TECH_SPEC_STITCH_TRUTH_CONTRACT_V2.md` |
+
 ---
 
 ## Allowed non-gate uses (not duplicate authority)

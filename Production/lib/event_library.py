@@ -62,6 +62,69 @@ def ensure_event_library_dirs(event_dir: Path | str) -> None:
         d.mkdir(parents=True, exist_ok=True)
 
 
+_WC_SEED_EXTS = (".png", ".webp", ".mp4", ".mov")
+
+
+def _list_watercolor_seed_files(wc_dir: Path) -> list[Path]:
+    if not wc_dir.is_dir():
+        return []
+    return sorted(
+        p
+        for p in wc_dir.iterdir()
+        if p.is_file()
+        and not p.name.startswith(".")
+        and p.suffix.lower() in _WC_SEED_EXTS
+    )
+
+
+def _default_watercolor_template_dir(prod_root: Path) -> Path | None:
+    """First Event_* dir (sorted) whose library/watercolors/ is non-empty."""
+    events_root = prod_root / "Production" if (prod_root / "Production").is_dir() else prod_root
+    for event_dir in sorted(events_root.glob("Event_*")):
+        if not event_dir.is_dir() or event_dir.name.endswith("_Plans"):
+            continue
+        wc_dir = event_watercolors_dir(event_dir)
+        if _list_watercolor_seed_files(wc_dir):
+            return event_dir
+    return None
+
+
+def seed_event_watercolors_if_empty(
+    event_dir: Path | str,
+    *,
+    template_event_dir: Path | str | None = None,
+    prod_root: Path | str | None = None,
+) -> int:
+    """Copy template watercolor assets when target event has none (EVENT_WC_SEED_V1).
+
+    Returns number of files copied. Skips when target already has watercolor files.
+    """
+    import shutil
+
+    ev = Path(event_dir)
+    target = event_watercolors_dir(ev)
+    target.mkdir(parents=True, exist_ok=True)
+    if _list_watercolor_seed_files(target):
+        return 0
+
+    template = Path(template_event_dir) if template_event_dir else None
+    if template is None:
+        root = Path(prod_root) if prod_root else ev.parent
+        template = _default_watercolor_template_dir(root)
+    if template is None:
+        return 0
+
+    src_dir = event_watercolors_dir(template)
+    copied = 0
+    for src in _list_watercolor_seed_files(src_dir):
+        dest = target / src.name
+        if dest.exists():
+            continue
+        shutil.copy2(src, dest)
+        copied += 1
+    return copied
+
+
 def load_canonical_registry(prod_root: Path | str) -> dict[str, Any]:
     path = canonical_registry_path(prod_root)
     if not path.is_file():

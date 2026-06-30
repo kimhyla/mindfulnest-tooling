@@ -23,8 +23,21 @@ import { expect, type APIRequestContext, type Page } from '@playwright/test';
 import { SERVER } from './testServer';
 
 export { SERVER } from './testServer';
-export const EVENT_ID = 'Event_1';
+/** Playwright webServer pins Event_e2e_fixture on :5200 — not Event_1. */
 export const FIXTURE_EVENT = 'Event_e2e_fixture';
+export const EVENT_ID = FIXTURE_EVENT;
+
+function beatTextFromState(state: Record<string, unknown>, beatId: string): string {
+  const flat = state['beats'] as Record<string, { text?: string }> | undefined;
+  if (flat?.[beatId]?.text) return flat[beatId]!.text!;
+  const videos = state['videos'] as Record<string, { beats?: Record<string, { text?: string }> }> | undefined;
+  if (!videos) return '';
+  for (const video of Object.values(videos)) {
+    const text = video?.beats?.[beatId]?.text;
+    if (text) return text;
+  }
+  return '';
+}
 
 /** App root visible — fixture-agnostic (Playwright webServer pins Event_e2e_fixture). */
 export async function gotoApp(page: Page): Promise<void> {
@@ -58,19 +71,15 @@ export async function protectBeatText(
   if (!stateRes.ok()) {
     throw new Error(`protectBeatText: failed to fetch state (HTTP ${stateRes.status()})`);
   }
-  const state = (await stateRes.json()) as {
-    beats?: Record<string, { text?: string }>;
-  };
-  const originalText = state.beats?.[beatId]?.text ?? '';
+  const state = (await stateRes.json()) as Record<string, unknown>;
+  const originalText = beatTextFromState(state, beatId);
 
   const restore = async () => {
     // Read current; only restore if it differs from original.
     const cur = await request.get(`${SERVER}/api/v2/event/${EVENT_ID}/state`);
     if (!cur.ok()) return;
-    const curState = (await cur.json()) as {
-      beats?: Record<string, { text?: string }>;
-    };
-    const curText = curState.beats?.[beatId]?.text ?? '';
+    const curState = (await cur.json()) as Record<string, unknown>;
+    const curText = beatTextFromState(curState, beatId);
     if (curText === originalText) return;
     // Restore via /api/beat/update_text. allow_missing=True on server, so
     // event_id in body satisfies LD-456 scope guard.
@@ -81,6 +90,7 @@ export async function protectBeatText(
         text: originalText,
         skip_tts_regen: true, // never regen TTS in test cleanup
       },
+      timeout: 30_000,
     });
   };
 

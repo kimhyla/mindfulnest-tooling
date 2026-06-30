@@ -139,6 +139,66 @@ def test_import_delivery_clip_to_beat_still_insert_source(
     assert "still_insert" in Path(active_path).name
 
 
+def test_import_delivery_clip_to_beat_o3_sets_approved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    event_dir = tmp_path / "Event_4"
+    clips = event_dir / "kling_o3_clips"
+    clips.mkdir(parents=True)
+    db = tmp_path / "beatgen_event4.db"
+    sidecar = event_dir / "beat_generator_sidecar.json"
+    beat_id = "bg_arc1_event4_pre_beat_08"
+    sidecar.write_text(
+        json.dumps(
+            {
+                "arcs": {
+                    "arc_1": {
+                        "segments": {
+                            "event_4_pre": {
+                                "beats": [
+                                    {
+                                        "beat_id": beat_id,
+                                        "pipeline": "kling_o3_omni",
+                                        "kling_o3_options": [],
+                                    }
+                                ],
+                            },
+                        },
+                    },
+                },
+            },
+        ),
+        encoding="utf-8",
+    )
+    delivery = tmp_path / "delivery.mp4"
+    delivery.write_bytes(b"fake-mp4")
+
+    monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(db))
+    monkeypatch.setenv("MN_SIDECAR_SQLITE_AUTHORITY", "1")
+    monkeypatch.setenv("MN_BEATGEN_SERVER_WRITER", "1")
+    BeatgenStore.reset_singleton_for_tests()
+    bg.reset_bg_paths_activation_for_tests()
+    bg.init_bg_paths(str(event_dir), clear_milestone_scope=True)
+    sidecar_data = json.loads(sidecar.read_text())
+    bg._beatgen_store().import_from_dict(sidecar_data, replace=True)
+    scope = build_event_production_scope(event_dir)
+
+    ok, beat = bg.import_delivery_clip_to_beat(
+        beat_id=beat_id,
+        delivery_mp4=delivery,
+        slot_index=0,
+        label="Bramble listen at tree",
+        make_active=True,
+        event_dir=event_dir,
+        scope=scope,
+    )
+    assert ok and beat
+    assert beat["kling_o3_status"] == "approved"
+    assert beat["status"] == "approved"
+    assert Path(beat["kling_o3_video_path"]).is_file()
+
+
 def test_http_import_delivery_clip_posts_to_dedicated_port(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict = {}
 

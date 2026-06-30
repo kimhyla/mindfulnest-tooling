@@ -26,6 +26,7 @@ import { formatMutationError } from '../api/mutationErrors';
 import { isClientBundleStaleError } from '../state/buildShaDrift';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
+import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
 import { openCropper } from '../state/cropper';
 import { Modal } from './ui/Modal';
 import { BeatPlanModal, type BeatPlanDraftSaveStatus, type BeatPlanRow } from './BeatPlanModal';
@@ -52,6 +53,8 @@ import {
   BgO3TrimNumericControls,
   showBgO3NumericTrimControls,
 } from './bg/BgO3TrimNumericControls.deprecated';
+import { useBgO3TrimNumericDraft } from '../hooks/useBgO3TrimNumericDraft';
+import { useBgO3CutSession } from '../hooks/useBgO3CutSession';
 import { writePersistedTrackSlot, isStitchUiSlotKey } from '../utils/stitchTrackFocus';
 import { stitchJobSessionKey } from '../state/producerSessionKeys';
 import { stitcherRefreshTick } from '../state/refreshSignals';
@@ -1920,7 +1923,6 @@ export function BgTab() {
     // BG_O3_SUBMIT_UI_REATTACH_V1 — poll latch + session reattach on ambiguous submit.
     if (result.ok && result.data?.job_id) {
       applyO3SubmitPollLatch(beatId, result.data.job_id);
-      void refreshState();
       if (result.data.intent) {
         bgO3IntentByBeat.value = {
           ...(bgO3IntentByBeat.value as Record<string, O3GenerationIntentPoll>),
@@ -1933,6 +1935,7 @@ export function BgTab() {
           [beatId]: result.data!.submitted!,
         };
       }
+      void refreshState();
       const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
       const mode = result.data.o3_generate_mode;
       const modeLabel = mode === 'avatar_pro'
@@ -2391,6 +2394,7 @@ export function BgTab() {
       effective_duration_s?: number | null;
       preview_video_url?: string;
       video_path?: string;
+      trim_baked?: boolean;
     }>(activeScope.value, 'bg_kling_o3_trim', {
       beat_id: beatId,
       slot_index: slotIndex,
@@ -2456,14 +2460,39 @@ export function BgTab() {
           const activePath = b.kling_o3_video_path ?? '';
           const mirrorsActive = targetPath === activePath;
           if (mirrorsActive && opts?.clear) {
+            const restoredPath = result.data?.video_path;
+            const beatAny = b as BgBeat & Record<string, unknown>;
             const {
               kling_o3_cut_start_s: _bcs,
               kling_o3_cut_end_s: _bce,
               kling_o3_trim_start: _bts,
               kling_o3_trim_back: _btb,
+              kling_o3_baked_path: _bbp,
+              kling_o3_baked_token: _bbt,
               ...beatRest
-            } = b;
-            return { ...beatRest, kling_o3_options: nextOptions };
+            } = beatAny;
+            const clearedOptions = (b.kling_o3_options ?? []).map((o) => {
+              if (!o || (targetPath && o.video_path !== targetPath && !restoredPath)) return o;
+              const {
+                trim_start_s: _ts,
+                trim_back_s: _tb,
+                cut_start_s: _cs,
+                cut_end_s: _ce,
+                kling_o3_baked_path: _obp,
+                kling_o3_baked_token: _obt,
+                o3_untrimmed_video_path: _oup,
+                ...rest
+              } = o as GptOption & Record<string, unknown>;
+              return {
+                ...rest,
+                ...(restoredPath ? { video_path: restoredPath } : {}),
+              } as GptOption;
+            });
+            return {
+              ...beatRest,
+              ...(restoredPath ? { kling_o3_video_path: restoredPath } : {}),
+              kling_o3_options: clearedOptions,
+            };
           }
           if (mirrorsActive && !opts?.clear) {
             const back = result.data?.trim_back ?? trimBackS;
@@ -4386,14 +4415,14 @@ function BgRefSlot({
     },
     (p) => p.kind === 'lib-image',
   );
+  const dropRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(dropRef, dropHandlers, [dropHandlers]);
   return (
     <div class="mn-bg-ref-slot-wrap" data-testid={`${testId}-wrap`}>
       <div
+        ref={dropRef}
         class={`mn-bg-ref-slot mn-drop-target${hasImage ? ' has-image' : ''}`}
         data-testid={testId}
-        onDragOver={dropHandlers.onDragOver}
-        onDragLeave={dropHandlers.onDragLeave}
-        onDrop={dropHandlers.onDrop}
       >
         <span class="mn-bg-ref-slot-label">{label}</span>
         {hasImage ? (
@@ -4527,28 +4556,27 @@ function BgOptionTile({
   const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
   const rawDurationRef = useRef<number | null>(null);
   const showNumericTrim = showBgO3NumericTrimControls();
-  const [trimStartDraft, setTrimStartDraft] = useState<string>(String(trimStart || 0));
-  const [trimBackDraft, setTrimBackDraft] = useState<string>(String(trimBack || 0));
+  const trimDraft = useBgO3TrimNumericDraft(beatId, optionIndex, trimStart || 0, trimBack);
+  const cutSession = useBgO3CutSession(beatId, optionIndex);
+  const {
+    trimStartDraft,
+    trimBackDraft,
+    trimDraftDirty,
+    setTrimStartDraft,
+    setTrimBackDraft,
+    clearDirtyAfterSave,
+  } = trimDraft;
+  const { pendingCut, setPendingCut, onOverlayDragStart, onOverlayDragEnd, clearPendingCut } = cutSession;
   const savedTrimStart = trimStart || 0;
   const savedTrimBack = trimBack ?? 0;
-  const trimDraftDirty = trimStartDraft !== String(savedTrimStart)
-    || trimBackDraft !== String(savedTrimBack);
   const [videoLoadError, setVideoLoadError] = useState(false);
   const [loadedDuration, setLoadedDuration] = useState<number | null>(null);
   const [sourceDurationS, setSourceDurationS] = useState<number | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [cutBusy, setCutBusy] = useState(false);
-  const [pendingCut, setPendingCut] = useState<{ startS: number; endS: number } | null>(null);
   const lastAutoPreviewRef = useRef<string | null>(null);
   const clipMissingOnDisk = option?.video_path_exists === false;
-
-  useEffect(() => {
-    setTrimStartDraft(String(trimStart || 0));
-  }, [trimStart]);
-  useEffect(() => {
-    setTrimBackDraft(String(trimBack || 0));
-  }, [trimBack]);
 
   const clearTrimPlaybackListener = useCallback((video?: HTMLVideoElement | null) => {
     const el = video ?? videoRef.current;
@@ -4621,15 +4649,15 @@ function BgOptionTile({
     },
     (p) => p.kind === 'lib-image',
   );
+  const dropRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(dropRef, dropHandlers, [dropHandlers]);
   if (!option) {
     return (
       <div
+        ref={dropRef}
         class="mn-bg-option mn-bg-option-empty-wrap mn-drop-target"
         data-testid={`bg-option-${beatIndex}-${optionIndex}`}
         data-bg-option-empty="true"
-        onDragOver={dropHandlers.onDragOver}
-        onDragLeave={dropHandlers.onDragLeave}
-        onDrop={dropHandlers.onDrop}
       >
         <div class="mn-bg-option-empty">option {optionIndex + 1} (empty)</div>
         {showReplaceOnRegen ? (
@@ -5005,7 +5033,7 @@ function BgOptionTile({
     if (!selected || !hasActiveCut) return;
     const saved = await persistCut(effectiveKeepStartS, effectiveKeepEndS);
     if (!saved.ok) return;
-    setPendingCut(null);
+    clearPendingCut();
     const trimBack = saved.trimBackS ?? cutPreviewTrimBackS();
     const startS = saved.keepStartS ?? effectiveKeepStartS;
     await refreshSavedCutPreview(startS, trimBack, saved.previewUrl);
@@ -5015,7 +5043,7 @@ function BgOptionTile({
     if (!selected) return;
     setCutBusy(true);
     try {
-      setPendingCut(null);
+      clearPendingCut();
       setPreviewUrl(null);
       lastAutoPreviewRef.current = null;
       forgetCutPreviewsForBeat(beatId);
@@ -5204,6 +5232,7 @@ function BgOptionTile({
     if (applied?.rawDurationS != null && applied.rawDurationS > 0) {
       rawDurationRef.current = applied.rawDurationS;
     }
+    clearDirtyAfterSave();
     const video = videoRef.current;
     if (video && canonicalVideoUrl) {
       setPreviewUrl(null);
@@ -5237,13 +5266,11 @@ function BgOptionTile({
 
   return (
     <div
+      ref={dropRef}
       class={`mn-bg-option mn-drop-target${selected ? ' is-selected' : ''}${keyMissing ? ' is-disabled' : ''}${isStitchApproved && hasClipVideo ? ' is-approved-video' : ''}${isStillDraft ? ' is-still-draft' : ''}`}
       data-testid={`bg-option-${beatIndex}-${optionIndex}`}
       data-option-key={option.key ?? ''}
       onClick={keyMissing ? undefined : onClick}
-      onDragOver={dropHandlers.onDragOver}
-      onDragLeave={dropHandlers.onDragLeave}
-      onDrop={dropHandlers.onDrop}
       title={tooltip}
     >
       {selected && activeVideoUrl && !clipMissingOnDisk ? (
@@ -5282,10 +5309,13 @@ function BgOptionTile({
               <BgO3CutOverlay
                 beatIndex={beatIndex}
                 optionIndex={optionIndex}
+                beatId={beatId}
                 durationS={overlayDurationS}
                 keepStartS={effectiveKeepStartS}
                 keepEndS={effectiveKeepEndS}
                 editable={!cutBusy}
+                onDragStart={onOverlayDragStart}
+                onDragEnd={onOverlayDragEnd}
                 onKeepDraftChange={(startS, endS) => {
                   setPendingCut({ startS, endS });
                 }}

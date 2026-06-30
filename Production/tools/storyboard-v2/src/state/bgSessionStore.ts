@@ -7,8 +7,8 @@ import { apiGet } from '../api/client';
 import { handleO3TerminalOutcomesFromSession } from '../utils/o3SessionTerminalOutcomes';
 import {
   applyPromptEditsToBeats,
-  preserveRefBoxesOnServerBeatMerge,
 } from './promptEditRegistry';
+import { mergeBeatsOnSessionHydrate } from '../utils/bgSessionBeatMerge';
 import type { BgBeat, BgSegment, GptOption } from '../types/bgBeat';
 import { bgSessionKey } from './producerSessionKeys';
 import {
@@ -250,7 +250,7 @@ function applySessionPayload(
   }
   const nextBeats = applyPromptEditsToBeats(stateRes.beats ?? []);
   pauseAllBeatGenMedia();
-  row.beats = preserveRefBoxesOnServerBeatMerge(prevBeats, nextBeats);
+  row.beats = mergeBeatsOnSessionHydrate(prevBeats, nextBeats);
   row.lipsyncReady = stateRes.capabilities?.lipsync_public_host_ready ?? null;
   row.lipsyncMessage = stateRes.capabilities?.lipsync_public_host_message ?? null;
   seedGenFailureSeenKeys(row.beats);
@@ -434,6 +434,28 @@ export async function refreshBgSession(): Promise<boolean> {
 
   applySessionPayload(key, row.segments, stateRes.data, row.arcNumber, row.beats);
   return true;
+}
+
+let refreshBgSessionInFlight: Promise<boolean> | null = null;
+let refreshBgSessionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Coalesce overlapping poll refreshes — OPERATOR_SESSION_PERF_V1. */
+export function scheduleRefreshBgSession(debounceMs = 150): void {
+  if (refreshBgSessionDebounceTimer !== null) {
+    clearTimeout(refreshBgSessionDebounceTimer);
+  }
+  refreshBgSessionDebounceTimer = setTimeout(() => {
+    refreshBgSessionDebounceTimer = null;
+    void refreshBgSessionCoalesced();
+  }, debounceMs);
+}
+
+export async function refreshBgSessionCoalesced(): Promise<boolean> {
+  if (refreshBgSessionInFlight) return refreshBgSessionInFlight;
+  refreshBgSessionInFlight = refreshBgSession().finally(() => {
+    refreshBgSessionInFlight = null;
+  });
+  return refreshBgSessionInFlight;
 }
 
 /** Wire submit ack or session reattach into poll map + nav busy indicators. */

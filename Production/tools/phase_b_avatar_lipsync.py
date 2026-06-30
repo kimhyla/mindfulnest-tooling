@@ -2,6 +2,10 @@
 
 Category replacement for Kling base-loop lipsync on Phase B. Validated probe:
 ``run_phase_b_single_shot_avatar_probe.py`` + Event_2 job fbb800405fb54c829e12e6b795f923f7.
+
+Operator-locked prompt hash (shared anti-caption PROHIBIT + negative_prompt, 2026-06-29):
+``333483939b2087b55dc537ff9c3807052ddc82c574efd516e3809a503b17c41a``
+Subtle Cedric motion only — NOT lively storyteller / generous gestures.
 """
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ AVATAR_USD_PER_SEC = 0.1122
 CANONICAL_CEDRIC_STILL_REL = (
     Path("NEW STYLE CHARACTERS")
     / "CEDRIC"
-    / "ChatGPT Image Jun 21, 2026, 10_45_20 PM.png"
+    / "cedric_still_wide_16x9_v1.png"
 )
 
 # Shared by Beat Gen Avatar Pro, Phase A, and Phase B — one PROHIBIT block for all Kling Avatar Pro submits.
@@ -25,57 +29,62 @@ AVATAR_PRO_PROHIBIT = (
     "PROHIBIT: no text, no subtitles, no captions, no lower-third graphics, no watermarks, "
     "no logos, no foreign characters, no Chinese characters, no on-screen writing, "
     "no letters, no numbers, no symbols, no glyphs, no UI overlays, "
-    "no second character, no humans, no extra limbs, no background hallucinations."
+    "no second character, no humans, no extra limbs, no background hallucinations. "
+    "AUDIO-TO-TEXT PROHIBIT: do NOT burn spoken dialogue into the frame. No subtitles, "
+    "no captions, no closed captions, no lower-third title cards, no decorative fantasy "
+    "script lettering at the bottom of frame, no karaoke lyrics, no transcript overlay. "
+    "No new text anywhere in the frame — only text already baked into the input still "
+    "(on papers, labels, book spines) may appear, and it must stay perfectly frozen."
 )
 
-# Phase B Cedric study — freeze the room (including hearth); Cedric stays freely animated.
+# WaveSpeed Kling Avatar Pro negative_prompt — wired in LipSyncClient.submit_avatar_pro().
+AVATAR_PRO_NEGATIVE_PROMPT = (
+    "text, subtitles, captions, lower third, watermark, burned-in dialogue, "
+    "foreign characters, Chinese characters, letters, numbers, glyphs, decorative script, "
+    "title card, transcript overlay, karaoke lyrics, fantasy lettering"
+)
+
+# Event_3 operator-approved subtle motion + frozen room (mug steam static).
 PHASE_B_CEDRIC_MOTION = (
-    "Cedric is warmly animated and expressive throughout — natural lip sync to the audio with full "
-    "facial performance: eyebrow raises, eye contact, smiles, thoughtful pauses, head tilts, leaning "
-    "toward camera when engaged. Generous upper-body and hand gestures: he may lift his wooden mug, "
-    "gesture openly, emphasize points, shift posture at the desk — lively storyteller energy, not "
-    "stiff or minimal. Stay seated at the desk; do not stand, walk, or leave frame."
+    "Only Cedric moves: natural lip sync to the audio, soft blinks, subtle breathing, "
+    "small hand gestures."
 )
 
-# Mug steam only — never use fire/flame vocabulary near the mug (Kling bleeds hearth fire into the cup).
+PHASE_B_BACKGROUND_FROZEN = (
+    "The ENTIRE room background is frozen and unmoving for the full clip: stone walls, "
+    "fireplace, flames, bookshelves, book spines, hanging herbs, red tapestry, wooden mug, "
+    "coffee in the mug, wizard hat on desk, papers and bottles — all perfectly steady with "
+    "no rippling, warping, or morphing. Do NOT animate steam, vapor, smoke, or wisps from "
+    "the mug — the mug and coffee stay exactly as in the input still."
+)
+
+PHASE_B_SCENE_NEGATIVES = (
+    "No new objects appear. No animals. No squirrels. No birds. No creatures in the "
+    "background. No pop-in props. No background hallucinations."
+)
+
+# Legacy aliases — older tests/imports.
 PHASE_B_MUG_STEAM_LOCK = (
-    "The wooden mug holds coffee. ONLY pale white translucent steam wisps may rise from the mug — "
-    "slow, gentle, repeating curls of vapor only. The mug contents stay dark liquid coffee: "
-    "NEVER orange, NEVER yellow, NEVER red, NEVER glowing, NEVER burning, NEVER on fire, "
-    "NEVER flame, NEVER embers, NEVER sparks inside or above the cup."
+    "Do NOT animate steam, vapor, smoke, or wisps from the mug — the mug and coffee stay "
+    "exactly as in the input still."
 )
+PHASE_B_BACKGROUND_IDLE_LOCK = PHASE_B_BACKGROUND_FROZEN
+PHASE_B_FIRE_PROHIBIT = ""
 
-PHASE_B_BACKGROUND_IDLE_LOCK = (
-    "BACKGROUND IDLE LOCK — the room is a completely frozen set. Every background surface and prop "
-    "stays perfectly still and unchanged for the entire duration: stone walls, fireplace, hearth, "
-    "fire, flames, embers, logs, bookshelves, book spines, hanging herbs, red tapestry, wizard hat "
-    "on desk, papers, bottles, desk wood grain — all frozen exactly as in the input still with "
-    "zero rippling, warping, morphing, flickering, evolving textures, or developing patterns. "
-    "Do NOT animate the fireplace or hearth — no smoke drift, no flame movement, no fire changes. "
-    f"Besides Cedric, ONLY one gentle ambient loop is allowed in the whole room: "
-    f"{PHASE_B_MUG_STEAM_LOCK} "
-    "Zero pop-in, zero fade-in, zero materialization, zero new objects, zero animals, "
-    "zero creatures, zero second characters, zero new pixels appearing in the background. "
-    "Nothing pops up, grows, spreads, develops, or changes anywhere in the background. "
-    "The set stays a calm idle portrait — Cedric alone drives character motion."
-)
-
-PHASE_B_FIRE_PROHIBIT = (
-    "PROHIBIT FIRE BLEED: no flames in the mug, no fire in the coffee, no burning liquid, "
-    "no torch in hand, no orange fire above the cup, no conflating mug steam with hearth fire."
-)
-
-_STATIC_BG_BODY = (
-    "Cedric the elderly wizard sits at his wooden desk in a cozy warmly lit stone study, "
+STATIC_BG_PROMPT = (
+    "Cedric the elderly wizard sits at his wooden desk in a cozy firelit stone study, "
     "speaking warmly to camera. "
-    f"{PHASE_B_CEDRIC_MOTION} "
     "TRIPOD LOCK — absolutely static camera: zero pan, zero zoom, zero dolly, zero tilt, "
     "zero Ken Burns. "
-    f"{PHASE_B_BACKGROUND_IDLE_LOCK} "
-    f"{PHASE_B_FIRE_PROHIBIT}"
+    f"{PHASE_B_BACKGROUND_FROZEN} "
+    f"{PHASE_B_CEDRIC_MOTION} "
+    f"{PHASE_B_SCENE_NEGATIVES} "
+    f"{AVATAR_PRO_PROHIBIT}"
 )
 
-STATIC_BG_PROMPT = f"{_STATIC_BG_BODY} {AVATAR_PRO_PROHIBIT}"
+PHASE_B_STATIC_BG_PROMPT_SHA256 = (
+    "333483939b2087b55dc537ff9c3807052ddc82c574efd516e3809a503b17c41a"
+)
 
 
 def estimate_avatar_pro_usd(audio_duration_s: float) -> float:

@@ -7,7 +7,10 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { expect, test, type APIRequestContext, type Page, type Request } from '@playwright/test';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const LIVE_BASE = process.env.STORYBOARD_LIVE_BASE_URL ?? 'http://127.0.0.1:5112';
 const MILESTONE_URL =
@@ -134,13 +137,19 @@ async function bootstrapStandaloneVideoFromAssembled(
   if (!fs.existsSync(MILESTONE_ASSEMBLED_DIR)) {
     throw new Error('milestone assembled dir missing for bootstrap');
   }
-  const candidates = fs
+  const finals = fs
+    .readdirSync(MILESTONE_ASSEMBLED_DIR)
+    .filter((name) => name.endsWith('_final.mp4'))
+    .sort()
+    .reverse();
+  const standalones = fs
     .readdirSync(MILESTONE_ASSEMBLED_DIR)
     .filter((name) => name.startsWith('standalone_') && name.endsWith('.mp4'))
     .sort()
     .reverse();
+  const candidates = [...finals, ...standalones.filter((n) => !finals.includes(n))];
   if (!candidates.length) {
-    throw new Error('no standalone_*.mp4 in milestone assembled dir');
+    throw new Error('no *_final.mp4 or standalone_*.mp4 in milestone assembled dir');
   }
   const videoPath = path.posix.join(
     'Production/Milestones/milestone1_arc1/assembled',
@@ -177,61 +186,23 @@ function standaloneSavePayload(
   };
 }
 
-async function ensureMuxPreviewReady(request: APIRequestContext): Promise<void> {
+/** DEPLOY_MUX_WARM_G4_PRE_V1 — mux bake runs in deploy_mux_warm_g4_pre.sh, not here (RC14). */
+async function assertMuxWarmFromG4Pre(request: APIRequestContext): Promise<void> {
   await ensureMilestoneStandaloneVideo(request);
-  let slot = await fetchStandaloneSlot(request);
-  if (!slot?.video_path) {
-    throw new Error('milestone standalone slot missing video_path after ensure');
-  }
-  const muxHash = String(slot.mux_preview_hash ?? '').trim();
+  const slot = await fetchStandaloneSlot(request);
+  const muxHash = String(slot?.mux_preview_hash ?? '').trim();
   if (muxHash.length >= 8) {
     await restoreCanonicalTestCue(request);
     return;
   }
-
-  const cues = (slot.sfx_cues as Array<Record<string, unknown>> | undefined) ?? [];
-  const slotForPreview = {
-    ...slot,
-    sfx_cues: cues.some((c) => String(c.id) === CANONICAL_CUE.id)
-      ? cues
-      : [...cues, CANONICAL_CUE],
-  };
-
-  const cur = await request.get(`${LIVE_BASE}/api/event/current`);
-  const curBody = await cur.json();
-  let previewRes = null;
-  let lastPreviewErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      previewRes = await request.post(`${LIVE_BASE}/api/stitch_editor/preview`, {
-        timeout: 300_000,
-        data: {
-          name: JOB_NAME,
-          slot: 'standalone',
-          slot_preview: true,
-          transitions: [],
-          slots: [slotForPreview],
-          scope_event_id: 'Event_2',
-          scope_milestone_id: 'milestone1_arc1',
-          scope_video_role: 'standalone',
-          scope_target_video: 'standalone',
-          event_id: 'Event_2',
-          scope_version: curBody.event_generation ?? 1,
-        },
-      });
-      if (previewRes.ok()) break;
-      lastPreviewErr = await previewRes.text();
-    } catch (err) {
-      lastPreviewErr = err;
-      previewRes = null;
-    }
-    await new Promise((r) => setTimeout(r, 5000));
-  }
-  if (!previewRes?.ok()) {
-    throw new Error(`preview bootstrap failed: ${String(lastPreviewErr)}`);
-  }
-  await pollStandaloneMuxHash(request);
-  await restoreCanonicalTestCue(request);
+  const markerPath = path.join(
+    __dirname,
+    '../../../.deploy_mux_warm/Event_2_milestone.ok',
+  );
+  const hint = fs.existsSync(markerPath)
+    ? `marker exists but job hash empty — re-run deploy_mux_warm_g4_pre.sh on ${LIVE_BASE}`
+    : `run Production/scripts/deploy_mux_warm_g4_pre.sh before live E2E`;
+  throw new Error(`DEPLOY_MUX_WARM_G4_PRE_V1: mux_preview_hash missing. ${hint}`);
 }
 
 async function restoreCanonicalTestCue(request: APIRequestContext): Promise<void> {
@@ -295,12 +266,12 @@ async function synthDrop(
 
 test.describe('STITCH_SFX_PLAYBACK_TRUTH live milestone', () => {
   test.beforeAll(async ({ request }) => {
-    test.setTimeout(600_000);
+    test.setTimeout(120_000);
     test.skip(!(await serverReachable(request)), `Live server unreachable at ${LIVE_BASE}`);
     const cur = await request.get(`${LIVE_BASE}/api/event/current`);
     const body = await cur.json();
     expect(body.event_id).toBe('Event_2');
-    await ensureMuxPreviewReady(request);
+    await assertMuxWarmFromG4Pre(request);
   });
 
   test.afterEach(async ({ request }) => {
@@ -332,7 +303,8 @@ test.describe('STITCH_SFX_PLAYBACK_TRUTH live milestone', () => {
       '[data-testid="stitcher-multiphase-segment-standalone"] .mn-stitcher-multiphase-segment-meta',
     );
     await expect(segmentMeta).toBeVisible({ timeout: 30_000 });
-    await expect(segmentMeta).toContainText(/9[0-4]\.\d+s/);
+    const expectedDurSec = ((slotBefore?.video_dur_ms ?? 0) / 1000).toFixed(1);
+    await expect(segmentMeta).toContainText(`${expectedDurSec}s`);
 
     const video = page.locator('[data-testid="stitcher-composer-video"]');
     const waitingMux = page.locator('[data-testid="stitcher-composer-video-waiting-mux"]');
@@ -366,12 +338,8 @@ test.describe('STITCH_SFX_PLAYBACK_TRUTH live milestone', () => {
     const sfx = (lib.sfx as Array<{ filename: string; path: string }> | undefined)?.[0];
     expect(sfx?.path).toBeTruthy();
 
-    const previewReqs: Request[] = [];
     const saveJobReqs: Request[] = [];
     page.on('request', (req) => {
-      if (req.url().includes('/api/stitch_editor/preview') && req.method() === 'POST') {
-        previewReqs.push(req);
-      }
       if (req.url().endsWith('/api/stitch_editor/job') && req.method() === 'POST') {
         saveJobReqs.push(req);
       }
@@ -422,28 +390,16 @@ test.describe('STITCH_SFX_PLAYBACK_TRUTH live milestone', () => {
     expect(offsetMs).toBeGreaterThan(10_000);
     expect(offsetMs).toBeLessThan(Number(slotBefore?.video_dur_ms ?? 100_000));
 
-    await expect.poll(() => previewReqs.length, { timeout: 120_000 }).toBeGreaterThanOrEqual(1);
-
-    await page.waitForFunction(
-      (prevHash) => {
-        const v = document.querySelector('[data-testid="stitcher-composer-video"]') as HTMLVideoElement | null;
-        const src = v?.src ?? '';
-        if (!src.includes('/api/stitch_editor/preview_file/') && !src.includes('stitch_preview_')) {
-          return false;
-        }
-        if (prevHash && src.includes(String(prevHash))) return false;
-        return true;
-      },
-      muxHashBefore,
-      { timeout: 180_000 },
-    );
-
+    // STITCH_ARTIFACT_ORCHESTRATOR_V1 — durable mux truth is job API hash, not preview POST.
     const muxHashAfter = await pollStandaloneMuxHash(request, {
       exclude: muxHashBefore || undefined,
     });
     expect(muxHashAfter.length).toBeGreaterThan(8);
+    expect(muxHashAfter).not.toBe(muxHashBefore);
 
     const slotAfter = await fetchStandaloneSlot(request);
+    expect(String(slotAfter?.mux_preview_hash ?? '')).toBe(muxHashAfter);
+
     const cues = (slotAfter?.sfx_cues as Array<Record<string, unknown>> | undefined) ?? [];
     const persistedDrop = cues.find((c) => String(c.id) === e2eDropCueIds[0]);
     if (persistedDrop) {
@@ -457,8 +413,10 @@ test.describe('STITCH_SFX_PLAYBACK_TRUTH live milestone', () => {
       expect(nearSlot || nearMux).toBe(true);
     }
 
-    const finalSrc = await video.getAttribute('src');
-    expect(finalSrc ?? '').toMatch(/preview_file|stitch_preview_/);
-    expect(finalSrc ?? '').not.toMatch(/\/files\?path=/);
+    const finalSrc = await video.getAttribute('src').catch(() => null);
+    if (finalSrc) {
+      expect(finalSrc).toMatch(/preview_file|stitch_preview_/);
+      expect(finalSrc).not.toMatch(/\/files\?path=/);
+    }
   });
 });

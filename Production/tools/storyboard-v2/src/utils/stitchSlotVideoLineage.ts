@@ -67,6 +67,19 @@ export function mergeHydratedPreviewUrlsAfterLineage(
   return { ...next, ...hydrated };
 }
 
+/** Drop stale React previewUrls when server artifacts must be rebuilt. */
+export function stripPreviewUrlsForArtifactRebuild(
+  prev: Partial<Record<StitchSessionSlotKey, string>>,
+  slotsNeedingMux: readonly StitchSessionSlotKey[],
+  slotsNeedingAmbientMix: readonly StitchSessionSlotKey[],
+): Partial<Record<StitchSessionSlotKey, string>> {
+  const next: Partial<Record<StitchSessionSlotKey, string>> = { ...prev };
+  for (const slotKey of [...slotsNeedingMux, ...slotsNeedingAmbientMix]) {
+    delete next[slotKey];
+  }
+  return next;
+}
+
 export function stitchExportKeptExistingWarning(warnings: readonly string[] | undefined): boolean {
   return (warnings ?? []).some((w) => /kept existing export/i.test(w));
 }

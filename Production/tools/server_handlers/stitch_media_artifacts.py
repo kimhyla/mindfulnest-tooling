@@ -528,7 +528,9 @@ def persist_stitch_slot_ambient_mix_artifacts(
         slot["media_artifacts_built_at"] = datetime.now(timezone.utc).isoformat()
         job["updated_at"] = slot["media_artifacts_built_at"]
 
-    h.app.stitch_state.mutate_state(update)
+    from server_handlers.stitch_editor import stitch_state_store_for_job  # noqa: PLC0415
+
+    stitch_state_store_for_job(h, job_name).mutate_state(update)
 
 
 def persist_stitch_slot_media_artifacts(
@@ -588,7 +590,9 @@ def persist_stitch_slot_media_artifacts(
                     slot.pop("mux_video_mtime_ms", None)
         job["updated_at"] = slot["media_artifacts_built_at"]
 
-    h.app.stitch_state.mutate_state(update)
+    from server_handlers.stitch_editor import stitch_state_store_for_job  # noqa: PLC0415
+
+    stitch_state_store_for_job(h, job_name).mutate_state(update)
 
 
 def find_stitch_job_slot_for_video(h, video_path: str) -> tuple[str, str] | None:

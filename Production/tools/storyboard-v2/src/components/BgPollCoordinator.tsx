@@ -15,7 +15,7 @@ import {
   bgO3SubmitAuditByBeat,
   bgO3WarningByBeat,
   bgPollResults,
-  refreshBgSession,
+  scheduleRefreshBgSession,
   submitPollLatchRef,
   updateBgBeats,
 } from '../state/bgSessionStore';
@@ -89,7 +89,7 @@ export function BgPollCoordinator() {
             message: `Generated ${res.data.done_count} options ($${cost.toFixed(2)})`,
             source: 'bg-batch-done',
           });
-          void refreshBgSession();
+          scheduleRefreshBgSession();
           return;
         }
       } else {
@@ -233,7 +233,7 @@ export function BgPollCoordinator() {
           return next;
         })();
         if (beatPatches.length === 0 || completedBeatIds.length > 0) {
-          void refreshBgSession();
+          scheduleRefreshBgSession();
         }
       }
       if (!anyStillRunning) return;
@@ -293,7 +293,7 @@ export function BgPollCoordinator() {
           for (const beatId of completedBeatIds) delete next[beatId];
           return next;
         })();
-        void refreshBgSession();
+        scheduleRefreshBgSession();
       }
       if (!anyStillRunning) return;
       timer = window.setTimeout(poll, POLL_INTERVAL_MS);

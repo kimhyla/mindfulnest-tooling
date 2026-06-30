@@ -121,6 +121,26 @@ class StitchAmbientLoopTests(unittest.TestCase):
         self.assertIn("build_ambient_bed_filter_lane_for_file", server)
         self.assertIn("ambient_loop_sig_token", (TOOLS / "server_handlers" / "stitch_media_sig.py").read_text())
 
+    def test_client_ambient_loop_sig_matches_server_token(self):
+        from server_handlers.stitch_ambient_loop import ambient_loop_sig_token
+
+        const = (
+            TOOLS / "storyboard-v2" / "src" / "utils" / "stitchConstants.ts"
+        ).read_text(encoding="utf-8")
+        server_tok = ambient_loop_sig_token()
+        self.assertIn(server_tok, const)
+
+    def test_mux_preview_export_forces_ambient_rebuild(self):
+        editor = (TOOLS / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")
+        server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
+        self.assertIn("STITCH_AMBIENT_FORCE_REBUILD_ON_EXPORT_V1", editor)
+        self.assertIn("force_ambient_mix_rebuild", editor)
+        self.assertIn("force_ambient_mix_rebuild", server)
+        export_block = editor.split("def build_stitch_slot_mux_preview_file", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("force_ambient_mix_rebuild", export_block)
+        preview = editor.split("def handle_stitch_preview", 1)[1].split("\ndef ", 1)[0]
+        self.assertNotIn("force_ambient_mix_rebuild", preview)
+
 
 if __name__ == "__main__":
     unittest.main()

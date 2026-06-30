@@ -50,8 +50,20 @@ def test_phase_a_lipsync_method_constant():
 
 
 def test_arlo_wizard_desk_prompt_frozen_bg():
+    import hashlib
+
+    from phase_a_avatar_lipsync import PHASE_A_STATIC_BG_PROMPT_SHA256
+
+    assert hashlib.sha256(ARLO_WIZARD_DESK_PROMPT.encode()).hexdigest() == PHASE_A_STATIC_BG_PROMPT_SHA256
     assert "TRIPOD LOCK" in ARLO_WIZARD_DESK_PROMPT
     assert "Arlo" in ARLO_WIZARD_DESK_PROMPT
     assert "static camera" in ARLO_WIZARD_DESK_PROMPT.lower()
     assert "no Chinese characters" in ARLO_WIZARD_DESK_PROMPT
     assert "PROHIBIT:" in ARLO_WIZARD_DESK_PROMPT
+    assert "AUDIO-TO-TEXT PROHIBIT" in ARLO_WIZARD_DESK_PROMPT
+    assert "no rippling, warping, or morphing" in ARLO_WIZARD_DESK_PROMPT
+    assert "Only Arlo moves" in ARLO_WIZARD_DESK_PROMPT
+    assert "distinct fingers" in ARLO_WIZARD_DESK_PROMPT
+    assert "No stump paws" in ARLO_WIZARD_DESK_PROMPT
+    assert "text-free" in ARLO_WIZARD_DESK_PROMPT
+    assert "NOT a tutorial" in ARLO_WIZARD_DESK_PROMPT

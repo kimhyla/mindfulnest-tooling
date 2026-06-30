@@ -12,6 +12,7 @@ import { activeScope } from '../state/scope';
 import { apiGet, pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget, setDragData, type DragPayload } from '../utils/dragdrop';
+import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
 import { Modal } from './ui/Modal';
 import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
@@ -172,6 +173,8 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
     },
     (p) => p.kind === 'lib-image',
   );
+  const canvasDropRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(canvasDropRef, canvasDropHandlers, [canvasDropHandlers]);
 
   if (!state.value.open) return null;
 
@@ -282,12 +285,10 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
         · Beat: <code>{state.value.targetBeatId ?? '(none)'}</code>
       </p>
       <div
+        ref={canvasDropRef}
         class="mn-cropper-canvas-wrap mn-drop-target"
         data-testid="cropper-canvas-drop-target"
         data-loaded-source={state.value.source ?? ''}
-        onDragOver={canvasDropHandlers.onDragOver}
-        onDragLeave={canvasDropHandlers.onDragLeave}
-        onDrop={canvasDropHandlers.onDrop}
       >
         <CropperCanvas
           imageSrc={state.value.source}

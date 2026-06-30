@@ -64,7 +64,7 @@ fi
 wait_intro_session_state() {
   local attempt out
   for attempt in $(seq 1 "${EVENT_SERVER_COLD_BOOT_ATTEMPTS}"); do
-    out="$(curl -sf --max-time 120 \
+    out="$(curl -sf --max-time "${EVENT_SESSION_STATE_CURL_MAX_SECONDS}" \
       "${BASE}/api/bg/session-state?scope_event_id=${EVENT_ID}&scope_video_role=intro" 2>/dev/null || true)"
     if [[ -n "${out}" ]] && python3 -c "import json,sys; json.loads(sys.argv[1])" "${out}" 2>/dev/null; then
       printf '%s' "${out}"
@@ -138,16 +138,20 @@ for p in orphans[:5]:
 fi
 
 # Omni default — no avatar_pro on intro beats when Avatar disabled (server env pin)
-curl -sf --max-time 120 "${BASE}/api/bg/session-state?scope_event_id=${EVENT_ID}&scope_video_role=intro" \
-  | python3 -c "
+# Reuse INTRO_STATE from wait_intro_session_state — duplicate curl often times out on Event_2+ under load.
+if [[ -z "${INTRO_STATE}" ]]; then
+  echo "FATAL: intro session-state missing for avatar_pro gate" >&2
+  exit 1
+fi
+python3 -c "
 import json, os, sys
-d = json.load(sys.stdin)
+d = json.loads(sys.argv[1])
 avatar_disabled = os.environ.get('MN_BEATGEN_AVATAR_DISABLED', '1').strip().lower() not in ('0', 'false', 'no')
 if avatar_disabled:
     for b in d.get('beats') or []:
         if (b.get('o3_generate_mode') or '').strip() == 'avatar_pro':
             sys.exit(f'FATAL: avatar_pro beat on intro when Avatar disabled: {b.get(\"beat_id\")}')
-"
+" "${INTRO_STATE}"
 
 # Milestone user path — load milestone scope first (event scope returns video_role_invalid)
 if [[ "${PORT}" == "5112" ]]; then
@@ -155,7 +159,20 @@ if [[ "${PORT}" == "5112" ]]; then
     -H "Content-Type: application/json" \
     -d '{"milestone_id":"milestone1_arc1"}' || echo 000)"
   if [[ "${MS_LOAD}" == "200" ]]; then
-    STATE="$(curl -sf --max-time 120 "${BASE}/api/bg/session-state?scope_event_id=Event_2&scope_milestone_id=milestone1_arc1&scope_type=milestone&scope_video_role=full&scope_arc_number=1&scope_phase=full")"
+    STATE=""
+    for attempt in $(seq 1 "${EVENT_SERVER_COLD_BOOT_ATTEMPTS}"); do
+      STATE="$(curl -sf --max-time "${EVENT_SESSION_STATE_CURL_MAX_SECONDS}" \
+        "${BASE}/api/bg/session-state?scope_event_id=Event_2&scope_milestone_id=milestone1_arc1&scope_type=milestone&scope_video_role=full&scope_arc_number=1&scope_phase=full" 2>/dev/null || true)"
+      if [[ -n "${STATE}" ]] && python3 -c "import json,sys; json.loads(sys.argv[1])" "${STATE}" 2>/dev/null; then
+        break
+      fi
+      STATE=""
+      sleep "${EVENT_SERVER_WAIT_SLEEP_SECONDS}"
+    done
+    if [[ -z "${STATE}" ]]; then
+      echo "FATAL: milestone session-state empty or invalid JSON after cold boot" >&2
+      exit 1
+    fi
     BEATS="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(len(d.get('beats') or []))" <<<"${STATE}")"
     ERR="$(python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error_message') or '')" <<<"${STATE}")"
     echo "milestone session-state beats=${BEATS} error=${ERR:-none}"

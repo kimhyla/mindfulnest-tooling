@@ -118,6 +118,12 @@ class StitchCacheBuildLockTests(unittest.TestCase):
         build_block = pipe.split("def _stitch_build_pipeline", 1)[1].split("\n    def ", 1)[0]
         self.assertIn("preview_only = bool(body.get(\"slot_preview\"))", build_block)
         self.assertIn("preview_only=preview_only", build_block)
+        self.assertIn("run_stitch_cache_build", build_block)
+
+    def test_stitch_editor_waveform_mix_waits_on_cache_lock(self):
+        src = (TOOLS / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")
+        block = src.split("def _mix_stitch_waveform_audio", 1)[1].split("\ndef ", 1)[0]
+        self.assertIn("run_stitch_cache_build", block)
 
     def test_client_mux_rebuild_queue_markers(self):
         hydrate = (

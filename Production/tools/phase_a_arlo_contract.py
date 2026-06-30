@@ -12,9 +12,9 @@ from pathlib import Path
 
 PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v4"
 
-# Close medium wizard-desk still (Jun 22) — Arlo large in frame.
+# Text-free wide 16:9 wizard-desk still (Jun 30) — headroom + bottom sacrifice zone contract.
 PHASE_A_ARLO_CANONICAL_STILL_REL = (
-    "NEW STYLE CHARACTERS/ARLO/ChatGPT Image Jun 22, 2026, 01_12_53 AM.png"
+    "NEW STYLE CHARACTERS/ARLO/arlo_still_wide_16x9_v1.png"
 )
 PHASE_A_ARLO_EVENT_STILL_NAME = "phase_a_arlo_canonical_still.png"
 

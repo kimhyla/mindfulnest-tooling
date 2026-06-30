@@ -7,13 +7,15 @@ TOOLING="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PORT="${MN_SERVER_PORT:-5112}"
 BASE="http://localhost:${PORT}"
 EVENT="${MN_WATERCOLOR_SMOKE_EVENT:-Event_2}"
+MIN_WC="${MN_WATERCOLOR_MIN_COUNT:-1}"
 
 fail() { echo "[phase-watercolor-durability] FATAL: $*" >&2; exit 1; }
 
 echo "[phase-watercolor-durability] unit tests..."
 (cd "${TOOLING}/Production/tools" && python3 -m pytest \
   tests/test_watercolor_assets.py \
-  tests/test_phase_b_watercolor_serve.py -q) || fail "pytest failed"
+  tests/test_phase_b_watercolor_serve.py \
+  tests/test_event_watercolor_seed.py -q) || fail "pytest failed"
 
 echo "[phase-watercolor-durability] server HTTP..."
 curl -sf "${BASE}/" >/dev/null || fail "server not up on ${BASE}"
@@ -32,7 +34,7 @@ imgs = d.get('images') or []
 print(sum(1 for i in imgs if i.get('tier') == 'watercolor'))
 ")"
 PHASE_COUNT="$(curl -sf "${BASE}/api/phase/watercolor_list" | python3 -c "import sys,json; print(json.load(sys.stdin).get('count',0))")"
-[[ "${WC_ROWS}" -gt 0 ]] || fail "cr_library watercolor tier empty (phase count=${PHASE_COUNT})"
+[[ "${WC_ROWS}" -ge "${MIN_WC}" ]] || fail "cr_library watercolor tier empty for ${EVENT} (phase count=${PHASE_COUNT}); run bootstrap_event_watercolors.py"
 [[ "${WC_ROWS}" == "${PHASE_COUNT}" ]] || fail "catalog mismatch cr=${WC_ROWS} phase=${PHASE_COUNT}"
 
 KEY="$(curl -sf "${BASE}/api/phase/watercolor_list" | python3 -c "

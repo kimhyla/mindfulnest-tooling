@@ -12871,11 +12871,26 @@ body {{padding-top:44px!important;}}
             # Step 2: Audio parity (CONCAT_AUDIO_PARITY_V1)
             norm = self._stitch_ensure_audio(norm, cache_dir)
 
+            # Step 2b: AUTO_LOUDNORM_V1 speech bus (before ambient/SFX mix)
+            from server_handlers.speech_loudnorm import (  # noqa: PLC0415
+                apply_speech_loudnorm_to_mp4,
+                slot_video_skips_layer_b_speech_loudnorm,
+            )
+
+            vp_name = slot.get("video_path") or ""
+            if not slot.get("loudnorm_already_applied") and not slot_video_skips_layer_b_speech_loudnorm(vp_name):
+                norm, applied = apply_speech_loudnorm_to_mp4(norm, cache_dir=cache_dir)
+                if applied:
+                    print(f"[stitch] speech loudnorm slot {i} ({slot.get('slot_key', i)}) ok", flush=True)
+
             slot_dur_ms = self._ffprobe_duration_ms(norm)
             slot_durations.append(slot_dur_ms)
 
             # Step 3+4: Mix ambient + SFX (slot-relative offsets)
-            final = self._stitch_mix_slot_audio(norm, slot, cache_dir)
+            force_ambient_rebuild = bool(body.get("force_ambient_mix_rebuild"))
+            final = self._stitch_mix_slot_audio(
+                norm, slot, cache_dir, force_rebuild=force_ambient_rebuild,
+            )
             slot_finals.append(final)
 
         # Handle transitions per spec §3.3 + Q1 LOCKED 2026-05-04 +
@@ -13070,14 +13085,16 @@ body {{padding-top:44px!important;}}
                 pass
 
         if not out_path.is_file():
-            import fcntl  # noqa: PLC0415
-            from credentials_lib.stitch_cache_build import stitch_cache_build_lock  # noqa: PLC0415
+            from credentials_lib.stitch_cache_build import run_stitch_cache_build  # noqa: PLC0415
             from server_handlers.stitch_media_artifacts import stitch_collect_referenced_cache_stems  # noqa: PLC0415
 
-            with stitch_cache_build_lock(cache_dir):
-                if out_path.is_file() and preview_cache_is_valid(out_path, expected_s):
-                    pass
-                elif len(slot_finals) == 1:
+            def _preview_ready() -> bool:
+                return out_path.is_file() and preview_cache_is_valid(out_path, expected_s)
+
+            def _build_preview() -> None:
+                if _preview_ready():
+                    return
+                if len(slot_finals) == 1:
                     import shutil as _shutil  # noqa: PLC0415
 
                     tmp = out_path.parent / (
@@ -13103,6 +13120,8 @@ body {{padding-top:44px!important;}}
                     cache_dir, keep=10, pattern=r"^se_slot_.*\.mp4$",
                     pin_stems=pin_stems,
                 )
+
+            run_stitch_cache_build(cache_dir, ready=_preview_ready, build=_build_preview)
         else:
             from server_handlers.stitch_media_artifacts import stitch_collect_referenced_cache_stems  # noqa: PLC0415
 
@@ -13379,19 +13398,14 @@ body {{padding-top:44px!important;}}
     # 600x540 for Phase B; these dicts override per-phase for the call site.
     # Closes inventory v2 PB-17 + PA-19 WIRED-BUT-BROKEN class.
     #
-    # wc_v6 position fix (2026-05-28): Phase B lipsync base is 720×544.
-    # NORMALIZATION_VF_EXPR scales it to 953×720 within the 1280×720 canvas,
-    # centering the content with x_offset=164px on each side (black letterbox).
-    # Old frame_x["b"]=40 fell inside the left black bar → overlay never visible
-    # on the actual content. Corrected values match the CSS overlay at left=2%,
-    # top=4%, width=35% of the video (LD-821 CSS overlay architecture):
-    #   frame_x["b"] = 164 (content_left) + round(2% × 953) = 183 → 185
-    #   frame_y       = round(4% × 720) = 29 → 30
-    #   frame_max_w["b"] = round(35% × 953) = 334 → 340
-    _PHASE_FRAME_X = {"b": 185, "a": 800}
-    _PHASE_FRAME_Y = 30
-    _PHASE_FRAME_MAX_W = {"b": 340, "a": 480}
-    _PHASE_FRAME_MAX_H = {"b": 540, "a": 540}
+    # wc_v17 (2026-06-30): Full-bleed 16:9 canvas — rounded operator red-box canonical.
+    # 64px top/left margin (Phase B); Phase A x=870 keeps portrait elbow placement.
+    # Max bbox 368×508 (~346×508 scaled portrait at spell_title cue).
+    _PHASE_WATERCOLOR_CANVAS_MARGIN = 64
+    _PHASE_FRAME_MAX_W = {"b": 368, "a": 368}
+    _PHASE_FRAME_MAX_H = {"b": 508, "a": 508}
+    _PHASE_FRAME_X = {"b": 64, "a": 870}
+    _PHASE_FRAME_Y = 64
 
     def _handle_phase_b_preview(self, body: dict) -> None:
         from server_handlers.phases import handle_phase_b_preview

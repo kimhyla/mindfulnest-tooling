@@ -99,6 +99,10 @@ grep -q 'PHASE_A_SINGLE_PLAYER_V1' "$PRODUCER" \
   || fail "PhaseProducer must expose PHASE_A_SINGLE_PLAYER_V1 (LD-829 single canonical player)"
 grep -q 'phaseAPreviewFile' "$PRODUCER" \
   || fail "PhaseProducer must use phaseAPreviewFile for canonical stitched/lipsync selection"
+grep -q 'usePhaseWatercolorCues' "$PRODUCER" \
+  || fail "PhaseProducer must use usePhaseWatercolorCues (PHASE_WATERCOLOR_CUE_AUTHORITY_V1)"
+grep -q 'PHASE_WATERCOLOR_CUE_AUTHORITY_V1' "$PRODUCER" \
+  || fail "PhaseProducer root must expose PHASE_WATERCOLOR_CUE_AUTHORITY_V1 marker"
 grep -q 'data-testid="phase-a-stitched-preview"' "$PRODUCER" \
   && fail "duplicate phase-a-stitched-preview player block must not return (LD-829)"
 

@@ -393,6 +393,8 @@ export interface PatchOptions {
   /** Skip the M1 pre-write snapshot. Default false. Used internally by the
    *  snapshot endpoint itself to avoid recursion. */
   skipSnapshot?: boolean;
+  /** LD-244 — suppress TTS regen when inserting [pause] tags. */
+  skip_tts_regen?: boolean;
   /** Override fetch method (default POST). */
   method?: 'POST' | 'PATCH';
   /** Internal — set during 423-retry to suppress further retries. */
@@ -558,6 +560,7 @@ export async function pathappPatch<T = unknown>(
     injectMilestoneScope: shouldInjectMilestoneScope(),
     milestoneId: activeMilestoneId.value || readUrlMilestoneId(),
   });
+  if (opts.skip_tts_regen) payload['skip_tts_regen'] = true;
 
   const rawOpts: RawPostOptions = { suppressScopeDispatch: !opts._scopeHealRetry };
   if (opts.fetchTimeoutMs != null && opts.fetchTimeoutMs > 0) {

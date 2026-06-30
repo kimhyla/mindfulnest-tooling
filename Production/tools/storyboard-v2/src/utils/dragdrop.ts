@@ -115,3 +115,23 @@ export function makeDropTarget(
     },
   };
 }
+
+/** DROP-CAPTURE-1 — WaveSurfer canvas receives dragover before wrapper bubble; capture fixes drop. */
+export function bindDropTargetCapture(
+  el: HTMLElement,
+  handlers: DropTargetHandlers,
+): () => void {
+  const onDragOver = (e: DragEvent) => handlers.onDragOver(e);
+  const onDragLeave = (e: DragEvent) => handlers.onDragLeave(e);
+  const onDrop = (e: DragEvent) => handlers.onDrop(e);
+  el.addEventListener('dragover', onDragOver, true);
+  el.addEventListener('dragleave', onDragLeave, true);
+  el.addEventListener('drop', onDrop, true);
+  el.setAttribute('data-drop-capture-bound', 'WAVEFORM_DROP_CAPTURE_V1');
+  return () => {
+    el.removeAttribute('data-drop-capture-bound');
+    el.removeEventListener('dragover', onDragOver, true);
+    el.removeEventListener('dragleave', onDragLeave, true);
+    el.removeEventListener('drop', onDrop, true);
+  };
+}

@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 
 import {
+  beginStitchAmbientPatch,
+  endStitchAmbientPatch,
+  mergeStitchAmbientBedOnHydrate,
   mergeStitchJobSlotsClientPatch,
   mergeStitchSlotClientPatch,
 } from '../stitchSlotDurableMerge.ts';
@@ -72,5 +75,23 @@ describe('STITCH_SAVE_SLOT_DURABLE_MERGE_V1', () => {
       },
     );
     assert.equal(merged.sfx_cues?.length, 1);
+  });
+
+  it('STITCH_AMBIENT_BED_MERGE_V1 keeps local bed during patch in flight', () => {
+    beginStitchAmbientPatch('Event_1', 'intro');
+    const merged = mergeStitchJobSlotsClientPatch(
+      { intro: { ambient_bed: 'pretty option2', video_path: '/x.mp4' } },
+      { intro: { ambient_bed: 'Intro video ambient bed', video_path: '/x.mp4' } },
+      { eventId: 'Event_1' },
+    );
+    endStitchAmbientPatch('Event_1', 'intro');
+    assert.equal(merged.intro.ambient_bed, 'pretty option2');
+  });
+
+  it('mergeStitchAmbientBedOnHydrate idle adopts server', () => {
+    assert.equal(
+      mergeStitchAmbientBedOnHydrate('local', 'server', { patchInFlight: false }),
+      'server',
+    );
   });
 });

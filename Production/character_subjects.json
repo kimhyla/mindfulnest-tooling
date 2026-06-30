@@ -5,7 +5,7 @@
   "_image_selection_rationale": "Primary: neutral or happy pose. Refer: different emotion(s). All images 1024x1024 PNG, Rule 6 compliant.",
   "characters": {
     "Tessa": {
-      "element_id": "313439312648503",
+      "element_id": "314723665383307",
       "status": "active",
       "element_name": "Tessa",
       "description": "Cartoon 3D Pixar-style turtle, orange-brown patterned shell, friendly expressive eyes, small green body",
@@ -20,69 +20,109 @@
       "elevenlabs_voice_sample_path": "kling_voice_samples/tessa.mp3",
       "audition_line": "Well.... Do you think she can really help?",
       "audition_speed": 1.15,
-      "kling_voice_id": "895206617015918675",
+      "kling_voice_id": "900616273057419291",
       "kling_voice_label": "ElevenLabs Jessica (create-voice)",
-      "created_at": "2026-06-05T02:01:05.803963+00:00",
-      "wavespeed_prediction_id": "2f5c1313c8724b939d4ff0677bf492e9",
+      "created_at": "2026-06-29T16:56:25.779906+00:00",
+      "wavespeed_prediction_id": "a377cc26eacf4ec3b2610ff2f556d86c",
       "element_sample_lines": [
-        "Oh ... hi. I'm Tessa.",
-        "....that's awesome",
-        "Well.... Do you think she can really help?"
+        "[shy, gentle] Oh ... hi. I'm Tessa.",
+        "[soft, amazed] ....that's awesome",
+        "[wary, hopeful] Well.... Do you think she can really help?"
       ],
-      "element_sample_text": "Oh ... hi. I'm Tessa. ... ....that's awesome ... Well.... Do you think she can really help?",
+      "element_sample_text": "[shy, gentle] Oh ... hi. I'm Tessa. ... [soft, amazed] ....that's awesome ... [wary, hopeful] Well.... Do you think she can really help?",
       "voice_sample_lock": {
         "schema_version": 1,
         "session_id": "speed_compare_20260604",
         "audition_line": "Well.... Do you think she can really help?",
         "element_sample_lines": [
-          "Oh ... hi. I'm Tessa.",
-          "....that's awesome",
-          "Well.... Do you think she can really help?"
+          "[shy, gentle] Oh ... hi. I'm Tessa.",
+          "[soft, amazed] ....that's awesome",
+          "[wary, hopeful] Well.... Do you think she can really help?"
         ],
-        "element_sample_text": "Oh ... hi. I'm Tessa. ... ....that's awesome ... Well.... Do you think she can really help?",
+        "element_sample_text": "[shy, gentle] Oh ... hi. I'm Tessa. ... [soft, amazed] ....that's awesome ... [wary, hopeful] Well.... Do you think she can really help?",
         "locked_speed": 1.15,
-        "locked_at": "2026-06-05T02:00:32.903569+00:00",
-        "sample_text_fingerprint": "156d5d9a8b92d9db"
-      }
+        "locked_at": "2026-06-29T16:53:02.854668+00:00",
+        "sample_text_fingerprint": "9f371fea5f8b48e8"
+      },
+      "voice_bind_history": [
+        {
+          "element_id": "313439312648503",
+          "kling_voice_id": "895206617015918675",
+          "archived_at": "2026-06-29T16:55:59.301979+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "ElevenLabs Jessica (create-voice)",
+          "wavespeed_prediction_id": "2f5c1313c8724b939d4ff0677bf492e9"
+        }
+      ]
     },
     "Chipper": {
-      "element_id": "312987294498500",
+      "element_id": "314723636875507",
       "status": "active",
-      "element_name": "Chipper",
-      "description": "Pixar magpie, blue scarf. Feather-tip wings, no hands. TOOTH-FREE beak. Stands on desk.",
-      "frontal_image": "Chipper/poses/chipper_canonical_neutral.png",
+      "element_name": "Arlo",
+      "description": "Pixar red squirrel, blue scarf, green vest, fluffy tail, small paws. Friendly guide.",
+      "frontal_image": "Arlo/poses/arlo_canonical_neutral_vest.png",
       "refer_images": [
-        "Chipper/poses/chipper_canonical_branch.png"
+        "Arlo/poses/arlo_happy_vest.png",
+        "Arlo/poses/arlo_confident_vest.png"
       ],
       "elevenlabs_voice_id": "7o9pyvsN0ob5GO6LBQp6",
       "elevenlabs_voice_name": "Chipper1",
       "elevenlabs_voice_sample_path": "kling_voice_samples/chipper.mp3",
       "audition_line": "Ready? Just focus on the Teleport Glass. Here we go!",
       "audition_speed": 1.15,
-      "kling_voice_id": "891326025224429589",
+      "kling_voice_id": "900616085828542514",
       "kling_voice_label": "ElevenLabs Chipper1 (create-voice)",
-      "created_at": "2026-06-09T14:36:57.662697+00:00",
-      "wavespeed_prediction_id": "48ec32f5c68b476a969a1f462aabe309",
+      "created_at": "2026-06-29T16:55:58.513571+00:00",
+      "wavespeed_prediction_id": "e064ec37a1b7495f82f989ac69f2209e",
       "element_sample_lines": [
-        "Ready? Just focus on the Teleport Glass. Here we go!",
-        "Alright Kiddo. Let's teleport to the Wizarding School and see.",
-        "Well, I know some super smart people who have lots of faith in this kid."
+        "[warm, calm] Ready? Just focus on the Teleport Glass. Here we go!",
+        "[encouraging, steady] Alright Kiddo. Let's teleport to the Wizarding School and see.",
+        "[confident, warm] Well, I know some super smart people who have lots of faith in this kid."
       ],
-      "element_sample_text": "Ready? Just focus on the Teleport Glass. Here we go! ... Alright Kiddo. Let's teleport to the Wizarding School and see. ... Well, I know some super smart people who have lots of faith in this kid.",
+      "element_sample_text": "[warm, calm] Ready? Just focus on the Teleport Glass. Here we go! ... [encouraging, steady] Alright Kiddo. Let's teleport to the Wizarding School and see. ... [confident, warm] Well, I know some super smart people who have lots of faith in this kid.",
+      "voice_bind_history": [
+        {
+          "element_id": "313040140095522",
+          "kling_voice_id": "891326025224429589",
+          "archived_at": "2026-06-15T04:45:00.000000+00:00",
+          "reason": "event2_chipper_interim_wrong_for_beat_22",
+          "kling_voice_label": "ElevenLabs Chipper1 (reused for Arlo)",
+          "wavespeed_prediction_id": "89da7b1984d3402287a1d1b8f9b97657"
+        },
+        {
+          "element_id": "313106596591323",
+          "kling_voice_id": "893833801724461134",
+          "archived_at": "2026-06-29T16:55:10.906965+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "Event 1 Beat 10 proven Arlo bind (893833801724461134)",
+          "wavespeed_prediction_id": "c2224581922e4ababba07b34345b8185"
+        }
+      ],
+      "restored_from": "event1_beat_10_o3_element_quality",
+      "restored_at": "2026-06-15T04:45:00.000000+00:00",
       "voice_sample_lock": {
         "schema_version": 1,
         "session_id": "speed_compare_lock_test",
         "audition_line": "Ready? Just focus on the Teleport Glass. Here we go!",
         "element_sample_lines": [
-          "Ready? Just focus on the Teleport Glass. Here we go!",
-          "Alright Kiddo. Let's teleport to the Wizarding School and see.",
-          "Well, I know some super smart people who have lots of faith in this kid."
+          "[warm, calm] Ready? Just focus on the Teleport Glass. Here we go!",
+          "[encouraging, steady] Alright Kiddo. Let's teleport to the Wizarding School and see.",
+          "[confident, warm] Well, I know some super smart people who have lots of faith in this kid."
         ],
-        "element_sample_text": "Ready? Just focus on the Teleport Glass. Here we go! ... Alright Kiddo. Let's teleport to the Wizarding School and see. ... Well, I know some super smart people who have lots of faith in this kid.",
+        "element_sample_text": "[warm, calm] Ready? Just focus on the Teleport Glass. Here we go! ... [encouraging, steady] Alright Kiddo. Let's teleport to the Wizarding School and see. ... [confident, warm] Well, I know some super smart people who have lots of faith in this kid.",
         "locked_speed": 1.15,
-        "locked_at": "2026-06-05T02:17:24.682197+00:00",
-        "sample_text_fingerprint": "189c4fe75845a9d5"
-      }
+        "locked_at": "2026-06-29T16:53:02.858845+00:00",
+        "sample_text_fingerprint": "4498ba84407ed3ba"
+      },
+      "proven_o3_bind": {
+        "element_id": "313106596591323",
+        "kling_voice_id": "893833801724461134",
+        "proven_from_beat_id": "bg_arc1_event1_pre_beat_10",
+        "lock_element_id": true,
+        "locked_at": "2026-06-15T07:00:00.000000+00:00",
+        "note": "Event 1 Beat 10 canonical Arlo O3 stack — prevents Chipper interim bind drift on Event 2 beats"
+      },
+      "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
     },
     "Benson": {
       "element_id": null,
@@ -140,7 +180,7 @@
         ],
         "element_sample_text": "[warm, gentle] Come here — you don't have to do this alone. ... [curious, friendly] Hello there. ... [wonder-struck, breathless] I'm Ember — I'm from Foxhollow, down in the valley. [pause] What are you guys doing?",
         "locked_speed": 1.0,
-        "locked_at": "2026-06-27T03:48:45.433799+00:00",
+        "locked_at": "2026-06-29T16:53:02.860683+00:00",
         "sample_text_fingerprint": "1416f6f60128574c"
       },
       "voice_bind_history": [
@@ -182,7 +222,7 @@
       "elevenlabs_voice_name": "Bork2"
     },
     "Bramble": {
-      "element_id": "313556315685320",
+      "element_id": "314729057848320",
       "status": "active",
       "element_name": "Bramble",
       "description": "Pixar cartoon bear, mossy brown fur, plaid shirt, suspenders, brimmed hat, gentle giant",
@@ -193,13 +233,43 @@
       ],
       "audition_line": "Steady now — I've got you.",
       "audition_speed": 0.9,
-      "kling_voice_id": "895720047158239315",
+      "kling_voice_id": "900638895540019224",
       "kling_voice_label": "ElevenLabs Northern Terry (create-voice)",
-      "created_at": "2026-06-16T04:40:38.690534+00:00",
-      "wavespeed_prediction_id": "01df8b604533426fb773401360a211d3",
+      "created_at": "2026-06-29T18:26:18.597876+00:00",
+      "wavespeed_prediction_id": "6af84a798f2f4a7a90ae9ca00d6b97a7",
       "elevenlabs_voice_id": "wo6udizrrtpIxWGp2qJk",
       "elevenlabs_voice_name": "Northern Terry",
-      "elevenlabs_voice_sample_path": "kling_voice_samples/bramble.mp3"
+      "elevenlabs_voice_sample_path": "kling_voice_samples/bramble.mp3",
+      "element_sample_lines": [
+        "[steady, reassuring] Steady now — I've got you.",
+        "[warm, calm] Easy does it — we'll figure this out together.",
+        "[gentle, grounded] You're safe here with us now."
+      ],
+      "element_sample_text": "[steady, reassuring] Steady now — I've got you. ... [warm, calm] Easy does it — we'll figure this out together. ... [gentle, grounded] You're safe here with us now.",
+      "voice_sample_lock": {
+        "schema_version": 1,
+        "session_id": "tag_sync_20260629",
+        "audition_line": "Steady now — I've got you.",
+        "element_sample_lines": [
+          "[steady, reassuring] Steady now — I've got you.",
+          "[warm, calm] Easy does it — we'll figure this out together.",
+          "[gentle, grounded] You're safe here with us now."
+        ],
+        "element_sample_text": "[steady, reassuring] Steady now — I've got you. ... [warm, calm] Easy does it — we'll figure this out together. ... [gentle, grounded] You're safe here with us now.",
+        "locked_speed": 0.9,
+        "locked_at": "2026-06-29T18:24:03.839300+00:00",
+        "sample_text_fingerprint": "8d45c831a725aa1c"
+      },
+      "voice_bind_history": [
+        {
+          "element_id": "313556315685320",
+          "kling_voice_id": "895720047158239315",
+          "archived_at": "2026-06-29T18:25:44.868186+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "ElevenLabs Northern Terry (create-voice)",
+          "wavespeed_prediction_id": "01df8b604533426fb773401360a211d3"
+        }
+      ]
     },
     "Luna": {
       "element_id": null,
@@ -259,7 +329,7 @@
       "elevenlabs_voice_name": "Carter"
     },
     "Oliver": {
-      "element_id": "314391814860521",
+      "element_id": "314723587900307",
       "status": "active",
       "element_name": "Oliver",
       "description": "Pixar cartoon deer seeker, teal hooded cloak, gnarled staff, mossy antlers, warm gentle eyes",
@@ -272,15 +342,15 @@
       "audition_line": "Something wonderful is waiting for us.",
       "audition_speed": 1.0,
       "element_sample_lines": [
-        "Something wonderful is waiting for us.",
-        "The forest has been waiting for someone like you.",
-        "This wand chooses its keeper — and it chose you."
+        "[warm, gentle] Something wonderful is waiting for us.",
+        "[soft, welcoming] The forest has been waiting for someone like you.",
+        "[reverent, warm] This wand chooses its keeper — and it chose you."
       ],
-      "element_sample_text": "Something wonderful is waiting for us. ... The forest has been waiting for someone like you. ... This wand chooses its keeper — and it chose you.",
-      "kling_voice_id": "898496764544679951",
+      "element_sample_text": "[warm, gentle] Something wonderful is waiting for us. ... [soft, welcoming] The forest has been waiting for someone like you. ... [reverent, warm] This wand chooses its keeper — and it chose you.",
+      "kling_voice_id": "900615942877614081",
       "kling_voice_label": "ElevenLabs Brayden (create-voice)",
-      "created_at": "2026-06-23T20:34:14.397079+00:00",
-      "wavespeed_prediction_id": "f00f479ecb84429d879daa018256d933",
+      "created_at": "2026-06-29T16:55:10.471940+00:00",
+      "wavespeed_prediction_id": "b093c2d682f5465ebf492baf159d46c7",
       "elevenlabs_voice_id": "3XOBzXhnDY98yeWQ3GdM",
       "elevenlabs_voice_name": "Brayden",
       "elevenlabs_voice_sample_path": "kling_voice_samples/oliver.mp3",
@@ -289,14 +359,14 @@
         "session_id": "speed_compare_20260623",
         "audition_line": "Something wonderful is waiting for us.",
         "element_sample_lines": [
-          "Something wonderful is waiting for us.",
-          "The forest has been waiting for someone like you.",
-          "This wand chooses its keeper — and it chose you."
+          "[warm, gentle] Something wonderful is waiting for us.",
+          "[soft, welcoming] The forest has been waiting for someone like you.",
+          "[reverent, warm] This wand chooses its keeper — and it chose you."
         ],
-        "element_sample_text": "Something wonderful is waiting for us. ... The forest has been waiting for someone like you. ... This wand chooses its keeper — and it chose you.",
+        "element_sample_text": "[warm, gentle] Something wonderful is waiting for us. ... [soft, welcoming] The forest has been waiting for someone like you. ... [reverent, warm] This wand chooses its keeper — and it chose you.",
         "locked_speed": 1.0,
-        "locked_at": "2026-06-23T20:33:46.718147+00:00",
-        "sample_text_fingerprint": "f65a887aead9cc82"
+        "locked_at": "2026-06-29T16:53:02.862735+00:00",
+        "sample_text_fingerprint": "7906f8d7602c14dd"
       },
       "voice_bind_history": [
         {
@@ -306,6 +376,14 @@
           "reason": "voice_refresh",
           "kling_voice_label": "ElevenLabs Brayden (create-voice)",
           "wavespeed_prediction_id": "8b5c4c64d3184869b69ab632b665a417"
+        },
+        {
+          "element_id": "314391814860521",
+          "kling_voice_id": "898496764544679951",
+          "archived_at": "2026-06-29T16:54:36.106883+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "ElevenLabs Brayden (create-voice)",
+          "wavespeed_prediction_id": "f00f479ecb84429d879daa018256d933"
         }
       ]
     },
@@ -341,18 +419,18 @@
       "elevenlabs_voice_id": "7o9pyvsN0ob5GO6LBQp6",
       "elevenlabs_voice_name": "Arlo (Chipper1 interim)",
       "elevenlabs_voice_sample_path": "kling_voice_samples/chipper.mp3",
-      "audition_line": "Ready? Just focus on the Teleport Glass. Here we go!",
+      "audition_line": "[warm, helpful] Well maybe we can help. I'm Arlo, assistant to the Great Wizard.",
       "audition_speed": 1.15,
       "kling_voice_id": "893833801724461134",
       "kling_voice_label": "Event 1 Beat 10 proven Arlo bind (893833801724461134)",
       "created_at": "2026-06-11T00:21:11.799473+00:00",
       "wavespeed_prediction_id": "c2224581922e4ababba07b34345b8185",
       "element_sample_lines": [
-        "Ready? Just focus on the Teleport Glass. Here we go!",
-        "Alright Kiddo. Let's teleport to the Wizarding School and see.",
-        "Well, I know some super smart people who have lots of faith in this kid."
+        "[warm, helpful] Well maybe we can help. I'm Arlo, assistant to the Great Wizard.",
+        "[upbeat, reassuring] Alright Kiddo. I bet the Great Wizard can teach you a magic spell to help Tessa.",
+        "[steady, inviting] We just have to teleport to the Wizarding School for your first lesson."
       ],
-      "element_sample_text": "Ready? Just focus on the Teleport Glass. Here we go! ... Alright Kiddo. Let's teleport to the Wizarding School and see. ... Well, I know some super smart people who have lots of faith in this kid.",
+      "element_sample_text": "[warm, helpful] Well maybe we can help. I'm Arlo, assistant to the Great Wizard. ... [upbeat, reassuring] Alright Kiddo. I bet the Great Wizard can teach you a magic spell to help Tessa. ... [steady, inviting] We just have to teleport to the Wizarding School for your first lesson.",
       "voice_bind_history": [
         {
           "element_id": "313040140095522",
@@ -368,16 +446,16 @@
       "voice_sample_lock": {
         "schema_version": 1,
         "session_id": "speed_compare_lock_test",
-        "audition_line": "Ready? Just focus on the Teleport Glass. Here we go!",
+        "audition_line": "[warm, helpful] Well maybe we can help. I'm Arlo, assistant to the Great Wizard.",
         "element_sample_lines": [
-          "Ready? Just focus on the Teleport Glass. Here we go!",
-          "Alright Kiddo. Let's teleport to the Wizarding School and see.",
-          "Well, I know some super smart people who have lots of faith in this kid."
+          "[warm, helpful] Well maybe we can help. I'm Arlo, assistant to the Great Wizard.",
+          "[upbeat, reassuring] Alright Kiddo. I bet the Great Wizard can teach you a magic spell to help Tessa.",
+          "[steady, inviting] We just have to teleport to the Wizarding School for your first lesson."
         ],
-        "element_sample_text": "Ready? Just focus on the Teleport Glass. Here we go! ... Alright Kiddo. Let's teleport to the Wizarding School and see. ... Well, I know some super smart people who have lots of faith in this kid.",
+        "element_sample_text": "[warm, helpful] Well maybe we can help. I'm Arlo, assistant to the Great Wizard. ... [upbeat, reassuring] Alright Kiddo. I bet the Great Wizard can teach you a magic spell to help Tessa. ... [steady, inviting] We just have to teleport to the Wizarding School for your first lesson.",
         "locked_speed": 1.15,
-        "locked_at": "2026-06-05T02:17:24.682197+00:00",
-        "sample_text_fingerprint": "189c4fe75845a9d5"
+        "locked_at": "2026-06-29T16:53:40.009423+00:00",
+        "sample_text_fingerprint": "6dd4e1ce180d1dfb"
       },
       "proven_o3_bind": {
         "element_id": "313106596591323",
@@ -390,7 +468,7 @@
       "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
     },
     "Lorelai": {
-      "element_id": "314502121024525",
+      "element_id": "314729251556503",
       "status": "active",
       "element_name": "Loral",
       "description": "Cartoon 3D Pixar-style raccoon scholar, glasses, backpack, excitable academic personality",
@@ -398,7 +476,7 @@
       "refer_images": [
         "Lorelai/poses/lorelai_explaining.png",
         "Lorelai/poses/lorelai_shocked.png",
-        "Lorelai/poses/baseline_char_raccoon_explorer.png"
+        "Lorelai/poses/chatgpt_image_jun_15_2026_03_51_40_pm_2.png"
       ],
       "refer_pins": [
         "Lorelai/poses/lorelai_explaining.png",
@@ -406,31 +484,31 @@
       ],
       "elevenlabs_voice_id": "PoHUWWWMHFrA8z7Q88pu",
       "elevenlabs_voice_name": "Miranda",
-      "kling_voice_id": "895210468825628751",
+      "kling_voice_id": "900616393057116185",
       "kling_voice_label": "ElevenLabs Miranda (create-voice)",
-      "created_at": "2026-06-15T02:44:19.085348+00:00",
-      "wavespeed_prediction_id": "2bb93f5335334c3381bc550e72022d91",
+      "created_at": "2026-06-29T16:56:51.938123+00:00",
+      "wavespeed_prediction_id": "fbe0b51c8c0d455f81ad9fa4d1e3a134",
       "audition_line": "Fascinating! The patterns match exactly!",
       "audition_speed": 0.93,
       "element_sample_lines": [
-        "Fascinating! The patterns match exactly!",
-        "Wait — look at this! The nest stones are glowing!",
-        "I think I know what the Great Wizard meant!"
+        "[excited, scholarly] Fascinating! The patterns match exactly!",
+        "[delighted, breathless] Wait — look at this! The nest stones are glowing!",
+        "[confident, warm] I think I know what the Great Wizard meant!"
       ],
-      "element_sample_text": "Fascinating! The patterns match exactly! ... Wait — look at this! The nest stones are glowing! ... I think I know what the Great Wizard meant!",
+      "element_sample_text": "[excited, scholarly] Fascinating! The patterns match exactly! ... [delighted, breathless] Wait — look at this! The nest stones are glowing! ... [confident, warm] I think I know what the Great Wizard meant!",
       "voice_sample_lock": {
         "schema_version": 1,
         "session_id": "speed_compare_20260614",
         "audition_line": "Fascinating! The patterns match exactly!",
         "element_sample_lines": [
-          "Fascinating! The patterns match exactly!",
-          "Wait — look at this! The nest stones are glowing!",
-          "I think I know what the Great Wizard meant!"
+          "[excited, scholarly] Fascinating! The patterns match exactly!",
+          "[delighted, breathless] Wait — look at this! The nest stones are glowing!",
+          "[confident, warm] I think I know what the Great Wizard meant!"
         ],
-        "element_sample_text": "Fascinating! The patterns match exactly! ... Wait — look at this! The nest stones are glowing! ... I think I know what the Great Wizard meant!",
+        "element_sample_text": "[excited, scholarly] Fascinating! The patterns match exactly! ... [delighted, breathless] Wait — look at this! The nest stones are glowing! ... [confident, warm] I think I know what the Great Wizard meant!",
         "locked_speed": 0.93,
-        "locked_at": "2026-06-14T06:37:20.089087+00:00",
-        "sample_text_fingerprint": "00be811d1ce3979b"
+        "locked_at": "2026-06-29T16:53:02.866334+00:00",
+        "sample_text_fingerprint": "c14cde3d3631c40f"
       },
       "elevenlabs_voice_sample_path": "kling_voice_samples/lorelai.mp3",
       "voice_bind_history": [
@@ -441,18 +519,26 @@
           "reason": "voice_refresh",
           "kling_voice_label": "ElevenLabs Miranda (create-voice)",
           "wavespeed_prediction_id": "93c7cf2684b84d868f3f03fe806b1954"
+        },
+        {
+          "element_id": "314502121024525",
+          "kling_voice_id": "895210468825628751",
+          "archived_at": "2026-06-29T16:56:26.148782+00:00",
+          "reason": "voice_refresh",
+          "kling_voice_label": "ElevenLabs Miranda (create-voice)",
+          "wavespeed_prediction_id": "2bb93f5335334c3381bc550e72022d91"
         }
       ],
       "proven_o3_bind": {
-        "element_id": "313441038164306",
-        "kling_voice_id": "895210468825628751",
+        "element_id": "314723690963308",
+        "kling_voice_id": "900616393057116185",
         "proven_from_beat_id": "bg_arc1_event2_pre_beat_18",
         "proven_element_name": "Loral",
         "lock_element_id": true,
-        "locked_at": "2026-06-15T06:46:49.454880+00:00",
-        "note": "Event 2 female Lorelai — element_id+voice_id from Beat 18 g7; element_name Loral matches Kling Element registration (character_subjects element_name)"
+        "locked_at": "2026-06-29T16:57:05.932275+00:00",
+        "note": "Re-pinned after tagged create-voice refresh 2026-06-29"
       },
-      "proven_o3_bind_applied_at": "2026-06-15T06:46:49.454880+00:00"
+      "proven_o3_bind_applied_at": "2026-06-29T16:57:05.932275+00:00"
     }
   }
 }

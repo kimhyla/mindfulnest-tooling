@@ -203,7 +203,7 @@ export type LibraryTier = LibraryPanelTab;
 const LIBRARY_TIERS: LibraryTier[] = ['images', 'ambient', 'sfx', 'transitions', 'watercolors'];
 const DEFAULT_LIBRARY_TIER: LibraryTier = 'images';
 const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
-const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v3';
+const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v4';
 
 function libraryItemsStorageKey(eventId: string): string {
   return `${LIBRARY_ITEMS_SESSION_KEY}:${eventId}`;
@@ -299,6 +299,28 @@ export const TIER_TO_FILTER_MAP: Record<LibraryTier, (it: LibItem) => boolean> =
   },
 };
 
+function countWatercolorLibItems(items: LibItem[]): number {
+  return items.filter(TIER_TO_FILTER_MAP.watercolors).length;
+}
+
+interface PhaseWatercolorListResponse {
+  ok?: boolean;
+  count?: number;
+  items?: Array<{ key: string; filename?: string; thumb_url?: string; kind?: string }>;
+}
+
+/** G3 — merge phase disk inventory when cr_library watercolor tier lags (RC13). */
+function phaseWatercolorToLibItem(w: { key: string; filename?: string; thumb_url?: string }): LibItem {
+  return {
+    key: w.key,
+    tier: 'watercolor',
+    panel_tabs: ['watercolors'],
+    display_name: w.filename ?? w.key,
+    ...(w.filename ? { filename: w.filename } : {}),
+    ...(w.thumb_url ? { thumb_url: w.thumb_url } : {}),
+  };
+}
+
 function loadPersistedTier(): LibraryTier {
   try {
     const v = window.localStorage.getItem(LIBRARY_TIER_LS_KEY);
@@ -381,6 +403,7 @@ export function LibraryPanel() {
   const [refreshTick, setRefreshTick] = useState(0);
   const [uploading, setUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
   const [elementSpeaker, setElementSpeaker] = useState<string>('Lorelai');
   const [elementAdding, setElementAdding] = useState(false);
 
@@ -535,13 +558,26 @@ export function LibraryPanel() {
   useEffect(() => {
     let cancelled = false;
     const cached = readPersistedLibraryItems(eventId);
-    if (cached.length > 0) {
-      setItems(cached);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
     (async () => {
+      const phaseRes = await apiGet<PhaseWatercolorListResponse>('phase_watercolor_list', undefined, {
+        fetchTimeoutMs: 15_000,
+      });
+      const serverWcCount =
+        phaseRes.ok && phaseRes.data ? (phaseRes.data.count ?? 0) : 0;
+      const cachedWcCount = countWatercolorLibItems(cached);
+      if (cached.length > 0 && cachedWcCount < serverWcCount) {
+        try {
+          sessionStorage.removeItem(libraryItemsStorageKey(eventId));
+        } catch {
+          /* ignore */
+        }
+      } else if (cached.length > 0) {
+        setItems(cached);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
       const [crRes, stitchRes] = await Promise.all([
         apiGet<LibraryResponse>('cr_library', activeScopeQueryParams(), {
           fetchTimeoutMs: 45_000,
@@ -562,7 +598,19 @@ export function LibraryPanel() {
         }
         return;
       }
-      const merged = [...imageItems, ...audioItems];
+      let merged = [...imageItems, ...audioItems];
+      const mergedWc = countWatercolorLibItems(merged);
+      if (phaseRes.ok && phaseRes.data && serverWcCount > mergedWc) {
+        const phaseItems = phaseRes.data.items ?? [];
+        const existingKeys = new Set(
+          merged.map((it) => it.key ?? it.abs_path ?? '').filter(Boolean),
+        );
+        for (const w of phaseItems) {
+          if (!w.key || existingKeys.has(w.key)) continue;
+          merged = [...merged, phaseWatercolorToLibItem(w)];
+          existingKeys.add(w.key);
+        }
+      }
       setItems(merged);
       persistLibraryItems(eventId, merged);
       setError(null);
@@ -590,6 +638,9 @@ export function LibraryPanel() {
     });
     if (result.ok) {
       pushToast({ kind: 'success', message: `Deleted ${displayName(item)}`, source: 'library-delete' });
+      setRefreshTick((n) => n + 1);
+    } else if (result.status === 404) {
+      pushToast({ kind: 'info', message: `Already removed: ${displayName(item)}`, source: 'library-delete-gone' });
       setRefreshTick((n) => n + 1);
     } else {
       const resultData = result.data as Record<string, unknown> | undefined;
@@ -679,7 +730,10 @@ export function LibraryPanel() {
       }
     }
     setUploading(false);
-    if (added > 0) setRefreshTick((n) => n + 1);
+    if (added > 0) {
+      setRefreshTick((n) => n + 1);
+      if (listRef.current) listRef.current.scrollTop = 0;
+    }
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -771,7 +825,7 @@ export function LibraryPanel() {
                 : `No items in tier ${tier} yet.`}
           </p>
         ) : (
-          <ul class="mn-library-list" data-testid="library-list">
+          <ul class="mn-library-list" data-testid="library-list" ref={listRef}>
             {filteredItems.map((it, i) => {
               const libKey = it.key ?? it.abs_path ?? `item-${i}`;
               // Wave 5 R2 (Q1 source-side completion): emit lib-sfx for SFX-tier

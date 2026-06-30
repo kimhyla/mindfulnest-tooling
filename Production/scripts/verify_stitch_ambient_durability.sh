@@ -21,6 +21,25 @@ grep -q 'STITCH_DEFAULT_AMBIENT_BEDS' "$EDITOR" || fail "missing STITCH_DEFAULT_
 grep -q 'STITCH_AMBIENT_BED_VOLUME = 0.15' "$EDITOR" || fail "missing STITCH_AMBIENT_BED_VOLUME constant"
 grep -q 'STITCH_AMBIENT_LOOP_XFADE_V1' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
   || fail "missing stitch_ambient_loop.py"
+grep -q '2.500:0.500:0.750:no_hard_aloop_v1' "$CONST" \
+  || fail "STITCH_AMBIENT_LOOP_SIG_V1 must mirror server ambient_loop_sig_token()"
+grep -q 'previewUrlMatchesPersistedMux' "$ROOT/Production/tools/storyboard-v2/src/utils/stitchJobMediaHydrate.ts" \
+  || fail "resolveSlotPlaybackPreviewUrl must reject stale mux hash URLs"
+grep -q 'force_ambient_mix_rebuild' "$EDITOR" \
+  || fail "mux preview export must force ambient mix rebuild"
+grep -q 'STITCH_AMBIENT_FORCE_REBUILD_ON_EXPORT_V1' "$EDITOR" \
+  || fail "export-only ambient force rebuild marker missing"
+preview_block="$(python3 - "$EDITOR" <<'PY'
+import sys
+from pathlib import Path
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+start = src.index("def handle_stitch_preview")
+end = src.index("\ndef ", start + 1)
+print(src[start:end])
+PY
+)"
+echo "$preview_block" | grep -q 'force_ambient_mix_rebuild' \
+  && fail "handle_stitch_preview must not force ambient rebuild (STITCH_SLOT_SESSION_CACHE_V1)"
 grep -q 'build_ambient_bed_filter_lane' "$EDITOR" || fail "missing build_ambient_bed_filter_lane in stitch_editor"
 grep -q 'build_ambient_bed_filter_lane' "$ROOT/Production/tools/production_server.py" \
   || fail "missing build_ambient_bed_filter_lane in production_server"

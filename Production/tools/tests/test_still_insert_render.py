@@ -375,6 +375,60 @@ def test_still_insert_sidecar_trim_pending():
     assert not bg.still_insert_sidecar_trim_pending({"kling_o3_trim_start": 0})
 
 
+def test_still_insert_trim_pending_includes_option_trim():
+    beat = {
+        "kling_o3_video_path": "/x/clip_trimmed.mp4",
+        "kling_o3_options": [{"video_path": "/x/clip_trimmed.mp4", "trim_back_s": 1.0}],
+    }
+    assert bg.still_insert_trim_pending(beat)
+    assert not bg.still_insert_trim_pending({"kling_o3_video_path": "/x/full.mp4", "kling_o3_options": []})
+
+
+def test_clear_still_insert_slot_trim_state():
+    beat = {
+        "kling_o3_trim_start": 1.0,
+        "kling_o3_options": [{
+            "source": "still_insert_ken_burns",
+            "slot_index": 0,
+            "trim_start_s": 0.5,
+        }],
+    }
+    bg.clear_still_insert_slot_trim_state(beat, slot_index=0)
+    assert "kling_o3_trim_start" not in beat
+    assert "trim_start_s" not in beat["kling_o3_options"][0]
+
+
+def test_bake_still_insert_uses_untrimmed_when_active_is_trimmed(tmp_path: Path, monkeypatch):
+    full = tmp_path / "x_still_insert_1_tts.mp4"
+    trimmed = tmp_path / "x_still_insert_1_tts_trimmed.mp4"
+    full.write_bytes(b"f" * 100)
+    trimmed.write_bytes(b"t" * 50)
+    used_src: list[str] = []
+
+    def _mat(_beat, dest, *, source_path=None):
+        used_src.append(str(source_path))
+        dest.write_bytes(b"b")
+        return dest
+
+    monkeypatch.setattr(
+        bg,
+        "_ffprobe_duration",
+        lambda p: 6.8 if "trimmed" not in str(p).lower() else 4.5,
+    )
+    monkeypatch.setattr(bg, "kling_o3_trim_is_active", lambda beat, raw_dur=None: True)
+    monkeypatch.setattr(bg, "materialize_kling_o3_trimmed_clip", _mat)
+    beat = {
+        "kling_o3_video_path": str(trimmed),
+        "kling_o3_options": [{"video_path": str(trimmed), "trim_back_s": 2.3}],
+        "kling_o3_trim_start": 0.0,
+        "kling_o3_trim_back": 2.3,
+    }
+    bg.bake_still_insert_trim_into_clip(beat)
+    assert used_src
+    assert str(full.resolve()) in used_src[0]
+    assert "trim_back_s" not in beat["kling_o3_options"][0]
+
+
 def test_bake_still_insert_trim_into_clip(tmp_path: Path, monkeypatch):
     clip = tmp_path / "clip.mp4"
     clip.write_bytes(b"fake")

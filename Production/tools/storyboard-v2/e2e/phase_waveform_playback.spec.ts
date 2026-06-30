@@ -266,6 +266,127 @@ test.describe('PHASE_WAVEFORM_PLAY — watercolor cue resize handles (WAVEFORM_C
     expect(endOffset).toBeLessThan(startOffset - 500);
     expect(endOffset).toBeGreaterThanOrEqual(0);
   });
+
+  test('CUE-MOVE-1 — drag cue body repositions offset without changing duration', async ({ page }) => {
+    await mockAudioFiles(page, 90);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: JSON.stringify([
+        {
+          id: 'cue_move_test',
+          key: 'hands_close',
+          timestamp_ms: 10000,
+          duration_ms: 4000,
+          cue_type: 'png',
+        },
+      ]),
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const cue = page.locator('[data-testid="cue-marker-cue_move_test"]');
+    await expect(cue).toBeVisible();
+
+    const startOffset = Number(await cue.getAttribute('data-offset-ms'));
+    const startDuration = Number(await cue.getAttribute('data-duration-ms'));
+    expect(startOffset).toBe(10000);
+    expect(startDuration).toBe(4000);
+
+    const dragBody = page.locator('[data-testid="cue-drag-body-cue_move_test"]');
+    await expect(dragBody).toBeVisible();
+    const box = await dragBody.boundingBox();
+    expect(box).not.toBeNull();
+    const startX = box!.x + Math.max(4, box!.width * 0.25);
+    const y = box!.y + box!.height * 0.5;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX + 100, y, { steps: 10 });
+    await page.waitForTimeout(80);
+    const midOffset = Number(await cue.getAttribute('data-offset-ms'));
+    await page.mouse.up();
+    await page.waitForTimeout(120);
+    const endOffset = Number(await cue.getAttribute('data-offset-ms'));
+    const endDuration = Number(await cue.getAttribute('data-duration-ms'));
+
+    expect(midOffset).toBeGreaterThan(startOffset + 800);
+    expect(endOffset).toBeGreaterThan(startOffset + 800);
+    expect(endDuration).toBe(startDuration);
+    await expect(waveform).toHaveAttribute('data-waveform-cue-move-v1', 'CUE-MOVE-1');
+  });
+});
+
+test.describe('PHASE_WATERCOLOR_CUE_AUTHORITY_V1 — hydrate merge', () => {
+  test('CUE-HYDRATE-1 — focus refresh with omitted server field keeps local cue marker', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page, 90);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+
+    let omitWatercolorField = false;
+    await page.route(`**/api/v2/event/${FIXTURE_EVENT}/state**`, async (route) => {
+      const body: Record<string, unknown> = {
+        ok: true,
+        beats: {},
+        phase_b_lipsync_file: 'fix_lipsync.mp4',
+      };
+      if (!omitWatercolorField) {
+        body.phase_b_watercolor_cues_json = JSON.stringify([
+          {
+            id: 'cue_hydrate_test',
+            key: 'spell_title',
+            timestamp_ms: 12000,
+            duration_ms: 4000,
+            cue_type: 'png',
+          },
+        ]);
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    await gotoApp(page);
+    await openPhaseB(page);
+    await waitForWaveformReady(page, 'b');
+
+    const cue = page.locator('[data-testid="cue-marker-cue_hydrate_test"]');
+    await expect(cue).toBeVisible();
+
+    const rightHandle = page.locator('[data-testid="cue-handle-right-cue_hydrate_test"]');
+    const box = await rightHandle.boundingBox();
+    expect(box).not.toBeNull();
+    const startX = box!.x + box!.width / 2;
+    const y = box!.y + box!.height / 2;
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(startX + 60, y, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    omitWatercolorField = true;
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await page.waitForTimeout(300);
+
+    await expect(cue).toBeVisible();
+    const durationMs = Number(await cue.getAttribute('data-duration-ms'));
+    expect(durationMs).toBeGreaterThanOrEqual(4000);
+  });
 });
 
 test.describe('PHASE_WAVEFORM_PLAY — ▶ Play must not seek-collide', () => {
@@ -438,6 +559,71 @@ test.describe('PHASE_WAVEFORM_PLAY — drag-seek must not snap to 0 (WAVEFORM_DR
   });
 });
 
+test.describe('PHASE_WAVEFORM_PLAY — WTA remount preserves playhead (REMOUNT-1)', () => {
+  test('REMOUNT-1 — toggling trim mode must not reset playhead to 0', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+
+    const scrubX = box!.x + box!.width * 0.55;
+    const y = box!.y + box!.height * 0.72;
+    await page.mouse.click(scrubX, y);
+    await page.waitForTimeout(150);
+
+    const beforeToggle = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(beforeToggle).toBeGreaterThan(8000);
+
+    await page.locator('[data-testid="phase-b-trim-voice-stem-btn"]').click();
+    await expect(page.locator('[data-testid="phase-b-stem-trim-mode-badge"]')).toBeVisible();
+    await page.waitForTimeout(400);
+
+    const afterToggle = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(afterToggle).toBeGreaterThan(8000);
+    expect(afterToggle).toBeLessThan(22000);
+  });
+});
+
+test.describe('PHASE_WAVEFORM_PLAY — trim mode keeps lipsync + drag-seek (SEEK-7)', () => {
+  test('SEEK-TRIM-1 — Phase B trim mode drag release must not snap to 0', async ({ page }) => {
+    await mockAudioFiles(page, 90);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    await page.locator('[data-testid="phase-b-trim-voice-stem-btn"]').click();
+    await expect(page.locator('[data-testid="phase-b-stem-trim-mode-badge"]')).toBeVisible();
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+
+    const startX = box!.x + box!.width * 0.12;
+    const endX = box!.x + box!.width * 0.62;
+    const y = box!.y + box!.height * 0.72;
+
+    await page.mouse.move(startX, y);
+    await page.mouse.down();
+    await page.mouse.move(endX, y, { steps: 10 });
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+
+    const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(ms).toBeGreaterThan(8000);
+    expect(ms).toBeLessThan(65_000);
+  });
+});
+
 test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + bus)', () => {
   test('PLAY-A1 — Phase A ▶ Play toggles without seek-jump', async ({ page }) => {
     await mockAudioFiles(page, 30);
@@ -557,5 +743,272 @@ test.describe('PHASE_WAVEFORM_PLAY — Phase A parity (same WaveformTimeline + b
     await expect(
       page.locator('[data-testid="pane-phase-a-keepalive"] [data-testid="waveform-play-btn"]'),
     ).toHaveText(/⏸ Pause/, { timeout: 3_000 });
+  });
+});
+
+async function mockAmbientPresetList(
+  page: Page,
+  items: Array<{ preset_id: string; file_size_bytes?: number }>,
+): Promise<void> {
+  await page.route('**/api/phase_b/ambient_preset_list**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true, items, count: items.length }),
+    });
+  });
+}
+
+async function mockBaseClipsList(page: Page): Promise<void> {
+  await page.route('**/api/phase/base_clips_list**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        items: [
+          { id: 'arlo_idle_wizard_desk_v1', filename: 'a.mp4', ext: 'mp4', character: 'arlo', duration_s: 10 },
+          { id: 'chipper_sitting_alt_v2', filename: 'b.mp4', ext: 'mp4', character: 'chipper', duration_s: 12 },
+        ],
+        count: 2,
+      }),
+    });
+  });
+}
+
+test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase B ambient preset hydrate', () => {
+  test('AMBIENT-HYDRATE-1 — focus refresh with omitted server field keeps local preset', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page);
+    await mockAmbientPresetList(page, [
+      { preset_id: 'forest' },
+      { preset_id: 'rain' },
+    ]);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+
+    let omitAmbientField = false;
+    await page.route(`**/api/v2/event/${FIXTURE_EVENT}/state**`, async (route) => {
+      const body: Record<string, unknown> = {
+        ok: true,
+        beats: {},
+        phase_b_lipsync_file: 'fix_lipsync.mp4',
+      };
+      if (!omitAmbientField) {
+        body.phase_b_ambient_preset_id = 'forest';
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const select = page.locator('[data-testid="phase-b-ambient-preset-select"]');
+    await expect(select).toHaveValue('forest');
+    await select.selectOption('rain');
+    await expect(select).toHaveValue('rain');
+
+    omitAmbientField = true;
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForTimeout(400);
+
+    await expect(select).toHaveValue('rain');
+  });
+});
+
+test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => {
+  test('PHASE-CLIP-HYDRATE-1 — focus refresh with omitted server field keeps picked clip', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page);
+    await mockBaseClipsList(page);
+    await page.route('**/api/v2/module/patch**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ ok: true }),
+      });
+    });
+    await page.route('**/api/event/current**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          event_id: FIXTURE_EVENT,
+          event_generation: 1,
+        }),
+      });
+    });
+
+    let omitClipField = false;
+    await page.route(`**/api/v2/event/${FIXTURE_EVENT}/state**`, async (route) => {
+      const body: Record<string, unknown> = {
+        ok: true,
+        beats: {},
+        phase_a_lipsync_file: 'fix_lipsync.mp4',
+      };
+      if (!omitClipField) {
+        body.phase_a_chipper_sitting_clip_id = 'arlo_idle_wizard_desk_v1';
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(body),
+      });
+    });
+
+    await gotoApp(page);
+    await openPhaseA(page);
+
+    const slot = page.locator('[data-testid="phase-a-clip-slot-sitting"]');
+    await expect(slot).toHaveAttribute('data-clip-id', 'arlo_idle_wizard_desk_v1');
+
+    await page.locator('[data-testid="phase-a-clip-pick-sitting"]').click();
+    await page.locator('[data-testid="base-clip-option-chipper_sitting_alt_v2"]').click();
+    await expect(slot).toHaveAttribute('data-clip-id', 'chipper_sitting_alt_v2');
+
+    omitClipField = true;
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event('focus'));
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await page.waitForTimeout(400);
+
+    await expect(slot).toHaveAttribute('data-clip-id', 'chipper_sitting_alt_v2');
+  });
+});
+
+async function mockWatercolorList(page: Page): Promise<void> {
+  await page.route('**/api/phase/watercolor_list**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        ok: true,
+        items: [{ key: 'wc_test', filename: 'wc_test.png', mtime: 1 }],
+        count: 1,
+      }),
+    });
+  });
+}
+
+async function mockModulePatch(page: Page): Promise<void> {
+  await page.route('**/api/v2/module/patch**', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ ok: true }),
+    });
+  });
+}
+
+test.describe('WTA-018 — watercolor drop timing (DROP-WC-1)', () => {
+  test('DROP-WC-1 — drop at 50% lands near midpoint after duration ready', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: [],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator('[data-testid="waveform-timeline"]');
+    await expect.poll(async () => {
+      const v = await waveform.getAttribute('data-loaded-duration-ms');
+      return v ? Number(v) : 0;
+    }, { timeout: 15_000 }).toBeGreaterThan(0);
+
+    const wfBox = await waveform.boundingBox();
+    expect(wfBox).not.toBeNull();
+    await waveform.evaluate((el: Element, args: { x: number; y: number }) => {
+      const dt = new DataTransfer();
+      const payload = JSON.stringify({
+        kind: 'lib-watercolor',
+        lib_key: 'wc_test',
+        animation_type: 'fade_in',
+      });
+      dt.setData('application/x-mn-drag', payload);
+      dt.setData('text/plain', payload);
+      el.dispatchEvent(new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+        clientX: args.x,
+        clientY: args.y,
+      }));
+    }, { x: wfBox!.x + wfBox!.width / 2, y: wfBox!.y + wfBox!.height / 2 });
+
+    await expect(page.locator('[data-testid="phase-b-watercolors"]')).toContainText('wc_test', {
+      timeout: 5_000,
+    });
+  });
+
+  test('DROP-WC-2 — capture drop on canvas + non-draggable watercolor thumb (DROP-CAPTURE-1)', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_watercolor_cues_json: [],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    await expect(waveform).toHaveAttribute('data-drop-capture-bound', 'WAVEFORM_DROP_CAPTURE_V1');
+
+    const thumbDraggable = await page
+      .locator('[data-testid="phase-b-watercolor-tile-wc_test"] img')
+      .evaluate((el) => (el as HTMLImageElement).draggable);
+    expect(thumbDraggable).toBe(false);
+
+    const wfBox = await waveform.boundingBox();
+    expect(wfBox).not.toBeNull();
+    const dropX = wfBox!.x + wfBox!.width * 0.5;
+    const dropY = wfBox!.y + wfBox!.height * 0.7;
+
+    await waveform.evaluate(
+      (el: Element, args: { x: number; y: number }) => {
+        const canvas = el.querySelector('.mn-waveform-canvas') ?? el;
+        const dt = new DataTransfer();
+        const payload = JSON.stringify({
+          kind: 'lib-watercolor',
+          lib_key: 'wc_test',
+          animation_type: 'fade_in',
+        });
+        dt.setData('application/x-mn-drag', payload);
+        dt.setData('text/plain', payload);
+        const base = {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt,
+          clientX: args.x,
+          clientY: args.y,
+        };
+        canvas.dispatchEvent(new DragEvent('dragover', base));
+        canvas.dispatchEvent(new DragEvent('drop', base));
+      },
+      { x: dropX, y: dropY },
+    );
+
+    await expect(waveform).toHaveAttribute('data-cue-count', '1', { timeout: 5_000 });
   });
 });

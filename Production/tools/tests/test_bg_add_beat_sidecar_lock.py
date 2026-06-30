@@ -42,9 +42,10 @@ def test_handle_bg_session_state_read_only_snapshot():
     assert "maybe_auto_register_beat_char_ref" not in block
 
 
-def test_handle_bg_delete_beat_uses_mutate_sidecar_locked():
+def test_handle_bg_delete_beat_uses_delete_beat_locked():
     block = _handler_block("handle_bg_delete_beat")
-    assert "mutate_sidecar_locked(_delete" in block
+    assert "delete_beat_locked" in block
+    assert "mutate_sidecar_locked(_delete" not in block
     assert "sidecar_file_lock" not in block
     assert "with bg._sidecar_lock:" not in block
 

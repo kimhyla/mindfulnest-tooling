@@ -17,12 +17,14 @@
 // All actions go through pathappPatch so scope guards + snapshot fire.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
 import { effect } from '@preact/signals';
 import { activeScope, activeProjectType, activeMilestoneId, producerScopeChipLabel, activeTargetVideo } from '../state/scope';
 import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
 import { serverRehydrateTick, activeTab } from '../state/refreshSignals';
 import {
+  stitchActiveKey,
   stitchCachedJob,
   stitchJobSessionHasCache,
   stitchJobLoading,
@@ -54,6 +56,8 @@ import {
 import {
   mergeStitchJobSlotsClientPatch,
   STITCH_SAVE_SLOT_DURABLE_MERGE_V1,
+  beginStitchAmbientPatch,
+  endStitchAmbientPatch,
 } from '../utils/stitchSlotDurableMerge';
 import {
   STITCH_AMBIENT_BED_VOLUME,
@@ -89,8 +93,13 @@ import {
   STITCH_SLOT_EDIT_DISPATCH_V1,
 } from '../utils/stitchSlotEditDispatch';
 import {
+  pollStitchArtifactBuild,
+  STITCH_ARTIFACT_ORCHESTRATOR_V1,
+} from '../utils/stitchArtifactBuildPoll';
+import {
   hydrateAllSlotMediaFromJob,
   isStitchMuxPlaybackUrl,
+  previewUrlMatchesPersistedMux,
   resolveDrySlotSourceVideoUrl,
   resolvePersistedPlaybackFromArtifacts,
   resolveSlotPlaybackPreviewUrl,
@@ -133,6 +142,7 @@ import {
   invalidateStitchSlotPlaybackCaches,
   mergeHydratedPreviewUrlsAfterLineage,
   slotsWithVideoPathChanges,
+  stripPreviewUrlsForArtifactRebuild,
 } from '../utils/stitchSlotVideoLineage';
 import {
   singleFlightMuxPreview,
@@ -408,6 +418,7 @@ function SlotImageDropTarget({
   videoTitle,
   onImageDrop,
 }: SlotImageDropTargetProps) {
+  const dropRef = useRef<HTMLDivElement>(null);
   const dropHandlers = makeDropTarget(
     (payload) => {
       if (payload.kind !== 'lib-image') return;
@@ -416,15 +427,14 @@ function SlotImageDropTarget({
     acceptDragForTarget('image-slot'),
     'image-slot',
   );
+  useDropTargetCapture(dropRef, dropHandlers, [dropHandlers]);
   return (
     <div
+      ref={dropRef}
       class="mn-stitcher-slot-video mn-drop-target"
       data-testid="stitcher-drop-target-image-slot"
       data-slot-key={slotKey}
       data-drop-target-kind="image-slot"
-      onDragOver={dropHandlers.onDragOver}
-      onDragLeave={dropHandlers.onDragLeave}
-      onDrop={dropHandlers.onDrop}
     >
       {hasVideo ? (
         <code title={videoTitle}>{videoLabel}</code>
@@ -618,6 +628,7 @@ export function StitcherTab() {
       const mergedSlots = mergeStitchJobSlotsClientPatch(
         jobSlotsSnapshotRef.current,
         canonicalSlots,
+        { eventId: eventName },
       );
       const hydrated = hydrateAllSlotMediaFromJob(sessionKey, mergedSlots);
       setJob({
@@ -630,7 +641,11 @@ export function StitcherTab() {
       });
       jobSlotsSnapshotRef.current = mergedSlots;
       setPreviewUrls((prev) => mergeHydratedPreviewUrlsAfterLineage(
-        prev,
+        stripPreviewUrlsForArtifactRebuild(
+          prev,
+          hydrated.slotsNeedingMux,
+          hydrated.slotsNeedingAmbientMix,
+        ),
         hydrated.previewUrls,
         lineageChanged,
       ));
@@ -1274,6 +1289,14 @@ export function StitcherTab() {
           ambient_mix_duration_ms?: number;
           cleared?: boolean;
         }>;
+        artifact_build?: {
+          build_id?: string;
+          status?: string;
+          mux_rebuild_keys?: string[];
+        };
+        edit_dispatch?: {
+          mux_rebuild_hint_keys?: string[];
+        };
       } | undefined;
       let mergedSlots = mergeStitchJobSlotsClientPatch(prevSlots, sanitized);
       if (data?.built_slots) {
@@ -1338,10 +1361,55 @@ export function StitcherTab() {
         setJob((prev) => (prev ? { ...prev, slots: refreshed } : prev));
       })();
       if (geometryChangedSlots.length > 0) {
+        const artBuild = data?.artifact_build;
+        const muxHintKeys = data?.edit_dispatch?.mux_rebuild_hint_keys
+          ?? artBuild?.mux_rebuild_keys
+          ?? [];
         const slotsNeedingMux = geometryChangedSlots.filter((slotKey) =>
           stitchSlotRequiresMuxedPreview(mergedSlots[slotKey]),
         );
-        if (slotsNeedingMux.length > 0) {
+        const orchestratorMux = slotsNeedingMux.filter((k) => muxHintKeys.includes(k));
+
+        if (
+          artBuild?.build_id
+          && (artBuild.status === 'queued' || artBuild.status === 'running')
+          && orchestratorMux.length > 0
+        ) {
+          void (async () => {
+            try {
+              await pollStitchArtifactBuild(jobName, artBuild.build_id!);
+              if (saveSeq !== stitchSaveSeqRef.current) return;
+              const refreshRes = await apiGet<{ job?: StitchJob }>(
+                'stitch_editor_job',
+                { job_name: jobName },
+                { fetchTimeoutMs: 120_000 },
+              );
+              if (!refreshRes.ok || !refreshRes.data?.job?.slots) return;
+              const refreshed = mergeStitchJobSlotsClientPatch(
+                refreshRes.data.job.slots as Record<string, StitchSlot>,
+                jobSlotsSnapshotRef.current,
+              );
+              jobSlotsSnapshotRef.current = refreshed;
+              setJob((prev) => (prev ? { ...prev, slots: refreshed } : prev));
+              for (const slotKey of orchestratorMux) {
+                const slot = refreshed[slotKey];
+                const url = resolvePersistedPlaybackFromArtifacts(slot);
+                if (url) {
+                  bindSlotPreviewUrl(slotKey, url, 'quiet_rebuild');
+                  commitMuxSession(stitchSessionKey, slotKey, {
+                    previewUrl: url,
+                    videoPath: slot?.video_path!,
+                    audioSig: stitchSlotSessionExpectedSig(slot),
+                  });
+                }
+              }
+              setStatusMsg('✓ SFX preview updated');
+            } catch (err) {
+              if (saveSeq !== stitchSaveSeqRef.current) return;
+              setStatusMsg(`✗ Preview rebuild: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          })();
+        } else if (slotsNeedingMux.length > 0) {
           scheduledMuxSlotsRef.current = new Set([
             ...scheduledMuxSlotsRef.current,
             ...slotsNeedingMux,
@@ -1440,7 +1508,7 @@ export function StitcherTab() {
     }
     if (
       persistedArtifactUrl
-      && (slotData.mix_sig ?? '').trim() === stitchSlotLiveGeometrySig(slotData)
+      && previewUrlMatchesPersistedMux(persistedArtifactUrl, slotData)
     ) {
       bindSlotPreviewUrl(slot, persistedArtifactUrl, 'hydrate');
       commitMuxSession(stitchSessionKey, slot, {
@@ -1993,6 +2061,8 @@ export function StitcherTab() {
   const onAmbientBedChange = async (slot: SlotKey, value: string) => {
     if (!job?.slots?.[slot]) return;
     setBusySlot({ slot, action: 'ambient' });
+    const eventId = activeScope.value.event_id;
+    beginStitchAmbientPatch(eventId, slot);
     const prev = job.slots[slot] ?? {};
     const nextSlot: StitchSlot = { ...prev, ambient_bed: value };
     if (value) {
@@ -2005,14 +2075,18 @@ export function StitcherTab() {
       ...job.slots,
       [slot]: nextSlot,
     };
-    const ok = await saveJobSlots(nextSlots);
-    setBusySlot(null);
-    if (ok) {
-      setStatusMsg(
-        value
-          ? `✓ ${slot} ambient bed → ${value} (composer preview updated)`
-          : `✓ ${slot} ambient bed cleared`,
-      );
+    try {
+      const ok = await saveJobSlots(nextSlots);
+      setBusySlot(null);
+      if (ok) {
+        setStatusMsg(
+          value
+            ? `✓ ${slot} ambient bed → ${value} (composer preview updated)`
+            : `✓ ${slot} ambient bed cleared`,
+        );
+      }
+    } finally {
+      endStitchAmbientPatch(eventId, slot);
     }
   };
 
@@ -2204,6 +2278,8 @@ export function StitcherTab() {
     acceptDragForTarget('sfx-strip'),
     'sfx-strip',
   );
+  const moduleTimelineRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(moduleTimelineRef, moduleDropHandlers, [moduleDropHandlers]);
 
   // Active popover cue — read from job state when scope='slot'.
   const popoverCue: SfxCue | null = (() => {
@@ -2216,7 +2292,8 @@ export function StitcherTab() {
   })();
 
   const showStitcherLoading =
-    (loading || stitchJobLoading.value) && !stitchJobSessionHasCache();
+    (loading || (stitchJobLoading.value && stitchActiveKey.value === stitchSessionKey))
+    && !stitchJobSessionHasCache();
 
   return (
     <section
@@ -2324,6 +2401,7 @@ export function StitcherTab() {
               data-stitch-slot-mux-audio-sig={STITCH_SLOT_MUX_AUDIO_SIG_V1}
               data-stitch-slot-requires-muxed-preview="STITCH_SLOT_REQUIRES_MUXED_PREVIEW_V1"
               data-stitch-mux-stale-while-revalidate="STITCH_MUX_STALE_WHILE_REVALIDATE_V1"
+              data-stitch-artifact-orchestrator={STITCH_ARTIFACT_ORCHESTRATOR_V1}
               data-stitch-single-owner="STITCH_SINGLE_OWNER_V1"
               data-stitch-slot-edit-dispatch={STITCH_SLOT_EDIT_DISPATCH_V1}
               data-stitch-mux-src-identity={STITCH_MUX_SRC_IDENTITY_V1}
@@ -2465,7 +2543,7 @@ export function StitcherTab() {
                   <div class="mn-stitcher-slot-header">
                     <strong>{sd.label}</strong>
                     {slot?.loudnorm_already_applied ? (
-                      <span class="mn-stitcher-loudnorm-tag">loudnorm ✓</span>
+                      <span class="mn-stitcher-loudnorm-tag">speech loudnorm ✓</span>
                     ) : null}
                   </div>
                   <SlotImageDropTarget
@@ -2613,12 +2691,10 @@ export function StitcherTab() {
               so G6 test's drop never registered. Single element with
               testid + data-drop-target-kind. */}
           <div
+            ref={moduleTimelineRef}
             class="mn-stitcher-module-timeline mn-drop-target"
             data-testid="stitcher-module-timeline"
             data-drop-target-kind="sfx-strip"
-            onDragOver={moduleDropHandlers.onDragOver}
-            onDragLeave={moduleDropHandlers.onDragLeave}
-            onDrop={moduleDropHandlers.onDrop}
           >
             <span class="mn-dim">Module SFX cues — drag SFX from the Library here</span>
           </div>

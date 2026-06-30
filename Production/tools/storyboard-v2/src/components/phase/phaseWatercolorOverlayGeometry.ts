@@ -1,6 +1,6 @@
 /**
- * Browser preview overlay box — mirrors production_server._PHASE_FRAME_* +
- * NORMALIZATION_VF_EXPR letterbox (720×544 lipsync → 953×720 content in 1280×720).
+ * Browser preview overlay box — mirrors production_server._PHASE_FRAME_* on
+ * full-bleed 1280×720 (no letterbox content offset).
  *
  * LD-331 / LD-821 / WATERCOLOR_OVERLAY_SCALE_TO_BBOX_NO_PAD_V2.
  * Single source for CSS vars on .mn-lipsync-video-wrapper — do not fork % in app.css.
@@ -11,13 +11,13 @@ export type PhaseOverlayPhase = 'a' | 'b';
 const NORMALIZED_CANVAS_W = 1280;
 const NORMALIZED_CANVAS_H = 720;
 
-/** Mirrors production_server._PHASE_FRAME_X / _PHASE_FRAME_Y / _PHASE_FRAME_MAX_* */
+/** Mirrors production_server._PHASE_FRAME_* — wc_v17 full-bleed rounded canonical. */
 const SERVER_BBOX: Record<
   PhaseOverlayPhase,
   { frameX: number; frameY: number; maxW: number; maxH: number }
 > = {
-  b: { frameX: 185, frameY: 30, maxW: 340, maxH: 540 },
-  a: { frameX: 800, frameY: 30, maxW: 480, maxH: 540 },
+  b: { frameX: 64, frameY: 64, maxW: 368, maxH: 508 },
+  a: { frameX: 870, frameY: 64, maxW: 368, maxH: 508 },
 };
 
 export function phaseWatercolorOverlayCssVars(phase: PhaseOverlayPhase): Record<string, string> {

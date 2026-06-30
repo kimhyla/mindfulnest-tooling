@@ -56,6 +56,11 @@ export default defineConfig({
       ' --storyboard storyboard_v59_prod.html' +
       ' --event-id Event_e2e_fixture' +
       ` --port ${E2E_SERVER_PORT}`,
+    // Inherited MN_BEATGEN_DB_PATH (e.g. beatgen_event1.db from launchd) fails
+    // assert_beatgen_db_path_matches_event — pin fixture shard explicitly.
+    env: {
+      MN_BEATGEN_DB_PATH: `${process.env.HOME}/.mindfulnest/state/beatgen_evente2efixture.db`,
+    },
     url: `${E2E_BASE_URL}/api/health`,
     timeout: 30_000,
     // ALWAYS spawn fresh — never reuse, including locally. The spec's original

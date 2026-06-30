@@ -33,9 +33,9 @@ for p in paths:
         raise SystemExit(f"FATAL: element_name must be Loral, got {element_name!r} in {p}")
     if proven_name and proven_name != "Loral":
         raise SystemExit(f"FATAL: proven_element_name must be Loral, got {proven_name!r} in {p}")
-    if element_id != "313441038164306":
+    if element_id != "314723690963308":
         raise SystemExit(f"FATAL: unexpected Lorelai element_id {element_id}")
-    if voice_id != "895210468825628751":
+    if voice_id != "900616393057116185":
         raise SystemExit(f"FATAL: unexpected Lorelai voice_id {voice_id}")
 print("  registry contract OK")
 PY
@@ -57,15 +57,15 @@ reg.set_prod_root(dropbox / "Production")
 proven = reg.get_proven_element_list_entry("Lorelai")
 assert proven, "get_proven_element_list_entry returned None"
 assert proven["element_name"] == "Loral", proven
-assert proven["element_id"] == "313441038164306", proven
-assert proven["voice_id"] == "895210468825628751", proven
+assert proven["element_id"] == "314723690963308", proven
+assert proven["voice_id"] == "900616393057116185", proven
 
 sidecar = json.loads((dropbox / "Production/beat_generator_state.json").read_text(encoding="utf-8"))
 _, beat30 = bg.find_beat(sidecar, "bg_arc1_event2_pre_beat_30")
 assert beat30, "beat_30 missing from sidecar"
 resolved = bg.resolve_o3_element_list_entry(beat30, "Lorelai")
 assert resolved["element_name"] == "Loral", resolved
-assert resolved["element_id"] == "313441038164306", resolved
+assert resolved["element_id"] == "314723690963308", resolved
 
 prompt = str(beat30.get("kling_o3_prompt") or "")
 assert "@Image1 (Loral)" in prompt, "beat_30 sidecar prompt must use @Image1 (Loral)"

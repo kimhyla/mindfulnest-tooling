@@ -1,12 +1,12 @@
 import { defineConfig, devices } from '@playwright/test';
 
 /**
- * Live storyboard E2E — runs against dedicated Event_2 server (:5112).
+ * Live storyboard E2E — runs against dedicated Event_N server (:5111+).
  * No webServer spawn; no Event_e2e_fixture mutation.
  *
  * Usage:
  *   cd Production/tools/storyboard-v2
- *   npx playwright test --config playwright.live.config.ts
+ *   STORYBOARD_LIVE_BASE_URL=http://localhost:5111 npx playwright test --config playwright.live.config.ts
  */
 export default defineConfig({
   testDir: './e2e',

@@ -195,8 +195,8 @@ def test_proven_element_list_uses_loral():
     entry = reg.get_proven_element_list_entry("Lorelai")
     assert entry is not None
     assert entry["element_name"] == "Loral"
-    assert entry["element_id"] == "313441038164306"
-    assert entry["voice_id"] == "895210468825628751"
+    assert entry["element_id"] == "314723690963308"
+    assert entry["voice_id"] == "900616393057116185"
 
 
 def test_validate_alignment_no_pin_bypass():
@@ -229,7 +229,7 @@ def test_resolve_o3_element_list_prefers_proven_over_pin():
     }
     entry = bg.resolve_o3_element_list_entry(beat, "Lorelai")
     assert entry["element_name"] == "Loral"
-    assert entry["element_id"] == "313441038164306"
+    assert entry["element_id"] == "314723690963308"
 
 
 def test_operator_insert_char_ref_parity_respects_locked_library_drop(tmp_path: Path, monkeypatch):

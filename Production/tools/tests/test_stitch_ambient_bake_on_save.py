@@ -39,7 +39,8 @@ def test_save_job_returns_built_slots() -> None:
     src = (TOOLS / "server_handlers/stitch_editor.py").read_text(encoding="utf-8")
     block = src.split("def handle_stitch_save_job", 1)[1].split("\ndef ", 1)[0]
     assert "built_slots" in block
-    assert "rebuild_stitch_ambient_mixes_for_job" in block
+    assert "artifact_build" in block
+    assert "submit_stitch_ambient_rebuild" in block
 
 
 def test_slot_mix_file_serve_route() -> None:

@@ -60,6 +60,7 @@ export function AssetTile(props: AssetTileProps) {
           src={thumbSrc}
           alt={name}
           class="mn-library-thumb"
+          draggable={false}
           loading="lazy"
         />
       ) : (

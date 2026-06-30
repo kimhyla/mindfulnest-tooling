@@ -35,6 +35,22 @@ describe('resolvePersistedPlaybackFromArtifacts', () => {
     const url = resolveSlotPlaybackPreviewUrl('Event_2', 'intro', slot, {});
     assert.equal(url, undefined);
   });
+
+  it('STITCH_AMBIENT_LOOP_XFADE_V1 — rejects stale previewUrls when mux hash drifted', () => {
+    const slot = {
+      video_path: 'Production/Event_4/assembled/intro_kling_o3_test.mp4',
+      mux_video_path: 'Production/Event_4/assembled/intro_kling_o3_test.mp4',
+      mux_preview_hash: '85646d0ff84b',
+      ambient_bed: 'Intro video ambient bed',
+      ambient_volume: 0.15,
+      sfx_cues: [{ id: 'whoosh', offset_ms: 1000, source_path: '/x/sfx.mp3' }],
+    };
+    const stalePreviewUrls = {
+      intro: 'http://localhost:5114/api/stitch_editor/preview_file/deadbeef0001',
+    };
+    const url = resolveSlotPlaybackPreviewUrl('Event_4', 'intro', slot, stalePreviewUrls);
+    assert.equal(url, undefined);
+  });
 });
 
 describe('STITCH_STANDALONE_DRY_VIDEO_V1', () => {

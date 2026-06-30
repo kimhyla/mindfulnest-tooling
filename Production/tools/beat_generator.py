@@ -69,6 +69,7 @@ _PROJECT_DIR = os.path.normpath(os.path.join(_TOOLS_DIR, "..", ".."))
 _SKELETON_BASE = os.path.join(_PROJECT_DIR, "Arc Skeletons")
 
 BG_SIDECAR_PATH = os.path.join(_PROD_DIR, "beat_generator_state.json")
+BG_SIDECAR_MIRROR_PATH = BG_SIDECAR_PATH
 BG_STILLS_DIR = os.path.join(_PROD_DIR, "beat_generator_stills")
 # Milestone Beat Gen uses an isolated JSON sidecar — never the global SQLite beat store.
 _MILESTONE_SIDECAR_JSON_ONLY = False
@@ -301,7 +302,7 @@ def _run_bg_paths_cold_boot(event_dir) -> None:
         print(
             f"[beatgen_store] authority=sqlite db={store.db_path} "
             f"beats={store.beat_count()} integrity={store.integrity_check()} "
-            f"mirror={BG_SIDECAR_PATH}",
+            f"mirror={BG_SIDECAR_MIRROR_PATH}",
             flush=True,
         )
     else:
@@ -317,7 +318,7 @@ def _init_bg_paths_unlocked(
     cold_boot: bool = False,
 ) -> None:
     global _TOOLS_DIR, _PROD_DIR, _PROJECT_DIR, _SKELETON_BASE
-    global BG_SIDECAR_PATH, BG_STILLS_DIR
+    global BG_SIDECAR_PATH, BG_STILLS_DIR, BG_SIDECAR_MIRROR_PATH
     global _PROD_CHARS, _CREATURE_REFS, _CREATURE_REFS_BY_EMOTION
     global _CANON_BASE, _LOCAL_STILLS_DIR, _MILESTONE_SIDECAR_JSON_ONLY, _MILESTONE_SKELETON_REF
     global _MILESTONE_SCOPE_BIND, _BG_EVENT_DIR, _BG_ACTIVE_SCOPE_KEY
@@ -328,7 +329,7 @@ def _init_bg_paths_unlocked(
     _lib_parent = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
     if _lib_parent not in _sys.path:
         _sys.path.insert(0, _lib_parent)
-    from Production.lib.paths import bg_paths as _bg_paths, milestone_bg_paths, character_pose_paths as _cpp
+    from Production.lib.paths import bg_paths as _bg_paths, milestone_bg_paths, character_pose_paths as _cpp, event_sidecar_mirror_path
 
     if milestone_dir is not None:
         lib = library_event_dir or event_dir
@@ -350,6 +351,11 @@ def _init_bg_paths_unlocked(
     _PROJECT_DIR = str(bp.project_root)
     _SKELETON_BASE = str(bp.skeleton_base)
     BG_SIDECAR_PATH = str(bp.sidecar_path)
+    if milestone_dir is not None:
+        BG_SIDECAR_MIRROR_PATH = BG_SIDECAR_PATH
+    else:
+        BG_SIDECAR_MIRROR_PATH = str(event_sidecar_mirror_path(event_dir))
+        os.makedirs(os.path.dirname(BG_SIDECAR_MIRROR_PATH), exist_ok=True)
     BG_STILLS_DIR = str(bp.stills_dir)
     _PROD_CHARS = str(bp.project_root)  # poses live at <project_root>/Production/<Char>/poses/
     _CANON_BASE = str(bp.canon_base)
@@ -838,7 +844,7 @@ def _schedule_sidecar_mirror_export() -> None:
     try:
         from lib.sidecar_mirror import schedule_mirror_export
 
-        mirror_path = os.path.abspath(BG_SIDECAR_PATH)
+        mirror_path = os.path.abspath(BG_SIDECAR_MIRROR_PATH)
         schedule_mirror_export(
             mirror_path,
             assemble=_beatgen_store().assemble_sidecar_dict,
@@ -852,10 +858,11 @@ def flush_sidecar_mirror_export() -> bool:
     try:
         from lib.sidecar_mirror import flush_mirror_export
 
+        mirror_path = os.path.abspath(BG_SIDECAR_MIRROR_PATH)
         return flush_mirror_export(
             assemble=_beatgen_store().assemble_sidecar_dict,
-            write_atomic=lambda d: _write_sidecar_json_mirror(d, os.path.abspath(BG_SIDECAR_PATH)),
-            mirror_path=os.path.abspath(BG_SIDECAR_PATH),
+            write_atomic=lambda d: _write_sidecar_json_mirror(d, mirror_path),
+            mirror_path=mirror_path,
         )
     except Exception:
         return False
@@ -899,6 +906,10 @@ def _union_segment_dict_for_mirror_export(existing_seg: dict, incoming_seg: dict
 
 def _merge_event_scoped_mirror(data: dict, path: str) -> dict:
     """Per-event SQLite DBs export only one event — merge into global JSON mirror."""
+    global_sidecar = os.path.join(_PROD_DIR, "beat_generator_state.json")
+    if os.path.abspath(path) != os.path.abspath(global_sidecar):
+        # PARALLEL_EVENT_ISOLATION_V1 — local per-event mirror; no Dropbox merge read.
+        return data
     if not _bootstrap_import_is_event_scoped() or not _BG_EVENT_DIR:
         return data
     if not os.path.isfile(path):
@@ -1212,6 +1223,64 @@ def mutate_sidecar_locked(
         mutator(sidecar)
         write_sidecar(sidecar)
         return sidecar
+
+
+def delete_beat_locked(
+    beat_id: str,
+    *,
+    scope=None,
+    caller: str = "delete_beat_locked",
+    migrate: bool = False,
+) -> bool:
+    """Atomically remove one beat — targeted SQLite DELETE, not replace_full.
+
+    JSON mirror path uses mutate_sidecar_locked (no replace_full guard).
+    """
+    from beatgen_scope import (  # noqa: PLC0415
+        assert_beat_id_matches_scope,
+        assert_db_path_matches_beat,
+        assert_direct_write_allowed,
+        event_id_from_beat_id,
+        log_beatgen_mutation,
+        scope_from_current_globals,
+    )
+
+    active_scope = scope if scope is not None else scope_from_current_globals(__import__(__name__))
+    if event_id_from_beat_id(str(beat_id)):
+        assert_beat_id_matches_scope(str(beat_id), active_scope)
+        assert_db_path_matches_beat(str(beat_id))
+    assert_direct_write_allowed(beat_id=str(beat_id), caller=caller)
+    log_beatgen_mutation(
+        operation="delete_beat_locked",
+        beat_id=str(beat_id),
+        scope=active_scope,
+        caller=caller,
+    )
+    if _sidecar_use_sqlite():
+        with _sidecar_lock:
+            ok = _beatgen_store().delete_beat(beat_id)
+        if ok:
+            _schedule_sidecar_mirror_export()
+        return ok
+
+    def _delete(sidecar: dict) -> None:
+        for arc in sidecar.get("arcs", {}).values():
+            for seg in arc.get("segments", {}).values():
+                seg["beats"] = [
+                    b for b in seg.get("beats", []) if b.get("beat_id") != beat_id
+                ]
+
+    with sidecar_file_lock():
+        sidecar = read_sidecar()
+        if migrate:
+            sidecar = _migrate_sidecar(sidecar)
+        _maybe_isolate_milestone_sidecar(sidecar)
+        before = _count_sidecar_beats(sidecar)
+        _delete(sidecar)
+        if _count_sidecar_beats(sidecar) >= before:
+            return False
+        write_sidecar(sidecar)
+    return True
 
 
 def update_beat_locked(
@@ -2112,6 +2181,38 @@ def _apply_intro_canonical_beat_defaults(
     beat.setdefault("kling_o3_status", "draft")
 
 
+def _intro_mirror_tail_is_stale(beat: dict, guide: str | None) -> bool:
+    """Detect Chipper-template tail on Arlo guide rows (and vice versa)."""
+    try:
+        from teleport_intro_canonical import intro_tail_path_matches_guide
+    except ImportError:
+        return False
+    vp = beat.get("kling_o3_video_path") or ""
+    if vp and not intro_tail_path_matches_guide(vp, guide):
+        return True
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict):
+            continue
+        if str(opt.get("source") or "") != "canonical_intro_tail":
+            continue
+        ovp = opt.get("video_path") or opt.get("path") or ""
+        if ovp and not intro_tail_path_matches_guide(ovp, guide):
+            return True
+    return False
+
+
+def _clear_stale_intro_mirror_tail(beat: dict) -> None:
+    """Drop wrong-template canonical tail so hydrate re-resolves from registry."""
+    beat.pop("kling_o3_video_path", None)
+    beat.pop("accepted_video_path", None)
+    beat.pop("kling_o3_baked_path", None)
+    beat.pop("kling_o3_baked_token", None)
+    beat["kling_o3_options"] = [
+        o for o in (beat.get("kling_o3_options") or [])
+        if not (isinstance(o, dict) and str(o.get("source") or "") == "canonical_intro_tail")
+    ]
+
+
 def hydrate_intro_canonical_mirror_beat(
     beat: dict,
     event_id: str,
@@ -2128,11 +2229,15 @@ def hydrate_intro_canonical_mirror_beat(
         beat, event_id, phase, INTRO_BEAT_ROLE_CANONICAL_MIRROR,
         guide=guide, sidecar=sidecar, segment_key=segment_key,
     )
+    if _intro_mirror_tail_is_stale(beat, guide):
+        _clear_stale_intro_mirror_tail(beat)
     if _has_populated_intro_mirror_beat(beat) and _intro_mirror_option_slot_ready(beat):
-        seed_canonical_intro_tail_export_trim(
-            beat, guide=guide, sidecar=sidecar, segment_key=segment_key,
-        )
-        return True
+        if not _intro_mirror_tail_is_stale(beat, guide):
+            seed_canonical_intro_tail_export_trim(
+                beat, guide=guide, sidecar=sidecar, segment_key=segment_key,
+            )
+            return True
+        _clear_stale_intro_mirror_tail(beat)
     if _has_populated_intro_mirror_beat(beat):
         tail_str = str(Path(beat["kling_o3_video_path"]).resolve())
         now = datetime.now(timezone.utc).isoformat()
@@ -5860,9 +5965,7 @@ def render_still_insert_o3_clip(
         )
     clips_dir = kling_o3_clips_dir(event_dir)
     ts = int(time.time())
-    saved_trim_start = float(beat.get("kling_o3_trim_start") or 0.0)
-    saved_trim_back = beat.get("kling_o3_trim_back")
-    had_sidecar_trim = still_insert_sidecar_trim_pending(beat)
+    clear_still_insert_slot_trim_state(beat, slot_index=slot_index)
     silent_path = clips_dir / f"{beat['beat_id']}_still_insert_{ts}.mp4"
     if method == "static_hold":
         run_static_hold(beat, str(still), duration, out_path=silent_path)
@@ -5919,16 +6022,7 @@ def render_still_insert_o3_clip(
     beat.pop("kling_o3_still_stitch_approved_at", None)
     beat["kling_o3_selected_option_key"] = opt_key
     beat["kling_o3_selected_at"] = now
-    if had_sidecar_trim:
-        beat["kling_o3_trim_start"] = round(saved_trim_start, 2)
-        if saved_trim_back is not None:
-            beat["kling_o3_trim_back"] = round(float(saved_trim_back), 2)
-        baked = bake_still_insert_trim_into_clip(beat, source_path=final_path)
-        final_path = Path(baked["video_path"])
-        beat["kling_o3_video_path"] = str(final_path)
-        option["video_path"] = str(final_path)
-    else:
-        clear_kling_o3_beat_trim(beat)
+    clear_kling_o3_beat_trim(beat)
     for o in options:
         o["active"] = o.get("key") == opt_key or o.get("video_path") == str(final_path)
     return {
@@ -5938,7 +6032,7 @@ def render_still_insert_o3_clip(
         "duration_s": duration,
         "tts_mixed": tts_mixed,
         "still_path": str(still),
-        "trim_baked": had_sidecar_trim,
+        "trim_baked": False,
     }
 
 
@@ -6860,6 +6954,53 @@ def bake_o3_active_export_clip(
     }
 
 
+def promote_o3_baked_trim_to_active_clip(
+    beat: dict,
+    *,
+    baked_path: str | Path,
+    slot_index: int | None = None,
+    video_path: str | None = None,
+) -> dict[str, Any]:
+    """After Apply trim bake: make baked MP4 the active clip and clear trim metadata.
+
+    Prevents double-trim when UI/server ffprobe sees a shorter file but trim_back
+    is still relative to the pre-bake delivery duration.
+    """
+    baked = Path(baked_path)
+    if not baked.is_file():
+        raise ValueError(f"missing baked clip: {baked}")
+    baked_str = str(baked.resolve())
+    opt = None
+    if slot_index is not None:
+        opt = find_o3_option_by_slot_index(
+            beat, int(slot_index), video_path=video_path,
+        )
+    old_vp = str(beat.get("kling_o3_video_path") or "").strip()
+    beat["kling_o3_video_path"] = baked_str
+    clear_kling_o3_beat_trim(beat)
+    clear_o3_cut_fields(beat)
+    clear_o3_baked_fields(beat)
+    if isinstance(opt, dict):
+        opt["video_path"] = baked_str
+        clear_o3_option_trim_fields(opt)
+        clear_o3_cut_fields(opt)
+        clear_o3_baked_fields(opt)
+    elif old_vp:
+        opt_by_path = find_o3_option_by_video_path(beat, old_vp)
+        if isinstance(opt_by_path, dict):
+            opt_by_path["video_path"] = baked_str
+            clear_o3_option_trim_fields(opt_by_path)
+            clear_o3_cut_fields(opt_by_path)
+            clear_o3_baked_fields(opt_by_path)
+    eff = _ffprobe_duration(baked)
+    return {
+        "video_path": baked_str,
+        "effective_duration_s": round(eff, 3) if eff > 0 else None,
+        "trim_start": 0.0,
+        "trim_back": None,
+    }
+
+
 def o3_trim_shortening_requested(
     trim_start: float,
     trim_back: float | None,
@@ -6903,7 +7044,12 @@ def set_o3_option_trim(
     vp = str(video_path or opt.get("video_path") or "").strip()
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before trimming")
-    raw_dur = _ffprobe_duration(Path(vp))
+    duration_path = Path(vp)
+    if beat_is_still_insert(beat):
+        untrimmed = _guess_o3_untrimmed_video_path(beat, opt)
+        if untrimmed and os.path.isfile(untrimmed):
+            duration_path = Path(untrimmed)
+    raw_dur = _ffprobe_duration(duration_path)
     if raw_dur <= 0:
         raise ValueError("Could not read clip duration")
 
@@ -6938,6 +7084,100 @@ def set_o3_option_trim(
         "video_path": vp,
         "slot_index": max(0, min(2, int(slot_index))),
     }
+
+
+def restore_o3_option_untrimmed_video(
+    beat: dict,
+    *,
+    slot_index: int,
+    video_path: str | None = None,
+) -> dict[str, Any]:
+    """Clear trim/cut/bake and restore the full-length delivery clip on the option."""
+    refresh_o3_ui_slot_layout(beat)
+    opt = find_o3_option_by_slot_index(
+        beat,
+        slot_index,
+        video_path=video_path,
+    )
+    if opt is None and video_path:
+        opt = find_o3_option_by_video_path(beat, video_path)
+    if opt is None:
+        for row in beat.get("kling_o3_options") or []:
+            if not isinstance(row, dict):
+                continue
+            if int(row.get("slot_index", -1)) == int(slot_index):
+                opt = row
+                break
+    if opt is None:
+        raise ValueError(f"No O3 option in slot {slot_index}")
+    untrimmed = _guess_o3_untrimmed_video_path(beat, opt)
+    if not untrimmed:
+        raise ValueError(
+            "Cannot restore full clip — no untrimmed source found. "
+            "Select the recovered delivery option or rebuild the still.",
+        )
+    opt["video_path"] = untrimmed
+    clear_o3_option_trim_fields(opt)
+    clear_o3_cut_fields(opt)
+    clear_o3_baked_fields(opt)
+    opt.pop("o3_untrimmed_video_path", None)
+    active_vp = str(beat.get("kling_o3_video_path") or "").strip()
+    prior_vp = str(video_path or "").strip()
+    if not active_vp or active_vp == prior_vp or "_trimmed" in active_vp.lower():
+        beat["kling_o3_video_path"] = untrimmed
+    clear_kling_o3_beat_trim(beat)
+    clear_o3_cut_fields(beat)
+    clear_o3_baked_fields(beat)
+    raw_dur = _ffprobe_duration(Path(untrimmed))
+    return {
+        "video_path": untrimmed,
+        "trim_start": 0.0,
+        "trim_back": None,
+        "raw_duration_s": round(raw_dur, 3) if raw_dur > 0 else None,
+        "effective_duration_s": round(raw_dur, 3) if raw_dur > 0 else None,
+        "slot_index": max(0, min(2, int(slot_index))),
+    }
+
+
+def _guess_o3_untrimmed_video_path(beat: dict, opt: dict) -> str | None:
+    """Resolve pre-trim delivery path for restore-after-clear."""
+    stored = str(opt.get("o3_untrimmed_video_path") or "").strip()
+    if stored and os.path.isfile(stored):
+        return stored
+    vp = str(opt.get("video_path") or beat.get("kling_o3_video_path") or "").strip()
+    if not vp:
+        return None
+    p = Path(vp)
+    if p.is_file():
+        stem = p.stem
+        for suffix in (
+            r"_tts_trimmed_\d+$",
+            r"_trimmed_\d+$",
+            r"_trimmed$",
+        ):
+            m = re.search(suffix, stem, flags=re.IGNORECASE)
+            if m:
+                candidate = p.with_name(stem[: m.start()] + p.suffix)
+                if candidate.is_file():
+                    return str(candidate.resolve())
+    opt_key = str(opt.get("key") or "").split("_o3_video")[0].split("_still_insert")[0]
+    best: tuple[float, str] | None = None
+    for row in beat.get("kling_o3_options") or []:
+        if not isinstance(row, dict):
+            continue
+        op = str(row.get("video_path") or "").strip()
+        if not op or op == vp or not os.path.isfile(op):
+            continue
+        if "_trimmed" in op.lower() or "_kling_o3_trim_scratch" in op.lower():
+            continue
+        if opt_key and opt_key not in op and Path(op).stem not in Path(vp).stem:
+            continue
+        dur = _ffprobe_duration(Path(op))
+        if dur <= 0:
+            continue
+        if best is None or dur > best[0]:
+            best = (dur, op)
+    return best[1] if best else None
 
 
 def clear_o3_option_trim(
@@ -7302,13 +7542,62 @@ def still_insert_sidecar_trim_pending(beat: dict) -> bool:
     return False
 
 
+def still_insert_trim_pending(beat: dict) -> bool:
+    """True when beat or active option has trim waiting to bake into still-insert file."""
+    if still_insert_sidecar_trim_pending(beat):
+        return True
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    opt = find_o3_option_by_video_path(beat, vp) if vp else None
+    return option_has_o3_trim(opt)
+
+
+def clear_still_insert_slot_trim_state(beat: dict, *, slot_index: int = 0) -> None:
+    """Drop trim/cut before fresh still+TTS render — never auto re-trim after rebuild."""
+    clear_kling_o3_beat_trim(beat)
+    clear_o3_cut_fields(beat)
+    clear_o3_baked_fields(beat)
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict):
+            continue
+        if opt.get("source") in O3_OPTION_SOURCE_STILL and opt.get("slot_index") == slot_index:
+            clear_o3_option_trim_fields(opt)
+            clear_o3_cut_fields(opt)
+
+
+def resolve_still_insert_trim_bake_source(
+    beat: dict,
+    *,
+    source_path: Path | str | None = None,
+) -> tuple[Path, dict | None]:
+    """Untrimmed still-insert source + option row for trim bake (never double-trim)."""
+    active = Path(source_path or beat.get("kling_o3_video_path") or "")
+    opt = find_o3_option_by_video_path(beat, str(active)) if str(active) else None
+    if opt is None and active.is_file():
+        opt = find_o3_option_by_video_path(beat, str(active.resolve()))
+    untrimmed = _guess_o3_untrimmed_video_path(beat, opt) if isinstance(opt, dict) else None
+    if untrimmed and Path(untrimmed).is_file():
+        src = Path(untrimmed)
+    elif active.is_file() and "_trimmed" not in active.stem.lower():
+        src = active.resolve()
+    else:
+        src = active
+    if isinstance(opt, dict) and option_has_o3_trim(opt):
+        mirror_beat_trim_from_option(beat, opt)
+    elif still_insert_sidecar_trim_pending(beat):
+        pass
+    else:
+        clear_kling_o3_beat_trim(beat)
+    return src, opt
+
+
 def bake_still_insert_trim_into_clip(
     beat: dict,
     *,
     source_path: Path | str | None = None,
 ) -> dict:
     """Materialize trim window into the active still-insert mp4; clear trim metadata."""
-    src = Path(source_path or beat.get("kling_o3_video_path") or "")
+    prior_active = str(source_path or beat.get("kling_o3_video_path") or "").strip()
+    src, opt = resolve_still_insert_trim_bake_source(beat, source_path=source_path)
     if not src.is_file():
         raise ValueError(f"missing still clip: {src}")
     raw_dur = _ffprobe_duration(src)
@@ -7326,9 +7615,16 @@ def bake_still_insert_trim_into_clip(
     for o in beat.get("kling_o3_options") or []:
         if not isinstance(o, dict):
             continue
-        if (o.get("video_path") or "") in (old_path, str(src)):
+        op = str(o.get("video_path") or "").strip()
+        if op in (old_path, prior_active) or o is opt:
+            if not str(o.get("o3_untrimmed_video_path") or "").strip():
+                o["o3_untrimmed_video_path"] = old_path
             o["video_path"] = new_path
+            clear_o3_option_trim_fields(o)
+            clear_o3_cut_fields(o)
     clear_kling_o3_beat_trim(beat)
+    clear_o3_cut_fields(beat)
+    clear_o3_baked_fields(beat)
     return {"baked": True, "video_path": new_path, "source_path": old_path}
 
 
@@ -12253,10 +12549,14 @@ def import_delivery_clip_to_beat(
         normalize_kling_o3_option_slots(beat, sidecar)
         sync_o3_selection_pipeline_fields(beat, sidecar)
         persist_o3_disk_enrich_on_beat(beat, resolved_event_dir)
-        if beat_is_still_insert(beat) and make_active:
+        if make_active:
             from kling_stitch_readiness import finalize_kling_delivery_clip  # noqa: PLC0415
 
-            finalize_kling_delivery_clip(beat, str(dest_path.resolve()))
+            finalize_kling_delivery_clip(
+                beat,
+                str(dest_path.resolve()),
+                still_insert=beat_is_still_insert(beat),
+            )
 
     return update_beat_locked(
         beat_id,
@@ -13938,12 +14238,19 @@ def resolve_segment_stitch_export_clip_paths(
         if is_last and canonical_tail is not None:
             clip_paths.append(canonical_tail.resolve())
         else:
+            raw_clip = materialize_beat_export_clip_with_retry(
+                beat,
+                event_dir,
+                scratch_dir,
+                event_id=event_id,
+            )
+            from server_handlers.speech_loudnorm import apply_speech_loudnorm_export_beat_clip  # noqa: PLC0415
+
             clip_paths.append(
-                materialize_beat_export_clip_with_retry(
-                    beat,
-                    event_dir,
-                    scratch_dir,
-                    event_id=event_id,
+                apply_speech_loudnorm_export_beat_clip(
+                    raw_clip,
+                    beat_id=str(beat.get("beat_id") or f"beat_{i}"),
+                    scratch_dir=scratch_dir,
                 ),
             )
     return clip_paths, scratch_dir
