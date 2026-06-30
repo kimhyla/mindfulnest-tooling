@@ -55,7 +55,9 @@ bash "${SCRIPT_DIR}/deploy_mux_warm_g4_pre.sh" || fail "deploy_mux_warm_g4_pre f
 
 (
   cd "$SB"
-  STORYBOARD_LIVE_BASE_URL="$BASE" npx playwright test --config playwright.live.config.ts
+  STORYBOARD_LIVE_BASE_URL="$BASE" npx playwright test --config playwright.live.config.ts \
+    e2e/phase_e_hydrate_live.spec.ts \
+    e2e/stitch_sfx_playback_truth_live.spec.ts
 ) || fail "live Playwright E2E failed"
 
 echo "[stitch-sfx-playback-truth-live] OK — live Playwright passed (build-sha=${SHA:-?})"

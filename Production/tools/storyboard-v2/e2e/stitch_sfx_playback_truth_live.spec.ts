@@ -300,7 +300,8 @@ test.describe('STITCH_SFX_PLAYBACK_TRUTH live milestone', () => {
       '[data-testid="stitcher-multiphase-segment-standalone"] .mn-stitcher-multiphase-segment-meta',
     );
     await expect(segmentMeta).toBeVisible({ timeout: 30_000 });
-    await expect(segmentMeta).toContainText(/9[0-4]\.\d+s/);
+    const expectedDurSec = ((slotBefore?.video_dur_ms ?? 0) / 1000).toFixed(1);
+    await expect(segmentMeta).toContainText(`${expectedDurSec}s`);
 
     const video = page.locator('[data-testid="stitcher-composer-video"]');
     const waitingMux = page.locator('[data-testid="stitcher-composer-video-waiting-mux"]');
