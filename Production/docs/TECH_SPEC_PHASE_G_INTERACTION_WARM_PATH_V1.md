@@ -108,10 +108,12 @@ Deploy hook: run bootstrap + catalog verify after fanout.
 
 **Before** `verify_stitch_sfx_playback_truth_live_e2e.sh`:
 
-1. `GET /api/stitch_editor/job/Event_2_stitch` (300s max) — drain load_job queue.
-2. `POST /api/stitch_editor/preview` for milestone standalone if `mux_preview_hash` missing (same body as E2E bootstrap).
-3. Poll `GET job` until `standalone.mux_preview_hash` ≥ 8 hex chars (600s max).
-4. Write marker: `Production/.deploy_mux_warm/Event_2_milestone.ok` with hash + timestamp.
+1. **Drain** `GET /api/stitch_editor/job/Event_2_stitch` (300s max) — STITCH_LIVE_E2E_EVENT_WARM_V1; milestone POST/GET blocks behind Event_2 auto-bake without this step (**RC14b contention** — caused g4-pre timeout when skipped).
+2. `GET /api/stitch_editor/job/milestone_milestone1_arc1_stitch` — hydrate milestone job.
+3. Bootstrap standalone `video_path` from assembled `standalone_*.mp4` if missing.
+4. `POST /api/stitch_editor/preview` for milestone standalone if `mux_preview_hash` missing (900s client timeout default).
+5. Poll `GET job` until `standalone.mux_preview_hash` ≥ 8 hex chars (900s max).
+6. Write marker: `Production/.deploy_mux_warm/Event_2_milestone.ok` with hash + timestamp.
 
 **Playwright `beforeAll`:** If hash present → skip bake; else fail fast with message "run deploy_mux_warm_g4_pre.sh".
 

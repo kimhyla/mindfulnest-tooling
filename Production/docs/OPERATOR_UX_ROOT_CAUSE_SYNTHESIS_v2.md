@@ -16,6 +16,7 @@ Operator-reported Phase B drag-drop failures persisted while gates showed green 
 | **RC12** | Composite interaction surfaces | Bubble DnD + pointer capture + WaveSurfer canvas — no single drop owner | `INTERACTION_PLATFORM_V1`, `useDropTargetCapture`, `verify_interaction_platform_durability.sh` |
 | **RC13** | Catalog/bootstrap invariants | Empty per-event watercolors or stale library session cache | `EVENT_WC_SEED_V1`, `verify_event_catalog_invariants_durability.sh`, Library cache v4 reconcile |
 | **RC14** | Cold-path in hot gates | ffmpeg mux bake inside Playwright `beforeAll` (600s budget) | `deploy_mux_warm_g4_pre.sh`, fast-fail live E2E |
+| **RC14b** | Milestone vs event stitch contention | g4-pre POST/GET blocked behind `Event_2_stitch` load_job auto-bake; urllib 300s timeout masquerades as generic "timed out" | g4-pre must drain `Event_2_stitch` first; preview timeout 900s |
 
 ---
 

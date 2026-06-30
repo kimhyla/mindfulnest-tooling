@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import socket
 import sys
 import time
 import urllib.error
@@ -18,6 +19,16 @@ import urllib.request
 from pathlib import Path
 
 JOB_NAME = "milestone_milestone1_arc1_stitch"
+EVENT_STITCH_JOB = "Event_2_stitch"
+DEFAULT_PREVIEW_TIMEOUT_S = float(
+    __import__("os").environ.get("MN_MUX_WARM_PREVIEW_TIMEOUT_S", "900"),
+)
+DEFAULT_JOB_POST_TIMEOUT_S = float(
+    __import__("os").environ.get("MN_MUX_WARM_JOB_POST_TIMEOUT_S", "600"),
+)
+DEFAULT_POLL_TIMEOUT_S = float(
+    __import__("os").environ.get("MN_MUX_WARM_POLL_TIMEOUT_S", "900"),
+)
 MILESTONE_ASSEMBLED_DIR = Path(
     "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
     "Claude Mindfulnest Project Files/Production/Milestones/milestone1_arc1/assembled"
@@ -65,6 +76,26 @@ def _request(
             return exc.code, json.loads(raw)
         except json.JSONDecodeError:
             return exc.code, raw
+    except (TimeoutError, socket.timeout) as exc:
+        raise RuntimeError(f"{method} {path} timed out after {timeout}s") from exc
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            raise RuntimeError(f"{method} {path} timed out after {timeout}s") from exc
+        raise
+
+
+def _drain_event_stitch_load_job(base: str) -> None:
+    """STITCH_LIVE_E2E_EVENT_WARM_V1 — Event_2 load_job auto-bake blocks milestone POST/GET."""
+    print(f"[g4-pre] drain {EVENT_STITCH_JOB} load_job (may bake once, up to 300s) ...")
+    status, payload = _request(
+        base,
+        "GET",
+        f"/api/stitch_editor/job/{EVENT_STITCH_JOB}",
+        timeout=300.0,
+    )
+    if status != 200:
+        raise RuntimeError(f"{EVENT_STITCH_JOB} load_job drain failed HTTP {status}: {payload!r}")
+    print(f"[g4-pre] {EVENT_STITCH_JOB} load_job drain ok")
 
 
 def _standalone_slot(base: str) -> dict | None:
@@ -98,7 +129,7 @@ def _post_standalone(base: str, slot: dict) -> dict:
             "event_id": "Event_2",
             "scope_version": scope_version,
         },
-        timeout=300.0,
+        timeout=DEFAULT_JOB_POST_TIMEOUT_S,
     )
     if status != 200 or not isinstance(body, dict):
         raise RuntimeError(f"stitch_save failed HTTP {status}: {body!r}")
@@ -108,6 +139,8 @@ def _post_standalone(base: str, slot: dict) -> dict:
     video_path = str(body.get("saved_video_path") or saved.get("video_path") or "").strip()
     if video_path:
         saved = {**saved, "video_path": video_path}
+    if not str(saved.get("video_path") or "").strip():
+        raise RuntimeError(f"stitch_save returned no standalone video_path: {body!r}")
     return saved
 
 
@@ -177,7 +210,9 @@ def warm_mux(base: str, marker_path: Path, *, force: bool = False) -> str:
     if isinstance(cur, dict) and cur.get("event_id") not in (None, "Event_2"):
         print(f"[g4-pre] WARN event_id={cur.get('event_id')} (expected Event_2 on :5112)")
 
-    print("[g4-pre] drain load_job ...")
+    _drain_event_stitch_load_job(base)
+
+    print("[g4-pre] drain milestone load_job ...")
     _standalone_slot(base)
 
     slot = _ensure_video(base)
@@ -199,7 +234,10 @@ def warm_mux(base: str, marker_path: Path, *, force: bool = False) -> str:
         else [*cues, CANONICAL_CUE],
     }
 
-    print("[g4-pre] POST stitch_editor/preview (may take several minutes) ...")
+    print(
+        f"[g4-pre] POST stitch_editor/preview "
+        f"(timeout={DEFAULT_PREVIEW_TIMEOUT_S:.0f}s, may take several minutes) ..."
+    )
     status, cur = _request(base, "GET", "/api/event/current", timeout=30.0)
     scope_version = (cur.get("event_generation") if isinstance(cur, dict) else None) or 1
     last_err = ""
@@ -221,7 +259,7 @@ def warm_mux(base: str, marker_path: Path, *, force: bool = False) -> str:
                 "event_id": "Event_2",
                 "scope_version": scope_version,
             },
-            timeout=300.0,
+            timeout=DEFAULT_PREVIEW_TIMEOUT_S,
         )
         if status == 200:
             break
@@ -231,7 +269,7 @@ def warm_mux(base: str, marker_path: Path, *, force: bool = False) -> str:
     else:
         raise RuntimeError(f"preview bootstrap failed: {last_err}")
 
-    mux_hash = _poll_mux_hash(base, timeout_s=600.0)
+    mux_hash = _poll_mux_hash(base, timeout_s=DEFAULT_POLL_TIMEOUT_S)
     _restore_canonical_cue(base)
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     marker_path.write_text(f"{mux_hash}\n{int(time.time())}\n", encoding="utf-8")
