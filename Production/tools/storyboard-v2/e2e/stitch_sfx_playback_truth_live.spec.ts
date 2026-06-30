@@ -177,61 +177,23 @@ function standaloneSavePayload(
   };
 }
 
-async function ensureMuxPreviewReady(request: APIRequestContext): Promise<void> {
+/** DEPLOY_MUX_WARM_G4_PRE_V1 — mux bake runs in deploy_mux_warm_g4_pre.sh, not here (RC14). */
+async function assertMuxWarmFromG4Pre(request: APIRequestContext): Promise<void> {
   await ensureMilestoneStandaloneVideo(request);
-  let slot = await fetchStandaloneSlot(request);
-  if (!slot?.video_path) {
-    throw new Error('milestone standalone slot missing video_path after ensure');
-  }
-  const muxHash = String(slot.mux_preview_hash ?? '').trim();
+  const slot = await fetchStandaloneSlot(request);
+  const muxHash = String(slot?.mux_preview_hash ?? '').trim();
   if (muxHash.length >= 8) {
     await restoreCanonicalTestCue(request);
     return;
   }
-
-  const cues = (slot.sfx_cues as Array<Record<string, unknown>> | undefined) ?? [];
-  const slotForPreview = {
-    ...slot,
-    sfx_cues: cues.some((c) => String(c.id) === CANONICAL_CUE.id)
-      ? cues
-      : [...cues, CANONICAL_CUE],
-  };
-
-  const cur = await request.get(`${LIVE_BASE}/api/event/current`);
-  const curBody = await cur.json();
-  let previewRes = null;
-  let lastPreviewErr: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    try {
-      previewRes = await request.post(`${LIVE_BASE}/api/stitch_editor/preview`, {
-        timeout: 300_000,
-        data: {
-          name: JOB_NAME,
-          slot: 'standalone',
-          slot_preview: true,
-          transitions: [],
-          slots: [slotForPreview],
-          scope_event_id: 'Event_2',
-          scope_milestone_id: 'milestone1_arc1',
-          scope_video_role: 'standalone',
-          scope_target_video: 'standalone',
-          event_id: 'Event_2',
-          scope_version: curBody.event_generation ?? 1,
-        },
-      });
-      if (previewRes.ok()) break;
-      lastPreviewErr = await previewRes.text();
-    } catch (err) {
-      lastPreviewErr = err;
-      previewRes = null;
-    }
-    await new Promise((r) => setTimeout(r, 5000));
-  }
-  if (!previewRes?.ok()) {
-    throw new Error(`preview bootstrap failed: ${String(lastPreviewErr)}`);
-  }
-  await pollStandaloneMuxHash(request);
-  await restoreCanonicalTestCue(request);
+  const markerPath = path.join(
+    __dirname,
+    '../../../.deploy_mux_warm/Event_2_milestone.ok',
+  );
+  const hint = fs.existsSync(markerPath)
+    ? `marker exists but job hash empty — re-run deploy_mux_warm_g4_pre.sh on ${LIVE_BASE}`
+    : `run Production/scripts/deploy_mux_warm_g4_pre.sh before live E2E`;
+  throw new Error(`DEPLOY_MUX_WARM_G4_PRE_V1: mux_preview_hash missing. ${hint}`);
 }
 
 async function restoreCanonicalTestCue(request: APIRequestContext): Promise<void> {
@@ -295,12 +257,12 @@ async function synthDrop(
 
 test.describe('STITCH_SFX_PLAYBACK_TRUTH live milestone', () => {
   test.beforeAll(async ({ request }) => {
-    test.setTimeout(600_000);
+    test.setTimeout(120_000);
     test.skip(!(await serverReachable(request)), `Live server unreachable at ${LIVE_BASE}`);
     const cur = await request.get(`${LIVE_BASE}/api/event/current`);
     const body = await cur.json();
     expect(body.event_id).toBe('Event_2');
-    await ensureMuxPreviewReady(request);
+    await assertMuxWarmFromG4Pre(request);
   });
 
   test.afterEach(async ({ request }) => {

@@ -39,6 +39,7 @@ import {
 import { useStoryboardTrimFields } from '../hooks/useStoryboardTrimFields';
 import { SERVER_BASE, MUTATION_ENDPOINTS as ENDPOINTS } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
+import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
 import { Spinner } from './ui/Spinner';
 import { BeatMagicButtons } from './BeatMagicButtons';
 import { pushToast } from './ui/Toast';
@@ -485,6 +486,8 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
     },
     (p) => p.kind === 'lib-image',
   );
+  const endFrameDropRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(endFrameDropRef, _endFrameDropHandlers, [_endFrameDropHandlers]);
 
   // LD-739/740 GREENFIELD: silent-click-on-busy-button class kill.
   // Synchronous handler throws are caught and surfaced as an error toast —
@@ -1082,12 +1085,10 @@ function BeatButtonRow({ index, beatId, eventId, beat, cacheBust, onMutated, pre
                   : '✏ Generate end frame'}
           </button>
           <div
+            ref={endFrameDropRef}
             class={`mn-end-frame-drop mn-drop-target${pendingEndFrameOp ? ' is-busy' : ''}`}
             data-testid={`beat-${index}-end-frame-drop`}
             title="Drag a 4:3-cropped library tile here to use it as the end frame. (Upload to Library → Crop in Cropper → drag the cropped tile here.) Free."
-            onDragOver={_endFrameDropHandlers.onDragOver}
-            onDragLeave={_endFrameDropHandlers.onDragLeave}
-            onDrop={_endFrameDropHandlers.onDrop}
             style={{
               display: 'inline-flex',
               alignItems: 'center',
@@ -2483,15 +2484,15 @@ function BeatImageHolder({ index, beatId, beat, eventId, onMutated, previewVideo
     },
     (p) => p.kind === 'lib-image',
   );
+  const dropRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(dropRef, dropHandlers, [dropHandlers]);
 
   return (
     <div
+      ref={dropRef}
       class={`mn-storyboard-image-drop-zone mn-drop-target${hasImage ? ' has-image' : ''}${previewVideoSrc ? ' mn-previewing' : ''}`}
       data-testid={`beat-image-zone-${index}`}
       data-beat-id={beatId}
-      onDragOver={dropHandlers.onDragOver}
-      onDragLeave={dropHandlers.onDragLeave}
-      onDrop={dropHandlers.onDrop}
     >
       {(previewVideoSrc || lipsyncBufferSrc) ? (
         <div data-testid={`beat-preview-video-${index}`} style={{ display: 'contents' }}>

@@ -66,6 +66,14 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | WTA-020 | Background tab WaveSurfer **blocks** visible tab play | Phase A/B | Keep-alive pane | Chrome autoplay / hidden pane | keep-alive MutationObserver | shipped |
 | WTA-021 | Stitcher SFX playback **diverges** from mux adelay | Stitcher | Composer + SFX | Wrong preview URL when SFX exist | `STITCH_SFX_PLAYBACK_TRUTH` live e2e | shipped |
 | WTA-022 | Horizontal **banding/pleats** on lipsync preview | Phase A/B / BG / Stitcher | Video preview | Dual decode clocks | VQ-P1, PLAY-8, `TECH_SPEC_VIDEO_QUALITY` | shipped |
+| WTA-023 | Phase B **drag-drop dead** — tile drag hijacked by `<img>` | Phase B | Watercolor grid → waveform | Native img drag + bubble-only drop on canvas child | DROP-IMG-1, DROP-CAPTURE-1, DROP-WC-2 | shipped |
+| WTA-024 | Library watercolors filter **0/N** while bottom grid has tiles | Library + Phase B | Tier filter | Stale sessionStorage cache vs server watercolor count | G3 cache v4 + phase reconcile | shipped |
+| WTA-025 | Empty `library/watercolors/` on new Event_N — nothing draggable | Phase B | Catalog bootstrap | Per-event disk empty | `EVENT_WC_SEED_V1`, bootstrap script | shipped |
+| WTA-026 | Stitcher / BG / Storyboard drops **silently fail** on nested canvas | Beat Gen / Stitcher / SB | Drop targets | Bubble handler misses child canvas | `INTERACTION_PLATFORM_V1` | shipped |
+| WTA-027 | g.4 deploy **600s timeout** in Playwright beforeAll | Stitcher / CI | Live E2E | Cold mux bake in hot gate | `DEPLOY_MUX_WARM_G4_PRE_V1` | shipped |
+| WTA-028 | Fixture proof green but **Event_4 live drag** broken | Phase B | Operator path | RC11 proof-surface mismatch | `DROP-WC-LIVE-1` on :5114 | shipped |
+| WTA-029 | Fleet ports **5115–5116** never build-sha checked | All tabs | Deploy | FF-014 stopped at 5113 | `verify_live_fleet_interaction.sh` | shipped |
+| WTA-030 | SEEK-8 fix verified on **Stitcher displayOnly** not Phase B stem | Phase B | Waveform seek | Wrong surface for operator symptom | Phase B stem drag + DROP-WC-LIVE-1 | shipped |
 
 ---
 

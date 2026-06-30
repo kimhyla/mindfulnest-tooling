@@ -299,6 +299,28 @@ export const TIER_TO_FILTER_MAP: Record<LibraryTier, (it: LibItem) => boolean> =
   },
 };
 
+function countWatercolorLibItems(items: LibItem[]): number {
+  return items.filter(TIER_TO_FILTER_MAP.watercolors).length;
+}
+
+interface PhaseWatercolorListResponse {
+  ok?: boolean;
+  count?: number;
+  items?: Array<{ key: string; filename?: string; thumb_url?: string; kind?: string }>;
+}
+
+/** G3 — merge phase disk inventory when cr_library watercolor tier lags (RC13). */
+function phaseWatercolorToLibItem(w: { key: string; filename?: string; thumb_url?: string }): LibItem {
+  return {
+    key: w.key,
+    tier: 'watercolor',
+    panel_tabs: ['watercolors'],
+    display_name: w.filename ?? w.key,
+    ...(w.filename ? { filename: w.filename } : {}),
+    ...(w.thumb_url ? { thumb_url: w.thumb_url } : {}),
+  };
+}
+
 function loadPersistedTier(): LibraryTier {
   try {
     const v = window.localStorage.getItem(LIBRARY_TIER_LS_KEY);
@@ -536,13 +558,26 @@ export function LibraryPanel() {
   useEffect(() => {
     let cancelled = false;
     const cached = readPersistedLibraryItems(eventId);
-    if (cached.length > 0) {
-      setItems(cached);
-      setLoading(false);
-    } else {
-      setLoading(true);
-    }
     (async () => {
+      const phaseRes = await apiGet<PhaseWatercolorListResponse>('phase_watercolor_list', undefined, {
+        fetchTimeoutMs: 15_000,
+      });
+      const serverWcCount =
+        phaseRes.ok && phaseRes.data ? (phaseRes.data.count ?? 0) : 0;
+      const cachedWcCount = countWatercolorLibItems(cached);
+      if (cached.length > 0 && cachedWcCount < serverWcCount) {
+        try {
+          sessionStorage.removeItem(libraryItemsStorageKey(eventId));
+        } catch {
+          /* ignore */
+        }
+      } else if (cached.length > 0) {
+        setItems(cached);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
       const [crRes, stitchRes] = await Promise.all([
         apiGet<LibraryResponse>('cr_library', activeScopeQueryParams(), {
           fetchTimeoutMs: 45_000,
@@ -563,7 +598,19 @@ export function LibraryPanel() {
         }
         return;
       }
-      const merged = [...imageItems, ...audioItems];
+      let merged = [...imageItems, ...audioItems];
+      const mergedWc = countWatercolorLibItems(merged);
+      if (phaseRes.ok && phaseRes.data && serverWcCount > mergedWc) {
+        const phaseItems = phaseRes.data.items ?? [];
+        const existingKeys = new Set(
+          merged.map((it) => it.key ?? it.abs_path ?? '').filter(Boolean),
+        );
+        for (const w of phaseItems) {
+          if (!w.key || existingKeys.has(w.key)) continue;
+          merged = [...merged, phaseWatercolorToLibItem(w)];
+          existingKeys.add(w.key);
+        }
+      }
       setItems(merged);
       persistLibraryItems(eventId, merged);
       setError(null);

@@ -26,6 +26,7 @@ import { formatMutationError } from '../api/mutationErrors';
 import { isClientBundleStaleError } from '../state/buildShaDrift';
 import { SERVER_BASE } from '../api/endpoints';
 import { makeDropTarget } from '../utils/dragdrop';
+import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
 import { openCropper } from '../state/cropper';
 import { Modal } from './ui/Modal';
 import { BeatPlanModal, type BeatPlanDraftSaveStatus, type BeatPlanRow } from './BeatPlanModal';
@@ -4414,14 +4415,14 @@ function BgRefSlot({
     },
     (p) => p.kind === 'lib-image',
   );
+  const dropRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(dropRef, dropHandlers, [dropHandlers]);
   return (
     <div class="mn-bg-ref-slot-wrap" data-testid={`${testId}-wrap`}>
       <div
+        ref={dropRef}
         class={`mn-bg-ref-slot mn-drop-target${hasImage ? ' has-image' : ''}`}
         data-testid={testId}
-        onDragOver={dropHandlers.onDragOver}
-        onDragLeave={dropHandlers.onDragLeave}
-        onDrop={dropHandlers.onDrop}
       >
         <span class="mn-bg-ref-slot-label">{label}</span>
         {hasImage ? (
@@ -4648,15 +4649,15 @@ function BgOptionTile({
     },
     (p) => p.kind === 'lib-image',
   );
+  const dropRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(dropRef, dropHandlers, [dropHandlers]);
   if (!option) {
     return (
       <div
+        ref={dropRef}
         class="mn-bg-option mn-bg-option-empty-wrap mn-drop-target"
         data-testid={`bg-option-${beatIndex}-${optionIndex}`}
         data-bg-option-empty="true"
-        onDragOver={dropHandlers.onDragOver}
-        onDragLeave={dropHandlers.onDragLeave}
-        onDrop={dropHandlers.onDrop}
       >
         <div class="mn-bg-option-empty">option {optionIndex + 1} (empty)</div>
         {showReplaceOnRegen ? (
@@ -5265,13 +5266,11 @@ function BgOptionTile({
 
   return (
     <div
+      ref={dropRef}
       class={`mn-bg-option mn-drop-target${selected ? ' is-selected' : ''}${keyMissing ? ' is-disabled' : ''}${isStitchApproved && hasClipVideo ? ' is-approved-video' : ''}${isStillDraft ? ' is-still-draft' : ''}`}
       data-testid={`bg-option-${beatIndex}-${optionIndex}`}
       data-option-key={option.key ?? ''}
       onClick={keyMissing ? undefined : onClick}
-      onDragOver={dropHandlers.onDragOver}
-      onDragLeave={dropHandlers.onDragLeave}
-      onDrop={dropHandlers.onDrop}
       title={tooltip}
     >
       {selected && activeVideoUrl && !clipMissingOnDisk ? (

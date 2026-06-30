@@ -17,6 +17,7 @@
 // All actions go through pathappPatch so scope guards + snapshot fire.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
 import { effect } from '@preact/signals';
 import { activeScope, activeProjectType, activeMilestoneId, producerScopeChipLabel, activeTargetVideo } from '../state/scope';
 import { pushToast } from './ui/Toast';
@@ -412,6 +413,7 @@ function SlotImageDropTarget({
   videoTitle,
   onImageDrop,
 }: SlotImageDropTargetProps) {
+  const dropRef = useRef<HTMLDivElement>(null);
   const dropHandlers = makeDropTarget(
     (payload) => {
       if (payload.kind !== 'lib-image') return;
@@ -420,15 +422,14 @@ function SlotImageDropTarget({
     acceptDragForTarget('image-slot'),
     'image-slot',
   );
+  useDropTargetCapture(dropRef, dropHandlers, [dropHandlers]);
   return (
     <div
+      ref={dropRef}
       class="mn-stitcher-slot-video mn-drop-target"
       data-testid="stitcher-drop-target-image-slot"
       data-slot-key={slotKey}
       data-drop-target-kind="image-slot"
-      onDragOver={dropHandlers.onDragOver}
-      onDragLeave={dropHandlers.onDragLeave}
-      onDrop={dropHandlers.onDrop}
     >
       {hasVideo ? (
         <code title={videoTitle}>{videoLabel}</code>
@@ -2219,6 +2220,8 @@ export function StitcherTab() {
     acceptDragForTarget('sfx-strip'),
     'sfx-strip',
   );
+  const moduleTimelineRef = useRef<HTMLDivElement>(null);
+  useDropTargetCapture(moduleTimelineRef, moduleDropHandlers, [moduleDropHandlers]);
 
   // Active popover cue — read from job state when scope='slot'.
   const popoverCue: SfxCue | null = (() => {
@@ -2628,12 +2631,10 @@ export function StitcherTab() {
               so G6 test's drop never registered. Single element with
               testid + data-drop-target-kind. */}
           <div
+            ref={moduleTimelineRef}
             class="mn-stitcher-module-timeline mn-drop-target"
             data-testid="stitcher-module-timeline"
             data-drop-target-kind="sfx-strip"
-            onDragOver={moduleDropHandlers.onDragOver}
-            onDragLeave={moduleDropHandlers.onDragLeave}
-            onDrop={moduleDropHandlers.onDrop}
           >
             <span class="mn-dim">Module SFX cues — drag SFX from the Library here</span>
           </div>

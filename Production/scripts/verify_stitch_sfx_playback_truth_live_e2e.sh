@@ -50,6 +50,9 @@ if ! curl -sf --max-time 300 "${BASE}/api/stitch_editor/job/Event_2_stitch" >/de
   fail "Event_2 load_job warmup failed — server may still be baking"
 fi
 
+echo "[stitch-sfx-playback-truth-live] g4-pre mux warm (DEPLOY_MUX_WARM_G4_PRE_V1) ..."
+bash "${SCRIPT_DIR}/deploy_mux_warm_g4_pre.sh" || fail "deploy_mux_warm_g4_pre failed"
+
 (
   cd "$SB"
   STORYBOARD_LIVE_BASE_URL="$BASE" npx playwright test --config playwright.live.config.ts
