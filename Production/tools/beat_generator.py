@@ -13171,20 +13171,12 @@ def resolve_magic_still_render_duration(
     bg_beat_id: str,
     *,
     scene_registry: dict | None = None,
-    fallback: float | None = None,
+    fallback: float = 4.0,
     event_id: str | int | None = None,
     video_role: str = "resolution",
     module_id: int = 1,
-    manual_path: list | None = None,
 ) -> float:
-    """Duration for magic_still compositor — scales with YAML path length after registry pin."""
-    if fallback is None:
-        try:
-            from magic_render_contract import PRODUCTION_MAGIC_STILL_DURATION_DEFAULT
-
-            fallback = PRODUCTION_MAGIC_STILL_DURATION_DEFAULT
-        except ImportError:
-            fallback = 7.0
+    """Duration for magic_still compositor — scene_registry pins approved nest orbital at 6.08s."""
     try:
         from magic_render_contract import resolve_magic_still_duration_from_registry
     except ImportError:
@@ -13197,7 +13189,6 @@ def resolve_magic_still_render_duration(
             event_id=event_id or 1,
             video_role=video_role,
             fallback=fallback,
-            manual_path=manual_path,
         )
     return float(fallback)
 
