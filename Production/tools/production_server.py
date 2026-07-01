@@ -138,6 +138,14 @@ _BG_PHASE_MAP: dict[str, str] = {"intro": "pre", "resolution": "post", "standalo
 _BG_EVENT_ID_ALIASES: dict[str, int] = {"e2e_fixture": 1}
 
 
+def _partition_display_order_list(partition: dict | None) -> list:
+    """Beat-id list from partition display_order; legacy int shapes → [] (fallback paths apply)."""
+    if not isinstance(partition, dict):
+        return []
+    do = partition.get("display_order")
+    return do if isinstance(do, list) else []
+
+
 def _resolve_bg_segment_for_scope(scope_event_id: str, video_role: str) -> tuple[int, int, str]:
     """Map a (scope_event_id, video_role) to a BG sidecar segment tuple.
 
@@ -7071,7 +7079,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             videos = state.get("videos") or {}
             partition = videos.get(scope_target_video) or {}
             beats = partition.get("beats") or {}
-            display_order = partition.get("display_order") or []
+            display_order = _partition_display_order_list(partition)
 
             # Include beats with selected_option OR committed magic/final/lipsync media.
             _assemble_event_dir = (
@@ -10817,7 +10825,7 @@ body {{padding-top:44px!important;}}
                    )
 
         beats = snapshot.get("beats") or {}
-        display_order = snapshot.get("display_order") or []
+        display_order = _partition_display_order_list(snapshot)
         allowed = set(display_order)
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), "credentials_lib"))
         from ffmpeg_stitch import beat_is_assemblable, compute_finalize_args_hash  # noqa: PLC0415
@@ -11763,7 +11771,7 @@ body {{padding-top:44px!important;}}
                 state = self.app.state.read_state()
                 partition = ((state.get("videos") or {}).get(scope_target_video) or {})
                 beats = partition.get("beats") or {}
-                display_order = partition.get("display_order") or []
+                display_order = _partition_display_order_list(partition)
                 allowed = set(display_order)
                 ordered_beat_ids = [
                     bid for bid in display_order
