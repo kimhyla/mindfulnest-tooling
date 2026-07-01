@@ -350,24 +350,26 @@ def validate_stitch_slot_media_artifacts(
     stored_mix_sig = (slot.get("mix_sig") or "").strip()
     stored_ambient_sig = (slot.get("ambient_mix_sig") or "").strip()
 
+    had_mux = bool((slot.get("mux_preview_hash") or "").strip())
     if stored_mix_sig and stored_mix_sig != current_mix_sig:
         if _mux_preview_cache_still_valid(h, slot, fast=fast):
             pass
-        else:
+        elif had_mux:
             clear_stitch_slot_mux_artifacts(slot)
             warnings.append("mix_sig stale — mux artifacts cleared")
+    had_ambient = bool((slot.get("ambient_mix_hash") or "").strip())
     if stored_ambient_sig and stored_ambient_sig != current_ambient_sig:
         if _ambient_mix_cache_still_valid(h, slot, fast=fast):
             pass
-        else:
+        elif had_ambient:
             clear_stitch_slot_ambient_mix_artifacts(slot)
             warnings.append("ambient_mix_sig stale — ambient mix cleared")
 
-    if not stored_mix_sig and any(slot.get(f) for f in STITCH_SLOT_MUX_FIELDS):
+    if not stored_mix_sig and had_mux:
         clear_stitch_slot_mux_artifacts(slot)
         warnings.append("mix_sig missing — mux artifacts cleared")
 
-    if not stored_ambient_sig and any(slot.get(f) for f in STITCH_SLOT_AMBIENT_MIX_FIELDS):
+    if not stored_ambient_sig and had_ambient:
         clear_stitch_slot_ambient_mix_artifacts(slot)
         warnings.append("ambient_mix_sig missing — ambient mix cleared")
 

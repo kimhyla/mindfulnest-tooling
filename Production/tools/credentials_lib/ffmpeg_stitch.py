@@ -1618,19 +1618,41 @@ def assert_stitch_export_cumulative_av_aligned(
     *,
     max_join_drift_s: float = STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S,
 ) -> None:
-    """Simulate concat cursor using video stream ends — catch cumulative lipsync drift."""
-    cursor_s = 0.0
+    """Pre-concat: each clip must trim to timeline authority without excessive loss."""
+    del max_join_drift_s  # post-concat assembled gate enforces cumulative budget
     for clip in clip_paths:
         video_s = ffprobe_stream_duration_s(clip, "v")
+        audio_s = ffprobe_stream_duration_s(clip, "a")
         timeline_s = export_clip_timeline_duration_s(clip)
-        if video_s > 0.0 and timeline_s > 0.0:
-            drift = abs(timeline_s - video_s)
-            if drift > max_join_drift_s:
-                raise ValueError(
-                    f"stitch export blocked — cumulative A/V drift at {clip.name}: "
-                    f"{drift:.3f}s > {max_join_drift_s:.3f}s",
-                )
-        cursor_s += timeline_s
+        if timeline_s <= 0.0:
+            raise ValueError(
+                f"stitch export blocked — zero timeline duration for {clip.name}",
+            )
+        per_clip_trim_v = abs(video_s - timeline_s) if video_s > 0.0 else 0.0
+        per_clip_trim_a = abs(audio_s - timeline_s) if audio_s > 0.0 else 0.0
+        if max(per_clip_trim_v, per_clip_trim_a) > STITCH_EXPORT_AV_MAX_DRIFT_S:
+            raise ValueError(
+                f"stitch export blocked — clip {clip.name} A/V streams exceed trim "
+                f"authority (v={video_s:.3f}s a={audio_s:.3f}s timeline={timeline_s:.3f}s)",
+            )
+
+
+def assert_stitch_export_assembled_av_drift(
+    assembled: Path,
+    *,
+    max_drift_s: float = STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S,
+) -> None:
+    """Post-concat gate — assembled export must stay within cumulative drift budget."""
+    video_s = ffprobe_stream_duration_s(assembled, "v")
+    audio_s = ffprobe_stream_duration_s(assembled, "a")
+    if video_s <= 0.0 or audio_s <= 0.0:
+        return
+    drift_s = abs(video_s - audio_s)
+    if drift_s > max_drift_s:
+        raise ValueError(
+            f"stitch export blocked — assembled A/V drift {drift_s * 1000:.0f}ms "
+            f"> {max_drift_s * 1000:.0f}ms ({assembled.name})",
+        )
 
 
 def av_duration_drift_s(path: Path) -> float:

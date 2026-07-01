@@ -14199,10 +14199,11 @@ def _kling_export_audio_lane_filter(
     is_first: bool,
     is_last: bool,
 ) -> str:
-    """Decode to PCM mono; micro fade in/out at hard-cut beat boundaries."""
+    """Decode to PCM mono; trim to timeline authority; micro fade at hard-cut joins."""
     join_fade_s = KLING_EXPORT_AUDIO_JOIN_FADE_MS / 1000.0
     chain = (
-        f"{input_label}aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono"
+        f"{input_label}aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,"
+        f"atrim=duration={dur_s:.6f},asetpts=PTS-STARTPTS"
     )
     if not is_first and join_fade_s > 0:
         chain += f",afade=t=in:st=0:d={join_fade_s:.6f}"
@@ -14231,8 +14232,9 @@ def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> N
     for p in clip_paths:
         inputs.extend(["-i", str(p.resolve())])
     n = len(clip_paths)
+    # FF-024: single timeline authority for both concat lanes (min v/a per clip).
     durations = [
-        _ffprobe_audio_lane_duration(p, has_audio=has_audio(p))
+        fs.export_clip_timeline_duration_s(p)
         for p in clip_paths
     ]
 
@@ -14254,7 +14256,8 @@ def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> N
     v_parts = [
         (
             f"[{i}:v:0]scale=1920:1080:force_original_aspect_ratio=decrease,"
-            f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24[v{i}]"
+            f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,"
+            f"trim=duration={durations[i]:.6f},setpts=PTS-STARTPTS[v{i}]"
         )
         for i in range(n)
     ]
@@ -14532,6 +14535,7 @@ def concat_kling_o3_approved_beats(
     from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
 
     ensure_mp4_playback_timestamps(out_path)
+    fs.assert_stitch_export_assembled_av_drift(out_path)
 
     boundaries = _boundaries_for_pair_fade_concat(beats, clip_paths, pair_fades)
     total_s = _ffprobe_duration(out_path)

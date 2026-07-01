@@ -2465,7 +2465,7 @@ def handle_stitch_load_job(h, name: str)-> None:
 
             stitch_store.mutate_state(persist_milestone_shape)
     defaults_changed = False
-    artifact_warnings: list[str] = []
+    artifact_warnings: dict[str, list[str]] = {}
     artifacts_healed = False
     live_slots = (job.get("slots") if isinstance(job, dict) else None)
     if isinstance(live_slots, dict):
@@ -2498,9 +2498,9 @@ def handle_stitch_load_job(h, name: str)-> None:
             if not isinstance(slot, dict):
                 continue
             before_mux = (slot.get("mux_preview_hash") or "").strip()
-            artifact_warnings.extend(
-                validate_stitch_slot_media_artifacts(h, slot, fast=True),
-            )
+            slot_artifact_warnings = validate_stitch_slot_media_artifacts(h, slot, fast=True)
+            if slot_artifact_warnings:
+                artifact_warnings.setdefault(slot_key, []).extend(slot_artifact_warnings)
             after_mux = (slot.get("mux_preview_hash") or "").strip()
             if before_mux and before_mux != after_mux:
                 artifacts_healed = True
@@ -2576,8 +2576,8 @@ def handle_stitch_load_job(h, name: str)-> None:
             warnings = collect_stitch_job_slot_warnings(h, slots, probe_video=False)
             if artifact_warnings:
                 warnings = warnings or {}
-                for msg in artifact_warnings:
-                    warnings.setdefault("_artifacts", []).append(msg)
+                for slot_key, msgs in artifact_warnings.items():
+                    warnings.setdefault(slot_key, []).extend(msgs)
             if warnings:
                 payload["slot_warnings"] = warnings
             if defaults_changed:
