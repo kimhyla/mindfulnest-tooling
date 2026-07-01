@@ -369,18 +369,25 @@ def heal_o3_beat_after_aborted_attempt(beat: dict, event_dir: str | Path | None 
     video = str(beat.get("kling_o3_video_path") or "")
     if kling_status not in ("approved", "submitted", "completed") or not video or not Path(video).is_file():
         return False
-    beat["status"] = "approved"
-    beat["kling_o3_status"] = "approved"
-    beat["kling_o3_voice_fix_status"] = "approved"
-    beat.pop("kling_o3_voice_fix_error", None)
-    beat.pop("kling_o3_voice_fix_error_code", None)
-    beat.pop("kling_o3_task_id", None)
-    beat.pop("kling_o3_submit_response", None)
-    beat.pop("kling_o3_voice_fix_job_log_path", None)
-    beat.pop("kling_o3_voice_fix_job_pid", None)
-    beat.pop("kling_o3_voice_fix_job_started_at", None)
-    beat.pop("kling_o3_voice_fix_attempt_id", None)
-    beat.pop("kling_o3_voice_fix_phase", None)
+    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+    if not align_beat_active_delivery_clip(
+        beat,
+        video,
+        mark_voice_fix_approved=True,
+        clear_voice_fix_error=True,
+    ):
+        return False
+    for key in (
+        "kling_o3_task_id",
+        "kling_o3_submit_response",
+        "kling_o3_voice_fix_job_log_path",
+        "kling_o3_voice_fix_job_pid",
+        "kling_o3_voice_fix_job_started_at",
+        "kling_o3_voice_fix_attempt_id",
+        "kling_o3_voice_fix_phase",
+    ):
+        beat.pop(key, None)
     return True
 
 
@@ -450,8 +457,6 @@ def restore_last_good_o3_delivery_after_failed_attempt(
         return False
 
     beat["kling_o3_generation"] = gen_i
-    beat["status"] = "approved"
-    beat["kling_o3_status"] = "approved"
     for key in (
         "kling_o3_voice_fix_job_log_path",
         "kling_o3_voice_fix_job_pid",

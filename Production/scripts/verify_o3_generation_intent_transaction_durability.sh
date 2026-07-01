@@ -23,7 +23,7 @@ from pathlib import Path
 text = Path("$BGTAB").read_text()
 start = text.index("const handleO3SubmitResult")
 chunk = text[start:start + 1200]
-ri = chunk.index("void refreshState()")
+ri = chunk.index("await refreshState()")
 ii = chunk.index("bgO3IntentByBeat.value")
 if ri < ii:
     raise SystemExit("refreshState runs before intent latch")
