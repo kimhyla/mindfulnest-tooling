@@ -7463,12 +7463,42 @@ def enrich_beat_magic_video_source_path(beat: dict, event_dir: str | Path) -> No
         beat["kling_o3_magic_video_source_path"] = vp
 
 
+def _trim_window_scratch_paths(
+    beat_id: str,
+    event_dir: str | Path,
+    beat: dict,
+    trim_start: float,
+    trim_back: float | None,
+) -> set[Path]:
+    """Preview/export scratch paths for one front/back trim window."""
+    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    gen = int(beat.get("kling_o3_generation") or 0)
+    token = kling_o3_trim_scratch_token({
+        "kling_o3_trim_start": trim_start,
+        "kling_o3_trim_back": trim_back,
+    })
+    return {
+        (scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4").resolve(),
+        (scratch / f"{beat_id}_g{gen}_{token}_export_trim.mp4").resolve(),
+    }
+
+
+def beat_or_option_has_o3_trim(beat: dict) -> bool:
+    """True when beat-level or any gallery option holds active front/back trim."""
+    if beat_has_kling_o3_sidecar_trim(beat):
+        return True
+    for opt in beat.get("kling_o3_options") or []:
+        if option_has_o3_trim(opt):
+            return True
+    return False
+
+
 def _kling_o3_trim_scratch_keep_paths(
     beat_id: str,
     event_dir: str | Path,
     beat: dict,
 ) -> set[Path]:
-    """Preview/export scratch paths that match the beat's current trim/cut window."""
+    """Preview/export scratch paths for beat-level trim and every trimmed gallery option."""
     scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
     keep: set[Path] = set()
     if beat_has_o3_sidecar_cut(beat):
@@ -7476,10 +7506,23 @@ def _kling_o3_trim_scratch_keep_paths(
         keep.add((scratch / f"{beat_id}_{token}_ui_preview.mp4").resolve())
         keep.add((scratch / f"{beat_id}_{token}_export_cut.mp4").resolve())
     if beat_has_kling_o3_sidecar_trim(beat) and not beat_has_o3_sidecar_cut(beat):
-        gen = int(beat.get("kling_o3_generation") or 0)
-        token = kling_o3_trim_scratch_token(beat)
-        keep.add((scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4").resolve())
-        keep.add((scratch / f"{beat_id}_g{gen}_{token}_export_trim.mp4").resolve())
+        keep |= _trim_window_scratch_paths(
+            beat_id,
+            event_dir,
+            beat,
+            float(beat.get("kling_o3_trim_start") or 0.0),
+            beat.get("kling_o3_trim_back"),
+        )
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict) or not option_has_o3_trim(opt) or option_has_o3_cut(opt):
+            continue
+        keep |= _trim_window_scratch_paths(
+            beat_id,
+            event_dir,
+            beat,
+            float(opt.get("trim_start_s") or 0.0),
+            opt.get("trim_back_s"),
+        )
     return keep
 
 
@@ -7497,7 +7540,7 @@ def prune_stale_kling_o3_trim_scratch(
         return 0
     keep = (
         _kling_o3_trim_scratch_keep_paths(bid, event_dir, beat)
-        if beat_has_kling_o3_sidecar_trim(beat)
+        if beat_or_option_has_o3_trim(beat)
         else set()
     )
     removed = 0

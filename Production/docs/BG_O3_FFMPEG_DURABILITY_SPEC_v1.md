@@ -88,6 +88,8 @@ Move helpers from `beat_generator.py`; re-export for backward compat.
 
 `handle_bg_kling_o3_trim` — after persist (not `preview_only`), call `bake_o3_active_export_clip`.
 
+**Preview authority (2026-07-01):** After Apply, UI preview URL serves `kling_o3_baked_path` (same file as export). `_ui_preview` scratch is **preview_only** draft only — no second ffmpeg encode on persist.
+
 ### Export path
 
 `_kling_o3_export_clip_path`:

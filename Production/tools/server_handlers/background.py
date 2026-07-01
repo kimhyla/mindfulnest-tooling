@@ -6605,6 +6605,42 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
 
     bg = _bg_module()
 
+    def _files_url_for_disk_path(abs_path: Path, event_dir: Path) -> str | None:
+        if not abs_path.is_file():
+            return None
+        prod_root = _data_root(h) / "Production"
+        try:
+            rel = abs_path.resolve().relative_to(prod_root)
+            rel_str = f"Production/{rel.as_posix()}"
+        except ValueError:
+            try:
+                rel = abs_path.resolve().relative_to(event_dir.resolve())
+                rel_str = f"Production/{event_dir.name}/{rel.as_posix()}"
+            except ValueError:
+                rel_str = str(abs_path.resolve())
+        mtime = int(abs_path.stat().st_mtime)
+        return f"/files?path={quote(rel_str)}&v={mtime}"
+
+    def _trim_baked_preview_url(persisted_beat: dict) -> str | None:
+        """After Apply Cut bake, serve the stable export artifact — no second ffmpeg encode."""
+        event_dir = Path(h.app.event_dir)
+        if not event_dir.is_absolute():
+            event_dir = _data_root(h) / event_dir
+        baked: str | None = None
+        if slot_index is not None:
+            opt = bg.find_o3_option_by_slot_index(
+                persisted_beat,
+                int(slot_index),
+                video_path=req_video_path,
+            )
+            if isinstance(opt, dict):
+                baked = str(opt.get("kling_o3_baked_path") or "").strip() or None
+        if not baked:
+            baked = str(persisted_beat.get("kling_o3_baked_path") or "").strip() or None
+        if not baked:
+            return None
+        return _files_url_for_disk_path(Path(baked), event_dir)
+
     def _trim_preview_url(work_beat: dict) -> str | None:
         vp = work_beat.get("kling_o3_video_path") or ""
         if not vp or not Path(vp).is_file():
@@ -6625,9 +6661,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
             return None
         if not dest.is_file():
             return None
-        rel = f"Production/{event_dir.name}/assembled/_kling_o3_trim_scratch/{dest.name}"
-        mtime = int(dest.stat().st_mtime)
-        return f"/files?path={quote(rel)}&v={mtime}"
+        return _files_url_for_disk_path(dest, event_dir)
 
     result: dict = {}
 
@@ -7162,9 +7196,31 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 extra={"errno": getattr(exc, "errno", None)},
             )
         raise
-    preview_url = _trim_preview_url(work_beat)
+    preview_url: str | None = None
+    if preview_only or body.get("clear"):
+        preview_url = _trim_preview_url(work_beat)
+    else:
+        preview_url = _trim_baked_preview_url(beat) or _trim_preview_url(work_beat)
     if preview_url:
         result["preview_video_url"] = preview_url
+    elif (
+        not preview_only
+        and not body.get("clear")
+        and (
+            bg.kling_o3_trim_is_active(work_beat)
+            or bg.beat_has_o3_sidecar_cut(work_beat)
+        )
+    ):
+        return h._send_error_v59(
+            500,
+            error_code="O3_TRIM_PREVIEW_FAILED",
+            error_message=(
+                "Trim saved but preview clip could not be built — "
+                "wait a moment and press Retry or Preview Cut"
+            ),
+            retry_safe=True,
+            extra={"beat_id": beat_id},
+        )
     return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
 
 

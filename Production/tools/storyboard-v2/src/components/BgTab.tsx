@@ -2527,6 +2527,18 @@ export function BgTab() {
       const previewUrl = preview
         ? (preview.startsWith('http') ? preview : `${SERVER_BASE}${preview}`)
         : undefined;
+      if (
+        !opts?.previewOnly
+        && !opts?.clear
+        && shorteningRequested
+        && previewUrl === undefined
+      ) {
+        pushToast({
+          kind: 'info',
+          message: 'Trim saved — preview clip failed to build. Press Preview Cut or Retry.',
+          source: 'bg-o3-cut-preview-missing',
+        });
+      }
       const rawDurationS = result.data?.raw_duration_s;
       const effectiveDurationS = result.data?.effective_duration_s;
       return {
@@ -4819,6 +4831,7 @@ function BgOptionTile({
 
   const swapVideoToPreview = async (url: string, opts?: { autoplay?: boolean }) => {
     const autoplay = opts?.autoplay === true;
+    setVideoLoadError(false);
     setPreviewUrl(url);
     const video = videoRef.current;
     if (!video) return;
@@ -4953,7 +4966,8 @@ function BgOptionTile({
     lastAutoPreviewRef.current = null;
     const sig = `${option.video_path}|${startS.toFixed(2)}|${trimBack.toFixed(2)}`;
     const cached = previewUrlHint
-      ?? recallCutPreviewUrl(beatId, optionIndex, option.video_path, startS, trimBack);
+      ? null
+      : recallCutPreviewUrl(beatId, optionIndex, option.video_path, startS, trimBack);
     if (cached) {
       rememberCutPreviewUrl(beatId, optionIndex, option.video_path, startS, trimBack, cached);
       lastAutoPreviewRef.current = sig;
@@ -5327,7 +5341,7 @@ function BgOptionTile({
           </div>
           {videoLoadError ? (
             <div class="mn-bg-option-empty" data-testid={`bg-option-video-error-${beatIndex}-${optionIndex}`}>
-              Clip failed to load — server may have restarted.
+              Trim preview failed to load — trim may still be saved.
               <button
                 type="button"
                 class="mn-btn mn-btn-small"

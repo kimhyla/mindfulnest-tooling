@@ -172,6 +172,46 @@ def test_prune_stale_kling_o3_trim_scratch_keeps_current_token(tmp_path: Path):
     assert not legacy.is_file()
 
 
+def test_prune_stale_kling_o3_trim_scratch_keeps_inactive_option_trim(tmp_path: Path):
+    """Non-active gallery option trim scratch must survive prune keyed on active clip."""
+    beat_id = "bg_arc1_event2_pre_beat_10"
+    scratch = tmp_path / "assembled" / "_kling_o3_trim_scratch"
+    scratch.mkdir(parents=True)
+    active_vp = str(tmp_path / "g3.mp4")
+    inactive_vp = str(tmp_path / "g2.mp4")
+    Path(active_vp).write_bytes(b"x")
+    Path(inactive_vp).write_bytes(b"x")
+    beat = {
+        "kling_o3_generation": 3,
+        "kling_o3_video_path": active_vp,
+        "kling_o3_trim_start": 0.0,
+        "kling_o3_trim_back": 3.87,
+        "kling_o3_options": [
+            None,
+            {
+                "video_path": inactive_vp,
+                "trim_start_s": 0.0,
+                "trim_back_s": 9.05,
+            },
+            {
+                "video_path": active_vp,
+                "trim_start_s": 0.0,
+                "trim_back_s": 3.87,
+            },
+        ],
+    }
+    inactive_preview = scratch / f"{beat_id}_g3_s0.0_b9.05_ui_preview.mp4"
+    active_preview = scratch / f"{beat_id}_g3_s0.0_b3.87_ui_preview.mp4"
+    stale = scratch / f"{beat_id}_g3_s1.0_b1.0_ui_preview.mp4"
+    for p in (inactive_preview, active_preview, stale):
+        p.write_bytes(b"x")
+    removed = bg.prune_stale_kling_o3_trim_scratch(beat_id, tmp_path, beat)
+    assert removed == 1
+    assert inactive_preview.is_file()
+    assert active_preview.is_file()
+    assert not stale.is_file()
+
+
 def test_reconcile_kling_o3_trim_all_events_clears_stale_scratch_without_sidecar_trim(tmp_path: Path, monkeypatch):
     beat_id = "bg_arc1_event2_pre_beat_10"
     event_dir = tmp_path / "Event_2"
