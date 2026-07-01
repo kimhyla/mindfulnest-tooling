@@ -179,18 +179,68 @@ def _library_asset_name_from_source_key(source_key: str) -> str | None:
     return source_key.replace(" ", "_") or None
 
 
+def _source_abs_path_from_source_key(source_key: str) -> str | None:
+    """Realpath for cropper source_key when it is a /api/cr/full?abs_path= URL."""
+    if not source_key or not isinstance(source_key, str):
+        return None
+    if "abs_path=" not in source_key:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(source_key)
+        qs = urllib.parse.parse_qs(parsed.query)
+        abs_path = qs.get("abs_path", [None])[0]
+        if abs_path:
+            return os.path.realpath(abs_path)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def _resolve_parent_asset_id_from_source_key(source_key: str) -> int | None:
     """Rule 6.2 — link delivery crop to still_master parent via asset_name."""
-    asset_name = _library_asset_name_from_source_key(source_key)
-    if not asset_name:
-        return None
     try:
         from lib.directus_admin_client import DirectusAdminClient
         client = DirectusAdminClient()
     except Exception as e:
         print(f"[BG] WARN: parent_asset_id lookup skipped: {e}")
         return None
-    name_variants = {asset_name, asset_name.replace("_", " "), asset_name.replace(" ", "_")}
+    # Prefer exact file_path match — asset_name normalization (spaces vs underscores)
+    # misses ChatGPT-style upload names.
+    source_real = _source_abs_path_from_source_key(source_key)
+    if source_real:
+        try:
+            rows = client.get_items(
+                "prod_assets",
+                filters={
+                    "_and": [
+                        {"asset_type": {"_eq": "still_master"}},
+                        {"file_path": {"_eq": source_real}},
+                    ]
+                },
+                fields=["id"],
+                limit=1,
+            )
+        except Exception as e:
+            print(f"[BG] WARN: parent_asset_id file_path lookup failed: {e}")
+            rows = []
+        if rows:
+            pid = rows[0].get("id")
+            if isinstance(pid, int) and pid > 0:
+                return pid
+    asset_name = _library_asset_name_from_source_key(source_key)
+    if not asset_name:
+        return None
+    raw_stem = None
+    if source_real:
+        raw_stem = os.path.splitext(os.path.basename(source_real))[0]
+    name_variants = {
+        asset_name,
+        asset_name.replace("_", " "),
+        asset_name.replace(" ", "_"),
+    }
+    if raw_stem:
+        name_variants.add(raw_stem)
+        name_variants.add(raw_stem.replace(" ", "_"))
     for name in name_variants:
         if not name:
             continue
@@ -1097,6 +1147,8 @@ def handle_cr_save_crop(h, body: dict)-> None:
             print(f"[BG] registered_write queued (offline) for {filename}")
     except Exception as e:
         print(f"[BG] registered_write warning (non-fatal): {e}")
+
+    invalidate_cr_library_cache(ctx.library_event_dir.name)
 
     return h._send_json(200, {
         "key": key,

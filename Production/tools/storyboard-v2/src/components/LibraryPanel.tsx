@@ -516,7 +516,12 @@ export function LibraryPanel() {
 
   // mn:library-refresh — fired by CropperModal onSaved after a crop is saved.
   useEffect(() => {
-    const onLibRefresh = () => setRefreshTick((n) => n + 1);
+    const onLibRefresh = () => {
+      setRefreshTick((n) => n + 1);
+      // Crops land at the cropped tier (after sources) — scroll to top so the
+      // refetch is visible; upload already did this, crop save did not.
+      if (listRef.current) listRef.current.scrollTop = 0;
+    };
     window.addEventListener('mn:library-refresh', onLibRefresh);
     return () => window.removeEventListener('mn:library-refresh', onLibRefresh);
   }, []);

@@ -26,6 +26,7 @@ from lib.ffmpeg_io import (
 )
 from lib.event_media_cache import ensure_local_media
 
+import base64
 import concurrent.futures
 import contextlib
 import copy
