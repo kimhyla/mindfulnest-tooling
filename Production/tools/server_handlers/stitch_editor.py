@@ -3746,7 +3746,18 @@ def hydrate_stitch_pipeline_body(h, body: dict) -> dict:
 
     if not _body.get("slots") and job:
         _slots_dict = job.get("slots") or {}
-        if isinstance(_slots_dict, dict):
+        slot_key_req = (_body.get("slot") or "").strip()
+        if (
+            _body.get("slot_preview")
+            and slot_key_req
+            and isinstance(_slots_dict, dict)
+        ):
+            single = _slots_dict.get(slot_key_req)
+            if isinstance(single, dict) and (single.get("video_path") or "").strip():
+                _slots_list = [single]
+            else:
+                _slots_list = []
+        elif isinstance(_slots_dict, dict):
             _slots_list = [
                 _slots_dict[k]
                 for k in slot_order
@@ -3808,14 +3819,29 @@ def _coerce_stitch_pipeline_slots_to_list(body: dict) -> None:
 def _hydrated_preview_slot_dict(hydrated: dict, slot_key: str) -> dict | None:
     """Slot dict used for preview ffmpeg mix (list or dict payload)."""
     slots = hydrated.get("slots")
-    if isinstance(slots, list):
-        for item in slots:
-            if isinstance(item, dict):
-                return item
-        return None
     if isinstance(slots, dict):
         raw = slots.get(slot_key)
         return raw if isinstance(raw, dict) else None
+    if isinstance(slots, list):
+        if len(slots) == 1 and isinstance(slots[0], dict):
+            return slots[0]
+        if slot_key:
+            job_name = (hydrated.get("name") or "").strip()
+            order = (
+                STITCH_MILESTONE_SLOT_ORDER
+                if is_milestone_stitch_job_name(job_name)
+                else STITCH_SLOT_ORDER
+            )
+            if slot_key in order:
+                keyed = [
+                    item
+                    for item in slots
+                    if isinstance(item, dict)
+                    and (item.get("slot_key") or "").strip() == slot_key
+                ]
+                if len(keyed) == 1:
+                    return keyed[0]
+        return None
     return None
 
 
@@ -3850,8 +3876,6 @@ def _persist_stitch_preview_slot_geometry(
             "ambient_bed_path",
             "trim_in_ms",
             "trim_out_ms",
-            "video_path",
-            "video_dur_ms",
         ):
             if field not in hydrated_slot:
                 continue
@@ -3934,10 +3958,13 @@ def handle_stitch_preview(h, body: dict)-> None:
             wait_for_artifact_build,
         )
 
-        hydrated = hydrate_stitch_pipeline_body(h, body)
+        preview_body = dict(body or {})
+        slot_key = (preview_body.get("slot") or "").strip()
+        if slot_key:
+            preview_body["slot_preview"] = True
+        hydrated = hydrate_stitch_pipeline_body(h, preview_body)
         tag_stitch_pipeline_scope(hydrated)
         slot_durations, slot_start_offsets_ms = _preview_module_timing_from_hydrated(h, hydrated)
-        slot_key = (body.get("slot") or "").strip()
         if not slot_key and isinstance(hydrated.get("slots"), list) and hydrated["slots"]:
             slot_key = (
                 STITCH_MILESTONE_SLOT_ORDER[0]
