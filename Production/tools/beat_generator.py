@@ -6567,12 +6567,27 @@ def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
     vp = str(video_path or "").strip()
     if not vp:
         return None
+    resolved_vp = _resolve_o3_video_path_for_match(vp)
     for opt in beat.get("kling_o3_options") or []:
         if not isinstance(opt, dict):
             continue
-        if str(opt.get("video_path") or "").strip() == vp:
+        op = str(opt.get("video_path") or "").strip()
+        if not op:
+            continue
+        if op == vp or _resolve_o3_video_path_for_match(op) == resolved_vp:
             return opt
     return None
+
+
+def _resolve_o3_video_path_for_match(video_path: str) -> str:
+    """Canonical path for option lookup — Dropbox/FUSE may alias the same file."""
+    vp = str(video_path or "").strip()
+    if not vp:
+        return ""
+    try:
+        return str(Path(vp).resolve())
+    except OSError:
+        return vp
 
 
 def is_user_selectable_o3_video(
@@ -7722,17 +7737,31 @@ def bake_still_insert_trim_into_clip(
     materialize_kling_o3_trimmed_clip(beat, dest, source_path=src)
     new_path = str(dest.resolve())
     old_path = str(src.resolve())
+    beat_id = str(beat.get("beat_id") or "beat")
     beat["kling_o3_video_path"] = new_path
+    from o3_gallery_option_identity import gallery_option_key_for_path  # noqa: PLC0415
+
     for o in beat.get("kling_o3_options") or []:
         if not isinstance(o, dict):
             continue
         op = str(o.get("video_path") or "").strip()
-        if op in (old_path, prior_active) or o is opt:
+        if (
+            op in (old_path, prior_active)
+            or _resolve_o3_video_path_for_match(op) in (
+                _resolve_o3_video_path_for_match(old_path),
+                _resolve_o3_video_path_for_match(prior_active),
+            )
+            or o is opt
+        ):
             if not str(o.get("o3_untrimmed_video_path") or "").strip():
                 o["o3_untrimmed_video_path"] = old_path
             o["video_path"] = new_path
+            o["key"] = gallery_option_key_for_path(beat_id, new_path, o)
             clear_o3_option_trim_fields(o)
             clear_o3_cut_fields(o)
+    beat["kling_o3_selected_option_key"] = gallery_option_key_for_path(
+        beat_id, new_path, opt if isinstance(opt, dict) else None,
+    )
     clear_kling_o3_beat_trim(beat)
     clear_o3_cut_fields(beat)
     clear_o3_baked_fields(beat)
