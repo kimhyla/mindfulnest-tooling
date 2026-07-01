@@ -6860,6 +6860,37 @@ def mirror_beat_trim_from_option(beat: dict, opt: dict | None) -> None:
             beat.pop("kling_o3_trim_back", None)
 
 
+def mirror_option_trim_from_beat(beat: dict, opt: dict | None) -> None:
+    """Persist beat-level trim onto the active gallery option row (survives re-select)."""
+    if not isinstance(opt, dict):
+        return
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    op = str(opt.get("video_path") or "").strip()
+    if vp and op and _resolve_o3_video_path_for_match(vp) != _resolve_o3_video_path_for_match(op):
+        return
+    clear_o3_option_trim_fields(opt)
+    clear_o3_cut_fields(opt)
+    raw_dur = _ffprobe_duration(Path(vp)) if vp and os.path.isfile(vp) else 0.0
+    if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
+        opt["trim_start_s"] = round(float(beat.get("kling_o3_trim_start") or 0.0), 2)
+        back = beat.get("kling_o3_trim_back")
+        if back is not None and float(back) > 0.05:
+            opt["trim_back_s"] = round(float(back), 2)
+
+
+def hydrate_beat_baked_export_from_active_option(beat: dict) -> None:
+    """Copy active option baked export pointer onto beat before materialize."""
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    opt = find_o3_option_by_video_path(beat, vp) if vp else None
+    if not isinstance(opt, dict):
+        return
+    baked_path = str(opt.get("kling_o3_baked_path") or "").strip()
+    baked_token = str(opt.get("kling_o3_baked_token") or "").strip()
+    if baked_path and baked_token:
+        beat["kling_o3_baked_path"] = baked_path
+        beat["kling_o3_baked_token"] = baked_token
+
+
 def hydrate_beat_trim_from_active_option(beat: dict) -> None:
     vp = beat.get("kling_o3_video_path") or ""
     opt = find_o3_option_by_video_path(beat, vp)
@@ -6941,6 +6972,7 @@ def prepare_beats_for_stitch_export(beats: list[dict]) -> tuple[bool, list[str]]
         if migrate_o3_options_edge_cut_to_trim(beat):
             changed = True
         hydrate_beat_trim_from_active_option(beat)
+        hydrate_beat_baked_export_from_active_option(beat)
         if heal_invalid_kling_o3_trim(beat):
             changed = True
         vp = str(beat.get("kling_o3_video_path") or "").strip()
@@ -7856,9 +7888,18 @@ def _kling_o3_export_clip_path(
     beat_id = beat.get("beat_id") or "beat"
     gen = int(beat.get("kling_o3_generation") or 0)
 
+    opt = find_o3_option_by_video_path(beat, str(src))
+    expected_token = o3_baked_export_token(beat, video_path=src)
+    if isinstance(opt, dict):
+        opt_baked = opt.get("kling_o3_baked_path")
+        opt_token = opt.get("kling_o3_baked_token")
+        if opt_baked and opt_token == expected_token:
+            bp = Path(str(opt_baked))
+            if bp.is_file():
+                return bp.resolve()
+
     baked_path = beat.get("kling_o3_baked_path")
     baked_token = beat.get("kling_o3_baked_token")
-    expected_token = o3_baked_export_token(beat, video_path=src)
     if baked_path and baked_token == expected_token:
         bp = Path(str(baked_path))
         if bp.is_file():
@@ -12568,9 +12609,11 @@ def restore_active_kling_o3_after_failed_redo(beat: dict) -> bool:
     return True
 
 
-def _kling_o3_option_key(beat_id: str, video_path: str) -> str:
-    digest = hashlib.sha1(video_path.encode("utf-8")).hexdigest()[:10]
-    return f"{beat_id}_o3_video_{digest}"
+def _kling_o3_option_key(beat_id: str, video_path: str, *, source: str | None = None) -> str:
+    from o3_gallery_option_identity import gallery_option_key_for_path  # noqa: PLC0415
+
+    opt_hint = {"source": source} if source else {}
+    return gallery_option_key_for_path(beat_id, video_path, opt_hint)
 
 
 def normalize_kling_o3_option_slots(
@@ -12734,7 +12777,7 @@ def assign_kling_o3_option_to_slot(
     """Place a generated clip in container ``slot_index`` (0–2); returns option key."""
     slot_index = max(0, min(2, int(slot_index)))
     beat_id = str(beat.get("beat_id") or "beat")
-    key = _kling_o3_option_key(beat_id, video_path)
+    key = _kling_o3_option_key(beat_id, video_path, source=source)
     new_opt = {
         "key": key,
         "label": label,

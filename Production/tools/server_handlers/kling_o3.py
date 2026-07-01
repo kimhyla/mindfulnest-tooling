@@ -1191,6 +1191,25 @@ def _run_bg_export_to_stitcher_core(
             "video_path": video_rel,
         }
 
+    from bg_o3_stitch_invalidation import stamp_bg_o3_export_lineage_on_slot  # noqa: PLC0415
+
+    def _stamp_export_lineage(state: dict) -> None:
+        jobs = state.get("jobs") or {}
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            return
+        slots = job.get("slots")
+        if not isinstance(slots, dict):
+            return
+        slot = slots.get(slot_key)
+        if isinstance(slot, dict):
+            stamp_bg_o3_export_lineage_on_slot(slot, segment_beats=beats)
+
+    try:
+        h.app.stitch_state.mutate_state(_stamp_export_lineage)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bg_export] lineage stamp failed: {exc}", flush=True)
+
     from server_handlers.stitch_editor import (  # noqa: PLC0415
         STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1,
         _playback_artifact_bake_is_mandatory,

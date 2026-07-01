@@ -2839,6 +2839,7 @@ def ensure_stitch_slot_playback_artifacts(
                 mux_preview_duration_ms=dur_ms,
                 mux_video_path=video_path or None,
                 mux_video_mtime_ms=mux_video_mtime_ms,
+                persist_ambient_bed_path=(slot.get("ambient_bed_path") or "").strip() or None,
             )
             report.update({
                 "ok": True,

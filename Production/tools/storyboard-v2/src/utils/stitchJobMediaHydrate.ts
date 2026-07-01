@@ -395,6 +395,10 @@ export function resolveSlotPlaybackPreviewUrl(
   const persisted = resolvePersistedPlaybackFromArtifacts(slot);
   if (persisted) return persisted;
 
-  // STITCH_MUX_INTERIM_DRY_VIDEO_V1 — speech-only slot video stays loaded while mux bakes.
+  // STITCH_MUX_INTERIM_DRY_VIDEO_V1 — ambient-only slots may show dry video while mix bakes.
+  // SFX+ambient slots must not play dry export (missing bed/SFX → audible "restart" on swap).
+  if (requiresMux) {
+    return undefined;
+  }
   return resolveDrySlotSourceVideoUrl(slot.video_path);
 }

@@ -6915,6 +6915,10 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 error_message=f"beat {beat_id} not found",
                 retry_safe=False,
             )
+        before_beat_export = {
+            "kling_o3_video_path": beat.get("kling_o3_video_path"),
+            "kling_o3_selected_option_key": beat.get("kling_o3_selected_option_key"),
+        }
         work_beat = copy.deepcopy(beat)
         if use_cut:
             bg.refresh_o3_ui_slot_layout(work_beat)
@@ -7135,6 +7139,10 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 beat["kling_o3_trim_start"] = work_beat.get("kling_o3_trim_start")
                 beat["kling_o3_trim_back"] = work_beat.get("kling_o3_trim_back")
                 beat.pop("kling_o3_trim_end", None)
+                vp_trim = str(beat.get("kling_o3_video_path") or "").strip()
+                opt_trim = bg.find_o3_option_by_video_path(beat, vp_trim) if vp_trim else None
+                if isinstance(opt_trim, dict):
+                    bg.mirror_option_trim_from_beat(beat, opt_trim)
                 bg.prune_stale_kling_o3_trim_scratch(
                     beat_id,
                     Path(h.app.event_dir),
@@ -7179,6 +7187,19 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     error_message=f"beat {beat_id} not found",
                     retry_safe=False,
                 )
+            from bg_o3_stitch_invalidation import (  # noqa: PLC0415
+                invalidate_stitch_slot_for_bg_o3_selection_change,
+            )
+
+            for line in invalidate_stitch_slot_for_bg_o3_selection_change(
+                h,
+                beat_id=str(beat_id),
+                sidecar=sidecar,
+                before_beat=before_beat_export,
+                after_beat=beat_commit,
+                reason="bg_o3_trim_bake",
+            ):
+                print(f"[bg_o3_stitch_invalidate] {line}", flush=True)
     except TimeoutError as exc:
         return h._send_error_v59(
             503,
@@ -7331,12 +7352,12 @@ def _apply_still_draft_pointer(
     beat.pop("kling_o3_still_stitch_approved_at", None)
     bg.heal_invalid_o3_cut_all_options(beat)
     bg.hydrate_beat_cut_from_active_option(beat)
-    from o3_gallery_option_identity import canonical_o3_option_key, normalize_o3_gallery_options  # noqa: PLC0415
+    from o3_gallery_option_identity import gallery_option_key_for_path, normalize_o3_gallery_options  # noqa: PLC0415
 
     for o in options:
         vp = str(o.get("video_path") or "").strip()
         if vp:
-            o["key"] = canonical_o3_option_key(beat_id, vp)
+            o["key"] = gallery_option_key_for_path(beat_id, vp, o)
         o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
     beat["kling_o3_options"] = options
     for line in normalize_o3_gallery_options(beat):
@@ -7373,12 +7394,12 @@ def _apply_o3_video_selection(
     bg.hydrate_beat_cut_from_active_option(beat)
     bg.hydrate_beat_trim_from_active_option(beat)
     bg.invalidate_kling_o3_trim_scratch(beat_id, event_dir)
-    from o3_gallery_option_identity import canonical_o3_option_key, normalize_o3_gallery_options  # noqa: PLC0415
+    from o3_gallery_option_identity import gallery_option_key_for_path, normalize_o3_gallery_options  # noqa: PLC0415
 
     for o in options:
         vp = str(o.get("video_path") or "").strip()
         if vp:
-            o["key"] = canonical_o3_option_key(beat_id, vp)
+            o["key"] = gallery_option_key_for_path(beat_id, vp, o)
         o["active"] = (o.get("key") == option_key or o.get("video_path") == video_path)
     beat["kling_o3_options"] = options
     for line in normalize_o3_gallery_options(beat):
@@ -7542,6 +7563,10 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
 
         def _select(b: dict, sidecar: dict) -> None:
             nonlocal video_path, pipeline_mismatch, active_clip_pipeline
+            before_beat = {
+                "kling_o3_video_path": b.get("kling_o3_video_path"),
+                "kling_o3_selected_option_key": b.get("kling_o3_selected_option_key"),
+            }
             opt, options, vp = _resolve_o3_select_option(
                 b, str(beat_id), str(option_key),
             )
@@ -7575,6 +7600,19 @@ def handle_bg_select_o3_video(h, body: dict) -> None:
                     sidecar=sidecar,
                     event_dir=event_dir,
                 )
+            from bg_o3_stitch_invalidation import (  # noqa: PLC0415
+                invalidate_stitch_slot_for_bg_o3_selection_change,
+            )
+
+            for line in invalidate_stitch_slot_for_bg_o3_selection_change(
+                h,
+                beat_id=str(beat_id),
+                sidecar=sidecar,
+                before_beat=before_beat,
+                after_beat=b,
+                reason="bg_o3_select",
+            ):
+                print(f"[bg_o3_stitch_invalidate] {line}", flush=True)
             pipeline_mismatch = bool(b.get("kling_o3_selection_pipeline_mismatch"))
             active_clip_pipeline = b.get("kling_o3_active_clip_pipeline")
 
