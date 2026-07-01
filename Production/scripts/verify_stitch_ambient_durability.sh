@@ -19,9 +19,11 @@ fail() { echo "FATAL: $1" >&2; exit 1; }
 
 grep -q 'STITCH_DEFAULT_AMBIENT_BEDS' "$EDITOR" || fail "missing STITCH_DEFAULT_AMBIENT_BEDS in stitch_editor.py"
 grep -q 'STITCH_AMBIENT_BED_VOLUME = 0.15' "$EDITOR" || fail "missing STITCH_AMBIENT_BED_VOLUME constant"
-grep -q 'STITCH_AMBIENT_LOOP_XFADE_V1' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
-  || fail "missing stitch_ambient_loop.py"
-grep -q '2.500:0.500:0.750:no_hard_aloop_v1' "$CONST" \
+grep -q 'STITCH_AMBIENT_FULL_PERIOD_TILE_V2' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
+  || fail "missing STITCH_AMBIENT_FULL_PERIOD_TILE_V2"
+grep -q 'build_ambient_seamless_period_tile' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
+  || fail "missing build_ambient_seamless_period_tile"
+grep -q 'STITCH_AMBIENT_FULL_PERIOD_TILE_V2:STITCH_AMBIENT_BED_MIX_FADE_IN_V1' "$CONST" \
   || fail "STITCH_AMBIENT_LOOP_SIG_V1 must mirror server ambient_loop_sig_token()"
 grep -q 'previewUrlMatchesPersistedMux' "$ROOT/Production/tools/storyboard-v2/src/utils/stitchJobMediaHydrate.ts" \
   || fail "resolveSlotPlaybackPreviewUrl must reject stale mux hash URLs"
@@ -62,5 +64,6 @@ fi
 
 python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_ambient_hydrate.py" -q
 python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_ambient_loop.py" -q
+python3 -m pytest "$ROOT/Production/tools/tests/test_stitch_ambient_loop_seam_budget.py" -q
 
 echo "[stitch-ambient-durability] OK — source markers + pytest passed"

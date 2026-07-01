@@ -67,7 +67,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_slot_timeline_dur** — rail/SFX geometry duration | derived | `stitchSlotTimelineDurMs` / `export_clip_timeline_duration_s` | ffprobe on load_job; persist `video_dur_ms` | shipped | `TECH_SPEC_OPERATOR_EXPORT_TRUTH_CLOSURE_V1.md` |
 | **stitch_export_timeline_duration** — BG export concat duration | derived | `export_clip_timeline_duration_s` | `normalize_for_concat` | shipped | same |
 | **stitch_mux_preview_lineage** — post-export playback artifact | disk | `stitch_slot_needs_playback_artifact_bake` | `ensure_stitch_slot_playback_artifacts_on_export` | partial | same |
-| **stitch_ambient_loop_seam_budget** — ambient loop seams | derived | `build_ambient_bed_filter_lane` | `STITCH_AMBIENT_SINGLE_SEAM_V1` | shipped | same |
+| **stitch_ambient_loop_seam_budget** — ambient loop seams | derived | `build_ambient_bed_filter_lane` | `STITCH_AMBIENT_FULL_PERIOD_TILE_V2` | shipped | same |
 | **stitch_playback_url** — composer video when SFX exist | derived | `resolveSlotPlaybackPreviewUrl` | mux artifact bake | shipped | `TECH_SPEC_STITCH_SFX_PLAYBACK_TRUTH_V1.md` |
 | **stitch_single_owner** — who mutates slot video post-export | disk | `STITCH_SINGLE_OWNER_V1` load_job read-only | export path owns ingest | shipped | `TECH_SPEC_STITCH_SINGLE_OWNER_V1.md` |
 

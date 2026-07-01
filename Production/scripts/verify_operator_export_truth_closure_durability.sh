@@ -20,8 +20,8 @@ echo "[operator-export-truth-closure] pass 4/5 — FF-025 atomic export + FF-026
 TOOLS="$ROOT/Production/tools"
 grep -q 'STITCH_EXPORT_ATOMIC_V1' "$TOOLS/server_handlers/stitch_editor.py" \
   || fail "missing STITCH_EXPORT_ATOMIC_V1 in stitch_editor"
-grep -q 'STITCH_AMBIENT_SINGLE_SEAM_V1' "$TOOLS/server_handlers/stitch_ambient_loop.py" \
-  || fail "missing STITCH_AMBIENT_SINGLE_SEAM_V1"
+grep -q 'STITCH_AMBIENT_FULL_PERIOD_TILE_V2' "$TOOLS/server_handlers/stitch_ambient_loop.py" \
+  || fail "missing STITCH_AMBIENT_FULL_PERIOD_TILE_V2"
 
 echo "[operator-export-truth-closure] pass 5/5 — spec doc present"
 [[ -f "$ROOT/Production/docs/TECH_SPEC_OPERATOR_EXPORT_TRUTH_CLOSURE_V1.md" ]] \
