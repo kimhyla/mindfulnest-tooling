@@ -2015,16 +2015,42 @@ def stitch_upsert_event_slot(
         kept_ms = int(peek_slot.get("video_dur_ms") or 0) if isinstance(peek_slot, dict) else 0
         return job_name, kept_ms, [
             f"{slot_key}: kept existing export (incoming video not newer than stored)",
-        ]
+        ], {"skipped": "kept_existing"}
 
+    dry_video_rel = new_video_path
     probed_ms, export_warnings = stitch_slot_export_media_preflight(
         h,
-        new_video_path,
+        dry_video_rel,
         slot_key,
         beat_boundaries=beat_boundaries,
     )
     patched = dict(slot_patch)
     patched["video_dur_ms"] = probed_ms
+
+    # STITCH_FOUR_FILES_V1 — event slots: dry concat → single baked playback MP4.
+    if not is_milestone_stitch_job_name(job_name):
+        from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+            STITCH_FOUR_FILES_V1,
+            bake_and_persist_slot_playback_mp4,
+        )
+
+        def _migrate(state: dict) -> None:
+            stitch_migrate_legacy_to_canonical(state, event_id)
+
+        stitch_store.mutate_state(_migrate)
+        playback_rel, baked_ms, playback_artifacts = bake_and_persist_slot_playback_mp4(
+            h,
+            job_name,
+            slot_key,
+            dry_video_rel=dry_video_rel,
+            slot_patch={k: v for k, v in patched.items() if k != "video_dur_ms"},
+            beat_boundaries=beat_boundaries,
+            stitch_store=stitch_store,
+            peek_slot=peek_slot if isinstance(peek_slot, dict) else None,
+        )
+        export_warnings = list(export_warnings or [])
+        export_warnings.append(f"{slot_key}: playback baked ({STITCH_FOUR_FILES_V1})")
+        return job_name, baked_ms, export_warnings, playback_artifacts
 
     now_iso = datetime.now(timezone.utc).isoformat()
 

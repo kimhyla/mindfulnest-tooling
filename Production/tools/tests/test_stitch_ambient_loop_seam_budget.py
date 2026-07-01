@@ -13,7 +13,7 @@ sys.path.insert(0, str(TOOLS))
 sys.path.insert(0, str(TOOLS / "server_handlers"))
 
 from server_handlers.stitch_ambient_loop import (  # noqa: E402
-    STITCH_AMBIENT_FULL_PERIOD_TILE_V2,
+    STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3,
     build_ambient_bed_filter_lane,
     build_ambient_bed_filter_lane_for_file,
     build_ambient_seamless_period_tile,
@@ -120,21 +120,20 @@ def _dominant_loop_period_s(samples: list[float], sample_rate: int) -> float:
 
 
 class StitchAmbientLoopSeamBudgetTests(unittest.TestCase):
-    def test_full_period_tile_has_pre_and_wrap_not_glue_only(self):
+    def test_period_offset_tile_no_inner_concat(self):
         content_s = 27.35
-        xf = clamp_ambient_loop_crossfade_s(content_s)
-        body_end = content_s - xf
         lane = build_ambient_bed_filter_lane(
             1, 35.0, 49.0, 0.15,
             active_start_s=0.0,
             active_end_s=content_s,
         )
-        self.assertIn("[amb1pre]", lane)
-        self.assertIn("[amb1wrap]", lane)
-        self.assertIn("concat=n=2:v=0:a=1[amb1tile]", lane)
-        self.assertIn(f"atrim=0:{body_end:.3f}", lane)
+        self.assertIn("[amb1p1]", lane)
+        self.assertIn("[amb1p2]", lane)
+        self.assertIn("[amb1xfaded]", lane)
+        self.assertNotIn("concat=n=2:v=0:a=1[amb1tile]", lane)
+        self.assertIn(f"atrim=0:{content_s:.3f}", lane)
         self.assertNotIn(
-            "acrossfade=d=" + f"{xf:.3f}:c1=tri:c2=tri[amb1tile];"
+            "acrossfade=d=" + f"{clamp_ambient_loop_crossfade_s(content_s):.3f}:c1=tri:c2=tri[amb1tile];"
             "[amb1tile]aloop",
             lane,
         )
@@ -147,10 +146,12 @@ class StitchAmbientLoopSeamBudgetTests(unittest.TestCase):
         frag = build_ambient_seamless_period_tile(
             trimmed, prefix_label="amb0", content_s=8.0,
         )
-        self.assertIn("[amb0pre]", frag)
-        self.assertIn("[amb0wrap]", frag)
+        self.assertIn("[amb0p1]", frag)
+        self.assertIn("[amb0p2]", frag)
+        self.assertIn("[amb0xfaded]", frag)
         self.assertIn("acrossfade=d=", frag)
         self.assertIn("c1=tri:c2=tri", frag)
+        self.assertNotIn("[amb0pre]", frag)
 
     def test_rendered_loop_period_is_bed_not_crossfade(self):
         """49s slot, 8s sine bed — dominant autocorr peak must be ~8s, not ~2.5s."""
@@ -201,10 +202,11 @@ class StitchAmbientLoopSeamBudgetTests(unittest.TestCase):
         )
         xf = clamp_ambient_loop_crossfade_s(content_s)
         body_end = content_s - xf
-        self.assertIn("[amb0pre]", lane)
-        self.assertIn("[amb0wrap]", lane)
-        self.assertIn(f"atrim=0:{body_end:.3f}", lane)
-        self.assertIn("concat=n=2:v=0:a=1[amb0tile]", lane)
+        self.assertIn("[amb0p1]", lane)
+        self.assertIn("[amb0p2]", lane)
+        self.assertIn("[amb0xfaded]", lane)
+        self.assertIn(f"atrim=0:{content_s:.3f}", lane)
+        self.assertNotIn("concat=n=2:v=0:a=1[amb0tile]", lane)
 
     def test_broken_crossfade_only_regression_on_sine(self):
         """SINGLE_SEAM bug repeats ~2.5s; full-period tile repeats ~8s on sine bed."""

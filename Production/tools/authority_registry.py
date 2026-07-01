@@ -211,7 +211,7 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
     AuthorityConcept(
         id="stitch_ambient_loop_seam_budget",
         status="shipped",
-        marker="STITCH_AMBIENT_FULL_PERIOD_TILE_V2",
+        marker="STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3",
         question="How many audible loop seams per ambient bed period?",
         authority_shape="derived",
         server_module="server_handlers/stitch_ambient_loop.py",

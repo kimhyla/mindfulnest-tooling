@@ -11,8 +11,9 @@ import subprocess
 from pathlib import Path
 
 STITCH_AMBIENT_LOOP_XFADE_V1 = "STITCH_AMBIENT_LOOP_XFADE_V1"
-STITCH_AMBIENT_SINGLE_SEAM_V1 = "STITCH_AMBIENT_SINGLE_SEAM_V1"  # superseded — see FULL_PERIOD_TILE_V2
-STITCH_AMBIENT_FULL_PERIOD_TILE_V2 = "STITCH_AMBIENT_FULL_PERIOD_TILE_V2"
+STITCH_AMBIENT_SINGLE_SEAM_V1 = "STITCH_AMBIENT_SINGLE_SEAM_V1"  # superseded — glue-only tile (~2.5s loop)
+STITCH_AMBIENT_FULL_PERIOD_TILE_V2 = "STITCH_AMBIENT_FULL_PERIOD_TILE_V2"  # superseded — pre+wrap concat double seam
+STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3 = "STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3"
 STITCH_AMBIENT_LOOP_TRIM_V2 = "STITCH_AMBIENT_LOOP_TRIM_V2"
 STITCH_AMBIENT_LOOP_CROSSFADE_S = 2.5
 STITCH_AMBIENT_LOOP_MIN_BED_S = 1.0
@@ -148,25 +149,21 @@ def build_ambient_seamless_period_tile(
     content_s: float,
     crossfade_s: float | None = None,
 ) -> str:
-    """One full-period tile: main body + soft tail→head wrap crossfade (length ≈ content_s).
+    """One full-period tile (~content_s) with a single soft loop crossfade at the period tail.
 
-    The wrap uses triangular ``acrossfade`` over ``xf`` seconds — professional soft loop
-    at the period boundary only. ``aloop`` repeats this tile to fill the slot.
+    STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3 — offset duplicate + ``acrossfade`` (no pre|wrap
+    ``concat``). Avoids the V2 double-seam (~25s inner join + ~27s ``aloop`` bump).
     """
     xf = clamp_ambient_loop_crossfade_s(content_s, crossfade_s)
     if xf < STITCH_AMBIENT_LOOP_MIN_XFADE_S:
         xf = STITCH_AMBIENT_LOOP_MIN_XFADE_S
-    body_end = max(0.0, content_s - xf)
     p = prefix_label
     return (
-        f"{trimmed_prefix},asplit=2[{p}full_a][{p}full_b];"
-        f"[{p}full_a]asplit=2[{p}main][{p}tailsrc];"
-        f"[{p}tailsrc]atrim=start={body_end:.3f}:duration={xf:.3f},"
-        f"asetpts=PTS-STARTPTS[{p}tail];"
-        f"[{p}full_b]atrim=0:{xf:.3f},asetpts=PTS-STARTPTS[{p}head];"
-        f"[{p}tail][{p}head]acrossfade=d={xf:.3f}:c1=tri:c2=tri[{p}wrap];"
-        f"[{p}main]atrim=0:{body_end:.3f},asetpts=PTS-STARTPTS[{p}pre];"
-        f"[{p}pre][{p}wrap]concat=n=2:v=0:a=1[{p}tile]"
+        f"{trimmed_prefix},asplit=2[{p}a][{p}b];"
+        f"[{p}a]atrim=0:{content_s:.3f},asetpts=PTS-STARTPTS[{p}p1];"
+        f"[{p}b]atrim=0:{content_s:.3f},asetpts=PTS-STARTPTS[{p}p2];"
+        f"[{p}p1][{p}p2]acrossfade=d={xf:.3f}:c1=tri:c2=tri[{p}xfaded];"
+        f"[{p}xfaded]atrim=0:{content_s:.3f},asetpts=PTS-STARTPTS[{p}tile]"
     )
 
 
@@ -214,7 +211,7 @@ def build_ambient_bed_filter_lane(
         )
 
     p = f"amb{input_idx}"
-    # STITCH_AMBIENT_FULL_PERIOD_TILE_V2 — full bed period + soft wrap crossfade at tail only.
+    # STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3 — one soft crossfade at period tail, then aloop.
     period_tile = build_ambient_seamless_period_tile(
         trimmed, prefix_label=p, content_s=content_s, crossfade_s=crossfade_s,
     )
@@ -249,7 +246,7 @@ def ambient_loop_sig_token(crossfade_s: float | None = None) -> str:
     xf = STITCH_AMBIENT_LOOP_CROSSFADE_S if crossfade_s is None else float(crossfade_s)
     return (
         f"{STITCH_AMBIENT_LOOP_TRIM_V2}:{STITCH_AMBIENT_LOOP_XFADE_V1}:"
-        f"{STITCH_AMBIENT_FULL_PERIOD_TILE_V2}:"
+        f"{STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3}:"
         f"{STITCH_AMBIENT_BED_MIX_FADE_IN_V1}:{STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1}:"
         f"{xf:.3f}:{STITCH_AMBIENT_BED_MIX_FADE_IN_S:.3f}:"
         f"{STITCH_AMBIENT_BED_SLOT_FADE_OUT_S:.3f}:no_hard_aloop_v1"

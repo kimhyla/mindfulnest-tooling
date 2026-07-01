@@ -12873,6 +12873,30 @@ body {{padding-top:44px!important;}}
         for i, slot in enumerate(slots):
             vp = self._stitch_resolve_path(slot["video_path"])
 
+            from server_handlers.stitch_slot_playback import playback_recipe_is_four_files  # noqa: PLC0415
+
+            if playback_recipe_is_four_files(slot):
+                trim_in_ms = int(slot.get("trim_in_ms", 0) or 0)
+                trim_out_raw = slot.get("trim_out_ms", None)
+                trim_out_ms: int | None = (
+                    int(trim_out_raw)
+                    if trim_out_raw is not None and str(trim_out_raw) != ""
+                    else None
+                )
+                if trim_in_ms or trim_out_ms is not None:
+                    norm = self._stitch_normalize_slot(
+                        vp, cache_dir,
+                        trim_in_ms=trim_in_ms,
+                        trim_out_ms=trim_out_ms,
+                        preview_only=preview_only,
+                    )
+                else:
+                    norm = vp
+                slot_dur_ms = self._ffprobe_duration_ms(norm)
+                slot_durations.append(slot_dur_ms)
+                slot_finals.append(norm)
+                continue
+
             # Step 1: Normalize (LD-284) + S5.5g per-slot trim
             # (STITCHER_PER_SLOT_TRIMS_V1 per audit doc §5).
             trim_in_ms = int(slot.get("trim_in_ms", 0) or 0)

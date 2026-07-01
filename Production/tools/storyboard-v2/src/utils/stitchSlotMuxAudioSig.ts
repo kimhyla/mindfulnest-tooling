@@ -79,11 +79,20 @@ export function stitchSlotMuxAudioSig(
   return stitchSlotLiveGeometrySig(slot);
 }
 
+/** STITCH_FOUR_FILES_V1 — one baked video_path is playback + bake input. */
+export const STITCH_FOUR_FILES_V1 = 'STITCH_FOUR_FILES_V1';
+
+export function stitchSlotUsesFourFilesPlayback(
+  slot: { playback_recipe_version?: string } | null | undefined,
+): boolean {
+  return (slot?.playback_recipe_version ?? '').trim() === STITCH_FOUR_FILES_V1;
+}
+
 /** True when slot has SFX cues requiring mux preview (speech + ambient + SFX). */
 export function stitchSlotRequiresMuxedPreview(
   slot: StitchSlotMuxSigInput | null | undefined,
 ): boolean {
-  if (!slot) return false;
+  if (!slot || stitchSlotUsesFourFilesPlayback(slot)) return false;
   return (slot.sfx_cues ?? []).some((c) => Boolean(c && typeof c === 'object'));
 }
 
@@ -91,7 +100,7 @@ export function stitchSlotRequiresMuxedPreview(
 export function stitchSlotRequiresAmbientMix(
   slot: StitchSlotMuxSigInput | null | undefined,
 ): boolean {
-  if (!slot) return false;
+  if (!slot || stitchSlotUsesFourFilesPlayback(slot)) return false;
   const hasAmbient = Boolean((slot.ambient_bed_path || slot.ambient_bed || '').trim());
   return hasAmbient && !stitchSlotRequiresMuxedPreview(slot);
 }

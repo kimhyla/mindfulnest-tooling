@@ -187,6 +187,7 @@ def normalize_o3_gallery_options(beat: dict) -> list[str]:
             continue
         canonical_rows = [r for r in rows if option_key_matches_path(beat_id, r)]
         keep = canonical_rows[0] if canonical_rows else rows[0]
+        used_keys = {str(r.get("key") or "") for r in options if isinstance(r, dict)}
         for row in rows:
             if row is keep:
                 continue
@@ -194,13 +195,40 @@ def normalize_o3_gallery_options(beat: dict) -> list[str]:
             if not vp:
                 continue
             new_key = gallery_option_key_for_path(beat_id, vp, row)
-            if new_key == key:
-                new_key = f"{key}_dup{hashlib.sha1(vp.encode()).hexdigest()[:6]}"
+            if new_key == key or new_key in used_keys:
+                suffix = hashlib.sha1(vp.encode()).hexdigest()[:6]
+                new_key = f"{key}_dup{suffix}"
+                n = 2
+                while new_key in used_keys:
+                    new_key = f"{key}_dup{suffix}_{n}"
+                    n += 1
             logs.append(
                 f"{O3_GALLERY_KEY_COLLISION_HEAL}: duplicate key {key!r} — "
                 f"demoted {Path(vp).name} → {new_key!r}",
             )
             row["key"] = new_key
+            used_keys.add(new_key)
+
+    seen_paths: dict[str, dict] = {}
+    collapsed: list[dict] = []
+    for opt in options:
+        vp = str(opt.get("video_path") or "").strip()
+        if not vp:
+            collapsed.append(opt)
+            continue
+        try:
+            resolved = str(Path(vp).resolve())
+        except OSError:
+            resolved = vp
+        if resolved in seen_paths:
+            logs.append(
+                f"{O3_GALLERY_KEY_COLLISION_HEAL}: collapsed duplicate row "
+                f"for {Path(vp).name}",
+            )
+            continue
+        seen_paths[resolved] = opt
+        collapsed.append(opt)
+    options = collapsed
 
     beat["kling_o3_options"] = options
     _sync_selected_option_key_from_active_path(beat)
