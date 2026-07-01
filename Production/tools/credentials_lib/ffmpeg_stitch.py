@@ -1598,6 +1598,41 @@ def ffprobe_stream_duration_s(path: Path, stream: str) -> float:
         return 0.0
 
 
+STITCH_EXPORT_AV_MAX_DRIFT_S = 0.25
+STITCH_EXPORT_TIMELINE_AUTHORITY_V1 = "STITCH_EXPORT_TIMELINE_AUTHORITY_V1"
+STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S = 0.05
+
+
+def export_clip_timeline_duration_s(path: Path) -> float:
+    """Single authority for concat boundaries and stitch slot geometry."""
+    video_s = ffprobe_stream_duration_s(path, "v")
+    audio_s = ffprobe_stream_duration_s(path, "a")
+    if video_s > 0.0 and audio_s > 0.0:
+        return min(video_s, audio_s)
+    fmt = ffprobe_duration(path)
+    return fmt if fmt > 0.0 else max(video_s, audio_s)
+
+
+def assert_stitch_export_cumulative_av_aligned(
+    clip_paths: list[Path],
+    *,
+    max_join_drift_s: float = STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S,
+) -> None:
+    """Simulate concat cursor using video stream ends — catch cumulative lipsync drift."""
+    cursor_s = 0.0
+    for clip in clip_paths:
+        video_s = ffprobe_stream_duration_s(clip, "v")
+        timeline_s = export_clip_timeline_duration_s(clip)
+        if video_s > 0.0 and timeline_s > 0.0:
+            drift = abs(timeline_s - video_s)
+            if drift > max_join_drift_s:
+                raise ValueError(
+                    f"stitch export blocked — cumulative A/V drift at {clip.name}: "
+                    f"{drift:.3f}s > {max_join_drift_s:.3f}s",
+                )
+        cursor_s += timeline_s
+
+
 def av_duration_drift_s(path: Path) -> float:
     """Absolute video vs audio stream duration delta in seconds."""
     video_s = ffprobe_stream_duration_s(path, "v")

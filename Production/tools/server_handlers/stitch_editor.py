@@ -66,6 +66,7 @@ from tools.production_server import (  # noqa: E402
 # Canonical stitch job: one per event; slots accumulate across Send Out + exports.
 STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
 STITCH_MILESTONE_SLOT_ORDER = ["standalone"]
+STITCH_EXPORT_ATOMIC_V1 = "STITCH_EXPORT_ATOMIC_V1"
 # Canonical under-speech ambient level (all stitch slots — waveform, preview, bake).
 STITCH_AMBIENT_BED_VOLUME = 0.15
 STITCH_SFX_CUE_DEFAULT_VOLUME = 0.45
@@ -2067,26 +2068,29 @@ def stitch_upsert_event_slot(
 
     stitch_store.mutate_state(upsert)
 
-    def heal_slot_artifacts(state: dict) -> None:
-        job = (state.get("jobs") or {}).get(job_name)
-        if not isinstance(job, dict):
-            return
-        slots = job.get("slots")
-        if not isinstance(slots, dict):
-            return
-        slot = slots.get(slot_key)
-        if not isinstance(slot, dict):
-            return
-        from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
-            validate_stitch_slot_media_artifacts,
-        )
+    # STITCH_EXPORT_ATOMIC_V1 — operator export skips pre-bake validate that clears
+    # mux/ambient hashes before ensure_stitch_slot_playback_artifacts_on_export runs.
+    if not operator_export:
+        def heal_slot_artifacts(state: dict) -> None:
+            job = (state.get("jobs") or {}).get(job_name)
+            if not isinstance(job, dict):
+                return
+            slots = job.get("slots")
+            if not isinstance(slots, dict):
+                return
+            slot = slots.get(slot_key)
+            if not isinstance(slot, dict):
+                return
+            from server_handlers.stitch_media_artifacts import (  # noqa: PLC0415
+                validate_stitch_slot_media_artifacts,
+            )
 
-        try:
-            validate_stitch_slot_media_artifacts(h, slot)
-        except AttributeError:
-            pass
+            try:
+                validate_stitch_slot_media_artifacts(h, slot)
+            except AttributeError:
+                pass
 
-    stitch_store.mutate_state(heal_slot_artifacts)
+        stitch_store.mutate_state(heal_slot_artifacts)
     playback_artifacts = ensure_stitch_slot_playback_artifacts_on_export(
         h,
         job_name,
@@ -2835,6 +2839,7 @@ def ensure_stitch_slot_playback_artifacts(
                 mux_preview_duration_ms=dur_ms,
                 mux_video_path=video_path or None,
                 mux_video_mtime_ms=mux_video_mtime_ms,
+                persist_ambient_bed_path=(slot.get("ambient_bed_path") or "").strip() or None,
             )
             report.update({
                 "ok": True,

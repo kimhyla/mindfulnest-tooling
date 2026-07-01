@@ -123,6 +123,7 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | TR-009 | Kling export used **untrimmed** clip after trim set | Beat Gen | Send to Stitcher | `materialize_kling_o3_trimmed_clip` grep | shipped |
 | TR-010 | BG trim overlay **mid-drag poll clobber** | Beat Gen | Overlay drag | `useBgO3CutSession` | shipped |
 | TR-011 | Storyboard trim **mid-edit poll clobber** | Storyboard | Numeric trim | `useStoryboardTrimFields` | shipped |
+| TR-012 | Export shipped **untrimmed** when option trim ≠ beat authority | Beat Gen | Send to Stitcher | `prepare_beats_for_stitch_export` | shipped |
 
 ---
 
@@ -201,6 +202,7 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | ST-017 | Production Map **missing rows** | Global | G12 e2e | shipped |
 | ST-018 | Map cell click **wrong event** | Global | G13 e2e | shipped |
 | ST-019 | Bake final MP4 quality soft/blocky | Stitcher | VQ spec + bake pipeline | shipped |
+| ST-020 | Hard refresh **empty composer** on ambient/SFX slots | Stitcher | `STITCH_MUX_INTERIM_DRY_VIDEO_V1` | shipped |
 
 ---
 

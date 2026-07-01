@@ -4783,13 +4783,20 @@ def o3_option_visible_in_ui_slots(option: dict, generation_mode: str) -> bool:
 
 
 def find_active_o3_option(beat: dict) -> dict | None:
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        O3GalleryOptionAmbiguousError,
+        normalize_o3_gallery_options,
+        resolve_o3_gallery_option,
+    )
+
+    normalize_o3_gallery_options(beat)
     key = beat.get("kling_o3_selected_option_key")
+    if key:
+        try:
+            return resolve_o3_gallery_option(beat, str(key))
+        except O3GalleryOptionAmbiguousError:
+            pass
     path = beat.get("kling_o3_video_path")
-    for o in beat.get("kling_o3_options") or []:
-        if not isinstance(o, dict):
-            continue
-        if key and o.get("key") == key:
-            return o
     if path:
         for o in beat.get("kling_o3_options") or []:
             if isinstance(o, dict) and o.get("video_path") == path:
@@ -4919,7 +4926,9 @@ def promote_o3_video_path_active(
     if not match:
         return False
     beat_id = str(beat.get("beat_id") or "beat")
-    key = str(match.get("key") or _kling_o3_option_key(beat_id, path))
+    from o3_gallery_option_identity import canonical_o3_option_key  # noqa: PLC0415
+
+    key = canonical_o3_option_key(beat_id, path)
     now = datetime.now(timezone.utc).isoformat()
     beat["kling_o3_selected_option_key"] = key
     beat["kling_o3_selected_at"] = now
@@ -4948,7 +4957,9 @@ def auto_select_o3_option_for_generation_mode(beat: dict, sidecar: dict, generat
         return False
     beat_id = str(beat.get("beat_id") or "beat")
     video_path = str(best["video_path"])
-    key = str(best.get("key") or _kling_o3_option_key(beat_id, video_path))
+    from o3_gallery_option_identity import canonical_o3_option_key  # noqa: PLC0415
+
+    key = canonical_o3_option_key(beat_id, video_path)
     now = datetime.now(timezone.utc).isoformat()
     beat["kling_o3_video_path"] = video_path
     beat["kling_o3_selected_option_key"] = key
@@ -5777,11 +5788,17 @@ def resolve_still_insert_delivery_for_tts(
     speaker: str,
     spoken: str,
 ) -> list[str]:
-    """Pick ElevenLabs v3 delivery tags — canonical lock wins over bogus author prose."""
+    """Pick ElevenLabs v3 delivery tags from the prompt box only.
+
+    Canonical O3 delivery lock applies only when author prose is untrusted
+    (``she says``, ``whispers``, etc.) — never as a silent fallback when the
+    operator wrote a bare ``Name speaks: "line"`` prompt (prompt-box law).
+    """
     prose = _extract_still_insert_delivery_phrases(source, speaker=speaker, spoken=spoken)
     canonical = still_insert_canonical_delivery_phrases(speaker)
-    if canonical and _still_insert_prose_delivery_is_untrusted(prose):
-        return canonical
+    if prose and _still_insert_prose_delivery_is_untrusted(prose):
+        if canonical:
+            return canonical
     if prose:
         return prose
     return canonical
@@ -5790,8 +5807,11 @@ def resolve_still_insert_delivery_for_tts(
 def resolve_still_insert_elevenlabs_profile(speaker: str) -> dict | None:
     """Still+TTS ElevenLabs profile from ``character_subjects`` — not Directus Luna defaults.
 
-    Uses locked Miranda sample settings (speed 0.93 for Lorelai) so Still+TTS matches
-    Beat 18 proven O3 timbre instead of Directus ``Luna`` at speed 1.3.
+    When ``still_tts_elevenlabs_voice_id`` is set (IVC from the Kling create-voice sample),
+    Still+TTS uses that clone so timbre matches the O3 Element bind instead of the stock
+    roster preset (e.g. Bramble ``Northern Terry`` vs proven ``bramble_28.mp3`` clone).
+
+    Uses locked speed (0.93 for Lorelai) so Still+TTS matches Beat 18 proven O3 cadence.
     """
     try:
         from tools import kling_character_registry as reg
@@ -5806,13 +5826,15 @@ def resolve_still_insert_elevenlabs_profile(speaker: str) -> dict | None:
     entry = reg.get_character_entry(reg_key)
     if not entry:
         return None
-    voice_id = str(entry.get("elevenlabs_voice_id") or "").strip()
-    if not voice_id:
-        return None
     roster = getattr(elv, "ELEVENLABS_VOICE_ROSTER", {}) or {}
     roster_row = roster.get(reg_key) or {}
     if reg_key == "Lorelai" and not roster_row:
         roster_row = roster.get("Luna") or {}
+    still_bind_id = str(entry.get("still_tts_elevenlabs_voice_id") or "").strip()
+    roster_id = str(entry.get("elevenlabs_voice_id") or "").strip()
+    voice_id = still_bind_id or roster_id
+    if not voice_id:
+        return None
     lock = entry.get("voice_sample_lock") if isinstance(entry.get("voice_sample_lock"), dict) else {}
     speed = lock.get("locked_speed")
     if speed is None:
@@ -5826,8 +5848,11 @@ def resolve_still_insert_elevenlabs_profile(speaker: str) -> dict | None:
         "stability": float(roster_row.get("stability", 0.30)),
         "similarity_boost": float(roster_row.get("similarity_boost", 0.80)),
         "style": float(roster_row.get("style", 0.30)),
-        "source": "character_subjects",
+        "source": "still_tts_o3_bind_ivc" if still_bind_id else "character_subjects",
     }
+    if still_bind_id:
+        # IVC clone of Kling sample — favor timbre fidelity over expressiveness drift.
+        profile["similarity_boost"] = max(float(profile["similarity_boost"]), 0.85)
     if speed is not None:
         profile["speed"] = float(speed)
     return profile
@@ -6542,12 +6567,27 @@ def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
     vp = str(video_path or "").strip()
     if not vp:
         return None
+    resolved_vp = _resolve_o3_video_path_for_match(vp)
     for opt in beat.get("kling_o3_options") or []:
         if not isinstance(opt, dict):
             continue
-        if str(opt.get("video_path") or "").strip() == vp:
+        op = str(opt.get("video_path") or "").strip()
+        if not op:
+            continue
+        if op == vp or _resolve_o3_video_path_for_match(op) == resolved_vp:
             return opt
     return None
+
+
+def _resolve_o3_video_path_for_match(video_path: str) -> str:
+    """Canonical path for option lookup — Dropbox/FUSE may alias the same file."""
+    vp = str(video_path or "").strip()
+    if not vp:
+        return ""
+    try:
+        return str(Path(vp).resolve())
+    except OSError:
+        return vp
 
 
 def is_user_selectable_o3_video(
@@ -6820,6 +6860,37 @@ def mirror_beat_trim_from_option(beat: dict, opt: dict | None) -> None:
             beat.pop("kling_o3_trim_back", None)
 
 
+def mirror_option_trim_from_beat(beat: dict, opt: dict | None) -> None:
+    """Persist beat-level trim onto the active gallery option row (survives re-select)."""
+    if not isinstance(opt, dict):
+        return
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    op = str(opt.get("video_path") or "").strip()
+    if vp and op and _resolve_o3_video_path_for_match(vp) != _resolve_o3_video_path_for_match(op):
+        return
+    clear_o3_option_trim_fields(opt)
+    clear_o3_cut_fields(opt)
+    raw_dur = _ffprobe_duration(Path(vp)) if vp and os.path.isfile(vp) else 0.0
+    if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
+        opt["trim_start_s"] = round(float(beat.get("kling_o3_trim_start") or 0.0), 2)
+        back = beat.get("kling_o3_trim_back")
+        if back is not None and float(back) > 0.05:
+            opt["trim_back_s"] = round(float(back), 2)
+
+
+def hydrate_beat_baked_export_from_active_option(beat: dict) -> None:
+    """Copy active option baked export pointer onto beat before materialize."""
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    opt = find_o3_option_by_video_path(beat, vp) if vp else None
+    if not isinstance(opt, dict):
+        return
+    baked_path = str(opt.get("kling_o3_baked_path") or "").strip()
+    baked_token = str(opt.get("kling_o3_baked_token") or "").strip()
+    if baked_path and baked_token:
+        beat["kling_o3_baked_path"] = baked_path
+        beat["kling_o3_baked_token"] = baked_token
+
+
 def hydrate_beat_trim_from_active_option(beat: dict) -> None:
     vp = beat.get("kling_o3_video_path") or ""
     opt = find_o3_option_by_video_path(beat, vp)
@@ -6870,14 +6941,54 @@ def _event_id_from_event_dir(event_dir: str | Path) -> str:
     return name or "unknown"
 
 
-def migrate_segment_o3_trims_for_export(beats: list[dict]) -> bool:
-    """Convert edge cut-out rows to trim before Send to Stitcher materialize."""
+KLING_O3_EXPORT_TRIM_AUTHORITY_V1 = "KLING_O3_EXPORT_TRIM_AUTHORITY_V1"
+KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1 = "KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1"
+
+
+def assert_beat_export_trim_ready(beat: dict) -> str | None:
+    """Return error when trim intent exists but export would ship the full clip."""
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    if not vp or not os.path.isfile(vp):
+        return None
+    opt = find_o3_option_by_video_path(beat, vp)
+    wants_trim = option_has_o3_trim(opt) or still_insert_sidecar_trim_pending(beat)
+    if not wants_trim:
+        return None
+    raw_dur = _ffprobe_duration(Path(vp))
+    if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
+        return None
+    beat_id = str(beat.get("beat_id") or "beat")
+    return (
+        f"{beat_id}: trim metadata present but export would use full clip "
+        f"({KLING_O3_EXPORT_TRIM_AUTHORITY_V1})"
+    )
+
+
+def prepare_beats_for_stitch_export(beats: list[dict]) -> tuple[bool, list[str]]:
+    """Single export prep: migrate edge cuts, mirror option→beat trim, heal, validate."""
     changed = False
+    errors: list[str] = []
     for beat in beats:
         if migrate_o3_options_edge_cut_to_trim(beat):
             changed = True
+        hydrate_beat_trim_from_active_option(beat)
+        hydrate_beat_baked_export_from_active_option(beat)
         if heal_invalid_kling_o3_trim(beat):
             changed = True
+        vp = str(beat.get("kling_o3_video_path") or "").strip()
+        opt = find_o3_option_by_video_path(beat, vp) if vp else None
+        if isinstance(opt, dict) and option_has_o3_trim(opt):
+            mirror_beat_trim_from_option(beat, opt)
+            changed = True
+        err = assert_beat_export_trim_ready(beat)
+        if err:
+            errors.append(err)
+    return changed, errors
+
+
+def migrate_segment_o3_trims_for_export(beats: list[dict]) -> bool:
+    """Convert edge cut-out rows to trim before Send to Stitcher materialize."""
+    changed, _errors = prepare_beats_for_stitch_export(beats)
     return changed
 
 
@@ -7399,12 +7510,42 @@ def enrich_beat_magic_video_source_path(beat: dict, event_dir: str | Path) -> No
         beat["kling_o3_magic_video_source_path"] = vp
 
 
+def _trim_window_scratch_paths(
+    beat_id: str,
+    event_dir: str | Path,
+    beat: dict,
+    trim_start: float,
+    trim_back: float | None,
+) -> set[Path]:
+    """Preview/export scratch paths for one front/back trim window."""
+    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    gen = int(beat.get("kling_o3_generation") or 0)
+    token = kling_o3_trim_scratch_token({
+        "kling_o3_trim_start": trim_start,
+        "kling_o3_trim_back": trim_back,
+    })
+    return {
+        (scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4").resolve(),
+        (scratch / f"{beat_id}_g{gen}_{token}_export_trim.mp4").resolve(),
+    }
+
+
+def beat_or_option_has_o3_trim(beat: dict) -> bool:
+    """True when beat-level or any gallery option holds active front/back trim."""
+    if beat_has_kling_o3_sidecar_trim(beat):
+        return True
+    for opt in beat.get("kling_o3_options") or []:
+        if option_has_o3_trim(opt):
+            return True
+    return False
+
+
 def _kling_o3_trim_scratch_keep_paths(
     beat_id: str,
     event_dir: str | Path,
     beat: dict,
 ) -> set[Path]:
-    """Preview/export scratch paths that match the beat's current trim/cut window."""
+    """Preview/export scratch paths for beat-level trim and every trimmed gallery option."""
     scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
     keep: set[Path] = set()
     if beat_has_o3_sidecar_cut(beat):
@@ -7412,10 +7553,23 @@ def _kling_o3_trim_scratch_keep_paths(
         keep.add((scratch / f"{beat_id}_{token}_ui_preview.mp4").resolve())
         keep.add((scratch / f"{beat_id}_{token}_export_cut.mp4").resolve())
     if beat_has_kling_o3_sidecar_trim(beat) and not beat_has_o3_sidecar_cut(beat):
-        gen = int(beat.get("kling_o3_generation") or 0)
-        token = kling_o3_trim_scratch_token(beat)
-        keep.add((scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4").resolve())
-        keep.add((scratch / f"{beat_id}_g{gen}_{token}_export_trim.mp4").resolve())
+        keep |= _trim_window_scratch_paths(
+            beat_id,
+            event_dir,
+            beat,
+            float(beat.get("kling_o3_trim_start") or 0.0),
+            beat.get("kling_o3_trim_back"),
+        )
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict) or not option_has_o3_trim(opt) or option_has_o3_cut(opt):
+            continue
+        keep |= _trim_window_scratch_paths(
+            beat_id,
+            event_dir,
+            beat,
+            float(opt.get("trim_start_s") or 0.0),
+            opt.get("trim_back_s"),
+        )
     return keep
 
 
@@ -7433,7 +7587,7 @@ def prune_stale_kling_o3_trim_scratch(
         return 0
     keep = (
         _kling_o3_trim_scratch_keep_paths(bid, event_dir, beat)
-        if beat_has_kling_o3_sidecar_trim(beat)
+        if beat_or_option_has_o3_trim(beat)
         else set()
     )
     removed = 0
@@ -7528,6 +7682,10 @@ def heal_invalid_kling_o3_trim(beat: dict) -> bool:
     if effective >= 0.25 and trim_end > trim_start + 0.01:
         return False
     clear_kling_o3_beat_trim(beat)
+    vp = str(beat.get("kling_o3_video_path") or "").strip()
+    opt = find_o3_option_by_video_path(beat, vp) if vp else None
+    if isinstance(opt, dict):
+        clear_o3_option_trim_fields(opt)
     return True
 
 
@@ -7611,17 +7769,31 @@ def bake_still_insert_trim_into_clip(
     materialize_kling_o3_trimmed_clip(beat, dest, source_path=src)
     new_path = str(dest.resolve())
     old_path = str(src.resolve())
+    beat_id = str(beat.get("beat_id") or "beat")
     beat["kling_o3_video_path"] = new_path
+    from o3_gallery_option_identity import gallery_option_key_for_path  # noqa: PLC0415
+
     for o in beat.get("kling_o3_options") or []:
         if not isinstance(o, dict):
             continue
         op = str(o.get("video_path") or "").strip()
-        if op in (old_path, prior_active) or o is opt:
+        if (
+            op in (old_path, prior_active)
+            or _resolve_o3_video_path_for_match(op) in (
+                _resolve_o3_video_path_for_match(old_path),
+                _resolve_o3_video_path_for_match(prior_active),
+            )
+            or o is opt
+        ):
             if not str(o.get("o3_untrimmed_video_path") or "").strip():
                 o["o3_untrimmed_video_path"] = old_path
             o["video_path"] = new_path
+            o["key"] = gallery_option_key_for_path(beat_id, new_path, o)
             clear_o3_option_trim_fields(o)
             clear_o3_cut_fields(o)
+    beat["kling_o3_selected_option_key"] = gallery_option_key_for_path(
+        beat_id, new_path, opt if isinstance(opt, dict) else None,
+    )
     clear_kling_o3_beat_trim(beat)
     clear_o3_cut_fields(beat)
     clear_o3_baked_fields(beat)
@@ -7684,10 +7856,11 @@ def materialize_kling_o3_trimmed_clip(
     dest.parent.mkdir(parents=True, exist_ok=True)
     event_id = _event_id_from_event_dir(event_dir or src.parent.parent)
     local_src = ensure_local_media(src, event_id=event_id)
+    # KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1 — output-side seek keeps A/V aligned for lipsync.
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-ss", f"{trim_start:.3f}",
         "-i", str(local_src),
+        "-ss", f"{trim_start:.3f}",
         "-t", f"{duration:.3f}",
         "-c:v", "libx264", "-preset", "fast", "-crf", "18",
         "-c:a", "aac", "-b:a", "192k",
@@ -7715,9 +7888,18 @@ def _kling_o3_export_clip_path(
     beat_id = beat.get("beat_id") or "beat"
     gen = int(beat.get("kling_o3_generation") or 0)
 
+    opt = find_o3_option_by_video_path(beat, str(src))
+    expected_token = o3_baked_export_token(beat, video_path=src)
+    if isinstance(opt, dict):
+        opt_baked = opt.get("kling_o3_baked_path")
+        opt_token = opt.get("kling_o3_baked_token")
+        if opt_baked and opt_token == expected_token:
+            bp = Path(str(opt_baked))
+            if bp.is_file():
+                return bp.resolve()
+
     baked_path = beat.get("kling_o3_baked_path")
     baked_token = beat.get("kling_o3_baked_token")
-    expected_token = o3_baked_export_token(beat, video_path=src)
     if baked_path and baked_token == expected_token:
         bp = Path(str(baked_path))
         if bp.is_file():
@@ -12330,6 +12512,11 @@ def reconcile_o3_disk_deliveries_for_beat(beat: dict, event_dir: str | Path) -> 
     if changed:
         beat["kling_o3_options"] = options
         normalize_kling_o3_option_slots(beat)
+    from o3_gallery_option_identity import normalize_o3_gallery_options  # noqa: PLC0415
+
+    heal_logs = normalize_o3_gallery_options(beat)
+    if heal_logs:
+        changed = True
     if refresh_o3_ui_slot_layout(beat):
         changed = True
     if persist_o3_disk_enrich_on_beat(beat, event_dir, disk_paths=disk_paths):
@@ -12422,9 +12609,11 @@ def restore_active_kling_o3_after_failed_redo(beat: dict) -> bool:
     return True
 
 
-def _kling_o3_option_key(beat_id: str, video_path: str) -> str:
-    digest = hashlib.sha1(video_path.encode("utf-8")).hexdigest()[:10]
-    return f"{beat_id}_o3_video_{digest}"
+def _kling_o3_option_key(beat_id: str, video_path: str, *, source: str | None = None) -> str:
+    from o3_gallery_option_identity import gallery_option_key_for_path  # noqa: PLC0415
+
+    opt_hint = {"source": source} if source else {}
+    return gallery_option_key_for_path(beat_id, video_path, opt_hint)
 
 
 def normalize_kling_o3_option_slots(
@@ -12522,6 +12711,13 @@ def import_delivery_clip_to_beat(
         beat_is_still_insert(beat_probe)
         and resolved_source in O3_OPTION_SOURCE_STILL
     )
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        AUDIO_CONTRACT_VIDEO_ONLY,
+        probe_o3_clip_audio_contract,
+    )
+
+    if use_still_naming and probe_o3_clip_audio_contract(str(src)) != AUDIO_CONTRACT_VIDEO_ONLY:
+        use_still_naming = False
 
     if use_still_naming:
         ts = int(datetime.now(timezone.utc).timestamp())
@@ -12581,7 +12777,7 @@ def assign_kling_o3_option_to_slot(
     """Place a generated clip in container ``slot_index`` (0–2); returns option key."""
     slot_index = max(0, min(2, int(slot_index)))
     beat_id = str(beat.get("beat_id") or "beat")
-    key = _kling_o3_option_key(beat_id, video_path)
+    key = _kling_o3_option_key(beat_id, video_path, source=source)
     new_opt = {
         "key": key,
         "label": label,
@@ -12618,6 +12814,13 @@ def assign_kling_o3_option_to_slot(
     beat["kling_o3_options"] = options
     for opt in options:
         _sync_o3_option_gen_label(opt)
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        normalize_o3_gallery_options,
+        stamp_o3_option_audio_contract,
+    )
+
+    stamp_o3_option_audio_contract(new_opt, path=video_path)
+    normalize_o3_gallery_options(beat)
     return key
 
 
@@ -14172,7 +14375,7 @@ def _boundaries_for_pair_fade_concat(
     visual_out_ms = _load_intro_fade_out_video_tail_ms()
     visual_in_ms = _load_intro_fade_in_video_head_ms()
     for i, (beat, clip) in enumerate(zip(beats, clip_paths)):
-        dur_ms = int(round(_ffprobe_duration(clip) * 1000))
+        dur_ms = int(round(fs.export_clip_timeline_duration_s(clip) * 1000))
         out.append({
             "beat_id": beat["beat_id"],
             "start_ms": cursor_ms,
@@ -14246,13 +14449,18 @@ def resolve_segment_stitch_export_clip_paths(
             )
             from server_handlers.speech_loudnorm import apply_speech_loudnorm_export_beat_clip  # noqa: PLC0415
 
-            clip_paths.append(
-                apply_speech_loudnorm_export_beat_clip(
-                    raw_clip,
-                    beat_id=str(beat.get("beat_id") or f"beat_{i}"),
-                    scratch_dir=scratch_dir,
-                ),
+            loudnorm_clip = apply_speech_loudnorm_export_beat_clip(
+                raw_clip,
+                beat_id=str(beat.get("beat_id") or f"beat_{i}"),
+                scratch_dir=scratch_dir,
             )
+            from o3_gallery_option_identity import assert_beat_export_audio_contract  # noqa: PLC0415
+
+            assert_beat_export_audio_contract(beat, loudnorm_clip)
+            fs = _ffmpeg_stitch_module()
+            norm_out = scratch_dir / f"{beat.get('beat_id') or i}_norm_concat.mp4"
+            fs.normalize_for_concat(loudnorm_clip, norm_out)
+            clip_paths.append(norm_out)
     return clip_paths, scratch_dir
 
 
@@ -14281,7 +14489,9 @@ def concat_kling_o3_approved_beats(
 
     if not beats:
         raise ValueError("no beats to export")
-    migrate_segment_o3_trims_for_export(beats)
+    _trim_changed, trim_errors = prepare_beats_for_stitch_export(beats)
+    if trim_errors:
+        raise ValueError("; ".join(trim_errors))
     out_dir = Path(event_dir) / "assembled"
     out_dir.mkdir(parents=True, exist_ok=True)
     clip_paths, scratch_dir = resolve_segment_stitch_export_clip_paths(
@@ -14294,6 +14504,7 @@ def concat_kling_o3_approved_beats(
     )
     fs = _ffmpeg_stitch_module()
     fs.assert_stitch_export_clips_av_aligned(clip_paths)
+    fs.assert_stitch_export_cumulative_av_aligned(clip_paths)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_path = out_dir / f"{slot_key}_kling_o3_{ts}.mp4"
     pair_fades: list[int] = []

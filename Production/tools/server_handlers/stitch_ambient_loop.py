@@ -11,6 +11,7 @@ import subprocess
 from pathlib import Path
 
 STITCH_AMBIENT_LOOP_XFADE_V1 = "STITCH_AMBIENT_LOOP_XFADE_V1"
+STITCH_AMBIENT_SINGLE_SEAM_V1 = "STITCH_AMBIENT_SINGLE_SEAM_V1"
 STITCH_AMBIENT_LOOP_TRIM_V2 = "STITCH_AMBIENT_LOOP_TRIM_V2"
 STITCH_AMBIENT_LOOP_CROSSFADE_S = 2.5
 STITCH_AMBIENT_LOOP_MIN_BED_S = 1.0
@@ -177,18 +178,15 @@ def build_ambient_bed_filter_lane(
     xf = clamp_ambient_loop_crossfade_s(content_s, crossfade_s)
     if xf < STITCH_AMBIENT_LOOP_MIN_XFADE_S:
         xf = STITCH_AMBIENT_LOOP_MIN_XFADE_S
-    body_end = content_s - xf
     p = f"amb{input_idx}"
 
+    # STITCH_AMBIENT_SINGLE_SEAM_V1 — one wrap crossfade per bed period (no body/glue split).
     lane_body = (
-        f"{trimmed},asplit=2[{p}full_a][{p}full_b];"
-        f"[{p}full_a]asplit=2[{p}main][{p}tailsrc];"
-        f"[{p}tailsrc]atrim=start={body_end:.3f}:duration={xf:.3f},"
-        f"asetpts=PTS-STARTPTS[{p}tail];"
-        f"[{p}full_b]atrim=0:{xf:.3f},asetpts=PTS-STARTPTS[{p}head];"
-        f"[{p}tail][{p}head]acrossfade=d={xf:.3f}:c1=tri:c2=tri[{p}glue];"
-        f"[{p}main]atrim=0:{body_end:.3f},asetpts=PTS-STARTPTS[{p}body];"
-        f"[{p}body][{p}glue]concat=n=2:v=0:a=1[{p}tile];"
+        f"{trimmed},asplit=2[{p}tail_src][{p}head_src];"
+        f"[{p}tail_src]atrim=start={max(0.0, content_s - xf):.3f}:"
+        f"duration={xf:.3f},asetpts=PTS-STARTPTS[{p}tail];"
+        f"[{p}head_src]atrim=0:{xf:.3f},asetpts=PTS-STARTPTS[{p}head];"
+        f"[{p}tail][{p}head]acrossfade=d={xf:.3f}:c1=tri:c2=tri[{p}tile];"
         f"[{p}tile]aloop=loop=-1:size=2147483647,atrim=duration={slot_s:.3f}"
     )
     return _ambient_bed_lane_out(lane_body, vol, out_label, slot_s)
@@ -221,6 +219,7 @@ def ambient_loop_sig_token(crossfade_s: float | None = None) -> str:
     xf = STITCH_AMBIENT_LOOP_CROSSFADE_S if crossfade_s is None else float(crossfade_s)
     return (
         f"{STITCH_AMBIENT_LOOP_TRIM_V2}:{STITCH_AMBIENT_LOOP_XFADE_V1}:"
+        f"{STITCH_AMBIENT_SINGLE_SEAM_V1}:"
         f"{STITCH_AMBIENT_BED_MIX_FADE_IN_V1}:{STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1}:"
         f"{xf:.3f}:{STITCH_AMBIENT_BED_MIX_FADE_IN_S:.3f}:"
         f"{STITCH_AMBIENT_BED_SLOT_FADE_OUT_S:.3f}:no_hard_aloop_v1"

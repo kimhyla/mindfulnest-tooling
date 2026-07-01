@@ -91,7 +91,12 @@ def finalize_kling_delivery_clip(
     """Single write path when a delivery clip becomes the active beat pointer."""
     from beat_generator import beat_is_still_insert  # noqa: PLC0415
 
-    beat["kling_o3_video_path"] = str(Path(video_path).resolve())
+    vp = str(Path(video_path).resolve())
+    beat["kling_o3_video_path"] = vp
+    beat_id = str(beat.get("beat_id") or "beat")
+    from o3_gallery_option_identity import canonical_o3_option_key  # noqa: PLC0415
+
+    beat["kling_o3_selected_option_key"] = canonical_o3_option_key(beat_id, vp)
     still = beat_is_still_insert(beat) if still_insert is None else still_insert
     if still:
         beat["kling_o3_status"] = "still_rendered"

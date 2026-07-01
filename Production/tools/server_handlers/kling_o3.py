@@ -965,11 +965,44 @@ def _prepare_bg_export_request(h, body: dict) -> dict | None:
         except Exception as exc:  # noqa: BLE001
             print(f"[BG] export-to-stitcher trim seed persist failed: {exc}", flush=True)
 
-    if bg.migrate_segment_o3_trims_for_export(beats):
+    trim_changed, trim_errors = bg.prepare_beats_for_stitch_export(beats)
+    if trim_errors:
+        h._send_error_v59(
+            400,
+            error_code="EXPORT_TRIM_AUTHORITY",
+            error_message="; ".join(trim_errors),
+            retry_safe=False,
+            extra={"beat_ids": [e.split(":")[0] for e in trim_errors], "code": bg.KLING_O3_EXPORT_TRIM_AUTHORITY_V1},
+        )
+        return None
+    if trim_changed:
         try:
             bg.write_sidecar(sidecar)
         except Exception as exc:  # noqa: BLE001
             print(f"[BG] export-to-stitcher trim migrate persist failed: {exc}", flush=True)
+
+    from o3_gallery_option_identity import (  # noqa: PLC0415
+        O3GalleryExportAuthorityError,
+        normalize_o3_gallery_options,
+        assert_beat_export_gallery_authority,
+    )
+
+    gallery_errors: list[str] = []
+    for beat in beats:
+        normalize_o3_gallery_options(beat)
+        try:
+            assert_beat_export_gallery_authority(beat)
+        except O3GalleryExportAuthorityError as exc:
+            gallery_errors.append(str(exc))
+    if gallery_errors:
+        h._send_error_v59(
+            400,
+            error_code="EXPORT_GALLERY_AUTHORITY",
+            error_message="; ".join(gallery_errors),
+            retry_safe=False,
+            extra={"code": "O3_GALLERY_OPTION_IDENTITY_V1"},
+        )
+        return None
 
     scope_key = _bg_export_scope_key(arc_number, event_id, phase, str(slot_key))
     milestone_id = pctx.milestone_id if pctx and pctx.is_milestone else None
@@ -1157,6 +1190,25 @@ def _run_bg_export_to_stitcher_core(
             "warnings": export_warnings,
             "video_path": video_rel,
         }
+
+    from bg_o3_stitch_invalidation import stamp_bg_o3_export_lineage_on_slot  # noqa: PLC0415
+
+    def _stamp_export_lineage(state: dict) -> None:
+        jobs = state.get("jobs") or {}
+        job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            return
+        slots = job.get("slots")
+        if not isinstance(slots, dict):
+            return
+        slot = slots.get(slot_key)
+        if isinstance(slot, dict):
+            stamp_bg_o3_export_lineage_on_slot(slot, segment_beats=beats)
+
+    try:
+        h.app.stitch_state.mutate_state(_stamp_export_lineage)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[bg_export] lineage stamp failed: {exc}", flush=True)
 
     from server_handlers.stitch_editor import (  # noqa: PLC0415
         STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1,
