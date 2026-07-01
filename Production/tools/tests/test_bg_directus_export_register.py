@@ -52,6 +52,7 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
         lambda: type("FS", (), {
             "assert_stitch_export_clips_av_aligned": staticmethod(lambda _c: None),
             "assert_stitch_export_cumulative_av_aligned": staticmethod(lambda _c: None),
+            "assert_stitch_export_assembled_av_drift": staticmethod(lambda _p: None),
             "export_clip_timeline_duration_s": staticmethod(lambda _p: 2.0),
             "normalize_for_concat": staticmethod(_norm),
         })(),
