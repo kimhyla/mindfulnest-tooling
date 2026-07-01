@@ -57,6 +57,32 @@ def test_canonical_key_matches_path() -> None:
     assert key == f"{beat_id}_o3_video_{__import__('hashlib').sha1(path.encode()).hexdigest()[:10]}"
 
 
+def test_still_insert_key_preserved_through_normalize(tmp_path: Path) -> None:
+    """Still-insert stable keys must survive normalize — export uses selected pointer."""
+    clip = tmp_path / "bg_arc1_event4_post_beat_01_still_insert_1782856229_tts.mp4"
+    _make_silent_mp4(clip)
+    beat_id = "bg_arc1_event4_post_beat_01"
+    stable_key = "bg_arc1_event4_post_beat_01_still_insert_1782856229"
+    beat = {
+        "beat_id": beat_id,
+        "kling_o3_video_path": str(clip),
+        "kling_o3_selected_option_key": stable_key,
+        "kling_o3_options": [
+            {
+                "key": stable_key,
+                "video_path": str(clip),
+                "label": "still insert clip",
+                "source": "still_insert_ken_burns",
+            },
+        ],
+    }
+    logs = normalize_o3_gallery_options(beat)
+    assert not any("still_insert" in line and "re-key" in line for line in logs)
+    assert beat["kling_o3_options"][0]["key"] == stable_key
+    assert resolve_o3_gallery_option(beat, stable_key)
+    assert_beat_export_gallery_authority(beat)
+
+
 def test_normalize_heals_key_path_mismatch(tmp_path: Path) -> None:
     silent = tmp_path / "still_insert_7536_kling_idle_tts.mp4"
     audible = tmp_path / "g1_delivery_trimmed.mp4"

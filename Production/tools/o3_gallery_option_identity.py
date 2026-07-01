@@ -37,11 +37,37 @@ def canonical_o3_option_key(beat_id: str, video_path: str) -> str:
     return f"{beat_id}_o3_video_{digest}"
 
 
+def is_still_insert_gallery_option(beat_id: str, option: dict, *, video_path: str | None = None) -> bool:
+    """Still-insert rows use stable stem keys — not sha1 canonical keys."""
+    vp = str(video_path or option.get("video_path") or "").strip()
+    key = str(option.get("key") or "")
+    source = str(option.get("source") or "").lower()
+    if source.startswith("still_insert") or "_still_insert_" in vp.lower():
+        return True
+    return bool(beat_id and key.startswith(beat_id) and "_still_insert_" in key)
+
+
+def still_insert_gallery_option_key(beat_id: str, video_path: str) -> str:
+    """Stable gallery key for still-insert clips (matches Approve still + select-o3)."""
+    stem = Path(str(video_path).strip()).stem
+    if stem.endswith("_tts"):
+        return stem[:-4]
+    return stem
+
+
+def gallery_option_key_for_path(beat_id: str, video_path: str, option: dict | None = None) -> str:
+    opt = option or {}
+    if is_still_insert_gallery_option(beat_id, opt, video_path=video_path):
+        return still_insert_gallery_option_key(beat_id, video_path)
+    return canonical_o3_option_key(beat_id, video_path)
+
+
 def option_key_matches_path(beat_id: str, option: dict) -> bool:
     vp = str(option.get("video_path") or "").strip()
     if not vp:
         return False
-    return str(option.get("key") or "") == canonical_o3_option_key(beat_id, vp)
+    expected = gallery_option_key_for_path(beat_id, vp, option)
+    return str(option.get("key") or "") == expected
 
 
 def stamp_o3_option_audio_contract(opt_row: dict, *, path: str | None = None) -> str:
@@ -144,7 +170,7 @@ def normalize_o3_gallery_options(beat: dict) -> list[str]:
     for opt in options:
         vp = str(opt.get("video_path") or "").strip()
         if vp and Path(vp).is_file():
-            canon = canonical_o3_option_key(beat_id, vp)
+            canon = gallery_option_key_for_path(beat_id, vp, opt)
             if opt.get("key") != canon:
                 logs.append(
                     f"{O3_GALLERY_KEY_COLLISION_HEAL}: re-key {opt.get('key')!r} → {canon!r} "
@@ -167,7 +193,7 @@ def normalize_o3_gallery_options(beat: dict) -> list[str]:
             vp = str(row.get("video_path") or "").strip()
             if not vp:
                 continue
-            new_key = canonical_o3_option_key(beat_id, vp)
+            new_key = gallery_option_key_for_path(beat_id, vp, row)
             if new_key == key:
                 new_key = f"{key}_dup{hashlib.sha1(vp.encode()).hexdigest()[:6]}"
             logs.append(
@@ -177,7 +203,32 @@ def normalize_o3_gallery_options(beat: dict) -> list[str]:
             row["key"] = new_key
 
     beat["kling_o3_options"] = options
+    _sync_selected_option_key_from_active_path(beat)
     return logs
+
+
+def _sync_selected_option_key_from_active_path(beat: dict) -> None:
+    """After normalize, align selected key with the row that owns kling_o3_video_path."""
+    beat_id = str(beat.get("beat_id") or "").strip()
+    active_vp = str(beat.get("kling_o3_video_path") or "").strip()
+    if not beat_id or not active_vp:
+        return
+    selected = str(beat.get("kling_o3_selected_option_key") or "").strip()
+    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+    if selected:
+        try:
+            resolve_o3_gallery_option(beat, selected)
+            return
+        except O3GalleryOptionAmbiguousError:
+            pass
+    for opt in options:
+        vp = str(opt.get("video_path") or "").strip()
+        if vp != active_vp:
+            continue
+        key = str(opt.get("key") or "").strip()
+        if key:
+            beat["kling_o3_selected_option_key"] = key
+            return
 
 
 def _duplicate_keys_after_normalize(beat: dict) -> list[str]:
