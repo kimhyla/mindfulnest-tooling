@@ -37,6 +37,10 @@ import {
   stitchAudioPanelTabs,
   type LibraryPanelTab,
 } from '../utils/libraryPanelContract';
+import {
+  prependCropLibraryItem,
+  type LibraryCropSavedDetail,
+} from '../utils/libraryCropSave';
 
 // ----------------------------------------------------------------
 // Types
@@ -515,16 +519,32 @@ export function LibraryPanel() {
   };
 
   // mn:library-refresh — fired by CropperModal onSaved after a crop is saved.
+  // mn:library-crop-saved — optimistic insert before refetch (CROP_SAVE_LIBRARY_VISIBILITY_V1).
   useEffect(() => {
     const onLibRefresh = () => {
       setRefreshTick((n) => n + 1);
-      // Crops land at the cropped tier (after sources) — scroll to top so the
-      // refetch is visible; upload already did this, crop save did not.
+      if (listRef.current) listRef.current.scrollTop = 0;
+    };
+    const onCropSaved = (ev: Event) => {
+      const detail = (ev as CustomEvent<LibraryCropSavedDetail>).detail;
+      if (!detail?.item?.key) return;
+      setItems((prev) => {
+        const cropRow = detail.item as LibItem;
+        const merged = prependCropLibraryItem(prev, cropRow, detail.parent_library_key);
+        persistLibraryItems(eventId, merged);
+        return merged;
+      });
+      setError(null);
+      setLoading(false);
       if (listRef.current) listRef.current.scrollTop = 0;
     };
     window.addEventListener('mn:library-refresh', onLibRefresh);
-    return () => window.removeEventListener('mn:library-refresh', onLibRefresh);
-  }, []);
+    window.addEventListener('mn:library-crop-saved', onCropSaved);
+    return () => {
+      window.removeEventListener('mn:library-refresh', onLibRefresh);
+      window.removeEventListener('mn:library-crop-saved', onCropSaved);
+    };
+  }, [eventId]);
 
   // BUG-A real UX fix (Kim 2026-05-20): track which library tiles are
   // CURRENTLY assigned to any beat in the active video scope, so Kim can
