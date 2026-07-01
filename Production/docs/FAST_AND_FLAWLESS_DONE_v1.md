@@ -27,6 +27,15 @@ Extends V2 with Phase G (RC11–RC14). No carve-outs.
 | FF-016 | Catalog invariants (RC13) | `verify_event_catalog_invariants_durability.sh` |
 | FF-017 | Warm-path deploy (RC14) | `verify_deploy_warm_path_durability.sh` + g4-pre marker |
 | FF-018 | Live fleet drag proof (RC11) | `verify_live_fleet_interaction.sh` + DROP-WC-LIVE-1 |
+| FF-019 | Beat Gen export trim authority (TR-012) | `verify_stitch_export_trim_authority_durability.sh` |
+| FF-020 | Hard refresh interim dry video (ST-020) | `STITCH_MUX_INTERIM_DRY_VIDEO_V1` in stitchJobMediaHydrate + vitest |
+| FF-021 | Post-audit export golden path | `test_stitch_export_trim_authority_v1.py` + concat trim gate |
+| FF-022 | O3 gallery option identity | `verify_o3_gallery_option_identity_durability.sh` |
+| FF-023 | O3 clip audio contract on export | `test_o3_gallery_option_identity.py` + export gate |
+| FF-024 | Stitch export timeline single authority | `verify_stitch_export_timeline_authority_durability.sh` |
+| FF-025 | Atomic stitch export artifact persist | `STITCH_EXPORT_ATOMIC_V1` in stitch_editor |
+| FF-026 | Ambient loop full-period tile | `STITCH_AMBIENT_FULL_PERIOD_TILE_V2` in stitch_ambient_loop |
+| FF-027 | Operator export truth closure meta | `verify_operator_export_truth_closure_durability.sh` |
 
 ## Non-blocking (explicit)
 

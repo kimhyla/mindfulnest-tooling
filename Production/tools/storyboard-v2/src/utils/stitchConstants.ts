@@ -26,7 +26,7 @@ export const STITCH_AMBIENT_SELECT_HYDRATE_V1 = 'STITCH_AMBIENT_SELECT_HYDRATE_V
 
 /** Mirrors server ambient_loop_sig_token() — busts client session cache when loop bake changes. */
 export const STITCH_AMBIENT_LOOP_SIG_V1 =
-  'STITCH_AMBIENT_LOOP_TRIM_V2:STITCH_AMBIENT_LOOP_XFADE_V1:STITCH_AMBIENT_BED_MIX_FADE_IN_V1:STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1:2.500:0.500:0.750:no_hard_aloop_v1' as const;
+  'STITCH_AMBIENT_LOOP_TRIM_V2:STITCH_AMBIENT_LOOP_XFADE_V1:STITCH_AMBIENT_FULL_PERIOD_TILE_V2:STITCH_AMBIENT_BED_MIX_FADE_IN_V1:STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1:2.500:0.500:0.750:no_hard_aloop_v1' as const;
 
 export type StitchSlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution' | 'standalone';
 

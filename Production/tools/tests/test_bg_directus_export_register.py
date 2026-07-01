@@ -42,11 +42,19 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
 
     monkeypatch.setattr(bg, "_ffprobe_duration", _fake_duration)
     monkeypatch.setattr(bg, "_ffprobe_ok", lambda _p: True)
+    def _norm(src, dst):
+        import shutil
+        shutil.copy2(src, dst)
+
     monkeypatch.setattr(
         bg,
         "_ffmpeg_stitch_module",
         lambda: type("FS", (), {
             "assert_stitch_export_clips_av_aligned": staticmethod(lambda _c: None),
+            "assert_stitch_export_cumulative_av_aligned": staticmethod(lambda _c: None),
+            "assert_stitch_export_assembled_av_drift": staticmethod(lambda _p: None),
+            "export_clip_timeline_duration_s": staticmethod(lambda _p: 2.0),
+            "normalize_for_concat": staticmethod(_norm),
         })(),
     )
     monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_reencode", lambda c, d: d.write_bytes(b"x"))
@@ -74,8 +82,9 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
         beats, event_dir, phase="pre", event_id="2",
     )
     assert len(resolved) == 2
-    assert resolved[0].resolve() == clip_a.resolve()
-    assert resolved[1].resolve() == clip_b.resolve()
+    assert all(p.is_file() for p in resolved)
+    assert resolved[0].name.endswith("_norm_concat.mp4")
+    assert resolved[1].name.endswith("_norm_concat.mp4")
 
     out_path, _, _ = bg.concat_kling_o3_approved_beats(
         beats, event_dir, "intro", phase="pre", event_id="2",

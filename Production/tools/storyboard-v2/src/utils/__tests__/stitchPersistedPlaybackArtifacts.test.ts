@@ -25,7 +25,7 @@ describe('resolvePersistedPlaybackFromArtifacts', () => {
     assert.match(url ?? '', /\/files\?path=Production%2FEvent_2%2Fassembled%2Fintro_kling_o3_test\.mp4/);
   });
 
-  it('STITCH_SFX_PLAYBACK_TRUTH_V1 — SFX slot with no mux returns undefined', () => {
+  it('STITCH_MUX_INTERIM_DRY_VIDEO_V1 — SFX slot without mux uses dry /files interim', () => {
     const slot = {
       video_path: 'Production/Event_2/assembled/intro_kling_o3_20260622T230816Z.mp4',
       ambient_bed: 'Intro video ambient bed',
@@ -33,7 +33,7 @@ describe('resolvePersistedPlaybackFromArtifacts', () => {
       sfx_cues: [{ id: 'whoosh', offset_ms: 173000, duration_ms: 3000, source_path: '/x/sfx.mp3' }],
     };
     const url = resolveSlotPlaybackPreviewUrl('Event_2', 'intro', slot, {});
-    assert.equal(url, undefined);
+    assert.match(url ?? '', /\/files\?path=Production%2FEvent_2%2Fassembled%2Fintro_kling_o3_20260622T230816Z\.mp4/);
   });
 
   it('STITCH_AMBIENT_LOOP_XFADE_V1 — rejects stale previewUrls when mux hash drifted', () => {

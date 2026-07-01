@@ -269,6 +269,70 @@ def _stitch_ambient_mix_lacks_layered_audio(h, slot: dict, ambient_stem: str) ->
         return False
 
 
+def _mux_preview_cache_still_valid(
+    h,
+    slot: dict,
+    *,
+    fast: bool = False,
+) -> bool:
+    """True when mux cache on disk still matches slot video (sig token drift only)."""
+    mux_hash = (slot.get("mux_preview_hash") or "").strip()
+    if not mux_hash or not _stitch_slot_has_sfx(slot):
+        return False
+    try:
+        cache_dir = h._stitch_cache_dir()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+    if not _artifact_cache_file_present(cache_dir, "preview", mux_hash):
+        return False
+    video_path = (slot.get("video_path") or "").strip()
+    mux_video_path = (slot.get("mux_video_path") or "").strip()
+    if mux_video_path and video_path and mux_video_path != video_path:
+        return False
+    if _stitch_preview_lacks_layered_mix(h, slot, mux_hash):
+        return False
+    expected_ms = int(slot.get("video_dur_ms") or 0)
+    mux_dur_ms = int(slot.get("mux_preview_duration_ms") or 0)
+    if not fast and expected_ms > 0 and mux_dur_ms > 0:
+        drift_ms = abs(mux_dur_ms - expected_ms)
+        drift_limit_ms = max(250, int(expected_ms * 0.01))
+        if drift_ms > drift_limit_ms:
+            return False
+    return True
+
+
+def _ambient_mix_cache_still_valid(
+    h,
+    slot: dict,
+    *,
+    fast: bool = False,
+) -> bool:
+    """True when ambient mix cache on disk still matches slot video."""
+    ambient_hash = (slot.get("ambient_mix_hash") or "").strip()
+    if not ambient_hash or not _stitch_slot_has_ambient(slot):
+        return False
+    try:
+        cache_dir = h._stitch_cache_dir()
+    except (AttributeError, OSError, TypeError, ValueError):
+        return False
+    if not _artifact_cache_file_present(cache_dir, "ambient_mix", ambient_hash):
+        return False
+    video_path = (slot.get("video_path") or "").strip()
+    pinned_path = (slot.get("ambient_mix_video_path") or "").strip()
+    if pinned_path and video_path and pinned_path != video_path:
+        return False
+    if _stitch_ambient_mix_lacks_layered_audio(h, slot, ambient_hash):
+        return False
+    expected_ms = int(slot.get("video_dur_ms") or 0)
+    ambient_dur_ms = int(slot.get("ambient_mix_duration_ms") or 0)
+    if not fast and expected_ms > 0 and ambient_dur_ms > 0:
+        drift_ms = abs(ambient_dur_ms - expected_ms)
+        drift_limit_ms = max(250, int(expected_ms * 0.01))
+        if drift_ms > drift_limit_ms:
+            return False
+    return True
+
+
 def validate_stitch_slot_media_artifacts(
     h,
     slot: dict,
@@ -286,18 +350,26 @@ def validate_stitch_slot_media_artifacts(
     stored_mix_sig = (slot.get("mix_sig") or "").strip()
     stored_ambient_sig = (slot.get("ambient_mix_sig") or "").strip()
 
+    had_mux = bool((slot.get("mux_preview_hash") or "").strip())
     if stored_mix_sig and stored_mix_sig != current_mix_sig:
-        clear_stitch_slot_mux_artifacts(slot)
-        warnings.append("mix_sig stale — mux artifacts cleared")
+        if _mux_preview_cache_still_valid(h, slot, fast=fast):
+            pass
+        elif had_mux:
+            clear_stitch_slot_mux_artifacts(slot)
+            warnings.append("mix_sig stale — mux artifacts cleared")
+    had_ambient = bool((slot.get("ambient_mix_hash") or "").strip())
     if stored_ambient_sig and stored_ambient_sig != current_ambient_sig:
-        clear_stitch_slot_ambient_mix_artifacts(slot)
-        warnings.append("ambient_mix_sig stale — ambient mix cleared")
+        if _ambient_mix_cache_still_valid(h, slot, fast=fast):
+            pass
+        elif had_ambient:
+            clear_stitch_slot_ambient_mix_artifacts(slot)
+            warnings.append("ambient_mix_sig stale — ambient mix cleared")
 
-    if not stored_mix_sig and any(slot.get(f) for f in STITCH_SLOT_MUX_FIELDS):
+    if not stored_mix_sig and had_mux:
         clear_stitch_slot_mux_artifacts(slot)
         warnings.append("mix_sig missing — mux artifacts cleared")
 
-    if not stored_ambient_sig and any(slot.get(f) for f in STITCH_SLOT_AMBIENT_MIX_FIELDS):
+    if not stored_ambient_sig and had_ambient:
         clear_stitch_slot_ambient_mix_artifacts(slot)
         warnings.append("ambient_mix_sig missing — ambient mix cleared")
 
@@ -545,6 +617,7 @@ def persist_stitch_slot_media_artifacts(
     mux_preview_duration_ms: int | None = None,
     mux_video_path: str | None = None,
     mux_video_mtime_ms: int | None = None,
+    persist_ambient_bed_path: str | None = None,
 ) -> None:
     """Write artifact hashes onto the canonical stitch job slot."""
 
@@ -559,6 +632,8 @@ def persist_stitch_slot_media_artifacts(
         if not isinstance(slot, dict):
             return
         slot["mix_sig"] = mix_sig
+        if persist_ambient_bed_path:
+            slot["ambient_bed_path"] = persist_ambient_bed_path
         slot["media_artifacts_built_at"] = datetime.now(timezone.utc).isoformat()
         if waveform_peaks_hash:
             slot["waveform_peaks_hash"] = waveform_peaks_hash
@@ -629,11 +704,13 @@ def invalidate_stitch_slot_artifacts_if_mix_drift(h, slot: dict) -> bool:
     stored_mix_sig = (slot.get("mix_sig") or "").strip()
     stored_ambient_sig = (slot.get("ambient_mix_sig") or "").strip()
     if stored_mix_sig and stored_mix_sig != current_mix_sig:
-        clear_stitch_slot_mux_artifacts(slot)
-        cleared = True
+        if not _mux_preview_cache_still_valid(h, slot, fast=True):
+            clear_stitch_slot_mux_artifacts(slot)
+            cleared = True
     if stored_ambient_sig and stored_ambient_sig != current_ambient_sig:
-        clear_stitch_slot_ambient_mix_artifacts(slot)
-        cleared = True
+        if not _ambient_mix_cache_still_valid(h, slot, fast=True):
+            clear_stitch_slot_ambient_mix_artifacts(slot)
+            cleared = True
     if not stored_mix_sig and any(slot.get(f) for f in STITCH_SLOT_MUX_FIELDS):
         clear_stitch_slot_mux_artifacts(slot)
         cleared = True
