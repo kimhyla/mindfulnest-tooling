@@ -15,6 +15,7 @@ sys.path.insert(0, str(TOOLS / "server_handlers"))
 from server_handlers.stitch_ambient_loop import (  # noqa: E402
     STITCH_AMBIENT_LOOP_TRIM_V2,
     STITCH_AMBIENT_LOOP_XFADE_V1,
+    STITCH_AMBIENT_SINGLE_SEAM_V1,
     ambient_bed_needs_seamless_loop,
     build_ambient_bed_filter_lane,
     build_ambient_bed_filter_lane_for_file,
@@ -37,7 +38,8 @@ class StitchAmbientLoopTests(unittest.TestCase):
         lane = build_ambient_bed_filter_lane(1, 32.808, 65.0, 0.15)
         self.assertIn("acrossfade", lane)
         self.assertIn("[bed]", lane)
-        self.assertIn("concat=n=2:v=0:a=1", lane)
+        self.assertIn("[amb1tile]aloop=loop=-1", lane)
+        self.assertNotIn("concat=n=2:v=0:a=1", lane)
 
     def test_filter_no_acrossfade_when_no_loop(self):
         lane = build_ambient_bed_filter_lane(1, 60.0, 45.0, 0.15)
@@ -47,7 +49,8 @@ class StitchAmbientLoopTests(unittest.TestCase):
     def test_long_bed_uses_xfade_tile_not_raw_aloop(self):
         lane = build_ambient_bed_filter_lane(1, 8.0, 25.0, 0.15)
         self.assertIn("acrossfade", lane)
-        self.assertIn("concat=n=2:v=0:a=1", lane)
+        self.assertIn("[amb1tile]aloop=loop=-1", lane)
+        self.assertNotIn("concat=n=2:v=0:a=1", lane)
         # Raw trimmed bed must not loop without the seamless tile glue first.
         self.assertNotIn(
             "asetpts=PTS-STARTPTS,aloop=loop=-1",

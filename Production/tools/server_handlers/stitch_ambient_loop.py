@@ -219,6 +219,7 @@ def ambient_loop_sig_token(crossfade_s: float | None = None) -> str:
     xf = STITCH_AMBIENT_LOOP_CROSSFADE_S if crossfade_s is None else float(crossfade_s)
     return (
         f"{STITCH_AMBIENT_LOOP_TRIM_V2}:{STITCH_AMBIENT_LOOP_XFADE_V1}:"
+        f"{STITCH_AMBIENT_SINGLE_SEAM_V1}:"
         f"{STITCH_AMBIENT_BED_MIX_FADE_IN_V1}:{STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1}:"
         f"{xf:.3f}:{STITCH_AMBIENT_BED_MIX_FADE_IN_S:.3f}:"
         f"{STITCH_AMBIENT_BED_SLOT_FADE_OUT_S:.3f}:no_hard_aloop_v1"
