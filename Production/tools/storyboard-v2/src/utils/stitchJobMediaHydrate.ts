@@ -14,6 +14,7 @@ import {
   stitchSlotRequiresAmbientMix,
   stitchSlotRequiresMuxedPreview,
   stitchSlotUsesFourFilesPlayback,
+  reconcileFourFilesSlotArtifacts,
   type StitchSlotMuxSigInput,
 } from './stitchSlotMuxAudioSig';
 import { stitchSlotSpeechPeaksSig } from './stitchSlotMuxAudioSig';
@@ -99,7 +100,10 @@ export function hydrateAllSlotMediaFromJob(
   const slotsNeedingAmbientMix: StitchSessionSlotKey[] = [];
 
   for (const slotKey of SLOT_KEYS) {
-    const slot = slots?.[slotKey];
+    const rawSlot = slots?.[slotKey];
+    const slot = (reconcileFourFilesSlotArtifacts(rawSlot) ?? rawSlot) as
+      | StitchSlotMediaArtifactFields
+      | undefined;
     if (!slot?.video_path) continue;
 
     if (stitchSlotUsesFourFilesPlayback(slot)) {
@@ -374,8 +378,10 @@ export function resolveSlotPlaybackPreviewUrl(
 ): string | undefined {
   if (!slot?.video_path) return undefined;
 
-  if (stitchSlotUsesFourFilesPlayback(slot)) {
-    return resolveDrySlotSourceVideoUrl(slot.video_path);
+  const reconciled = reconcileFourFilesSlotArtifacts(slot) ?? slot;
+
+  if (stitchSlotUsesFourFilesPlayback(reconciled)) {
+    return resolveDrySlotSourceVideoUrl(reconciled.video_path);
   }
 
   const sigSlot = { ...slot, sfx_cues: slot.sfx_cues ?? [] };

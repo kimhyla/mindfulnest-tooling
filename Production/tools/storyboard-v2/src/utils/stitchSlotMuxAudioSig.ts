@@ -89,6 +89,35 @@ export function stitchSlotUsesFourFilesPlayback(
   return (slot?.playback_recipe_version ?? '').trim() === STITCH_FOUR_FILES_V1;
 }
 
+/** STITCH_FOUR_FILES_LEGACY_PURGE_V1 — client mirror of server load_job purge. */
+export const STITCH_FOUR_FILES_LEGACY_PURGE_V1 = 'STITCH_FOUR_FILES_LEGACY_PURGE_V1';
+
+const FOUR_FILES_LEGACY_ARTIFACT_FIELDS = [
+  'ambient_mix_hash',
+  'ambient_mix_sig',
+  'ambient_mix_duration_ms',
+  'ambient_mix_video_path',
+  'ambient_mix_video_mtime_ms',
+  'mux_preview_hash',
+  'mux_preview_duration_ms',
+  'mux_video_path',
+  'mux_video_mtime_ms',
+  'mix_sig',
+  '_ambient_mix_url',
+  '_mux_preview_url',
+] as const;
+
+export function reconcileFourFilesSlotArtifacts<
+  T extends { playback_recipe_version?: string },
+>(slot: T | null | undefined): T | null | undefined {
+  if (!slot || !stitchSlotUsesFourFilesPlayback(slot)) return slot;
+  const next = { ...slot } as T & Record<string, unknown>;
+  for (const key of FOUR_FILES_LEGACY_ARTIFACT_FIELDS) {
+    delete next[key];
+  }
+  return next as T;
+}
+
 /** True when slot has SFX cues requiring mux preview (speech + ambient + SFX). */
 export function stitchSlotRequiresMuxedPreview(
   slot: StitchSlotMuxSigInput | null | undefined,

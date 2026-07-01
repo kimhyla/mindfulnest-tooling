@@ -11,9 +11,10 @@ SB = TOOLS / "storyboard-v2" / "src"
 def test_resolve_slot_playback_short_circuits_four_files() -> None:
     src = (SB / "utils" / "stitchJobMediaHydrate.ts").read_text(encoding="utf-8")
     fn_idx = src.index("export function resolveSlotPlaybackPreviewUrl")
-    block = src[fn_idx:fn_idx + 2500]
-    assert "stitchSlotUsesFourFilesPlayback(slot)" in block
-    four_idx = block.index("if (stitchSlotUsesFourFilesPlayback(slot))")
+    block = src[fn_idx:fn_idx + 2800]
+    assert "reconcileFourFilesSlotArtifacts(slot)" in block
+    assert "stitchSlotUsesFourFilesPlayback(reconciled)" in block
+    four_idx = block.index("if (stitchSlotUsesFourFilesPlayback(reconciled))")
     from_state = block.index("const fromState = previewUrls[slotKey]")
     assert four_idx < from_state, "four-files gate must precede previewUrls cache"
 
@@ -27,6 +28,7 @@ def test_build_slot_preview_skips_remux_for_four_files() -> None:
 
 def test_hydrate_purges_and_binds_four_files_playback() -> None:
     src = (SB / "utils" / "stitchJobMediaHydrate.ts").read_text(encoding="utf-8")
+    assert "reconcileFourFilesSlotArtifacts(rawSlot)" in src
     assert "if (stitchSlotUsesFourFilesPlayback(slot))" in src
     assert "purgeStitchSlotPlaybackCache(sessionKey, slotKey)" in src
 

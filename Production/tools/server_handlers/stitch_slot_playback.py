@@ -12,6 +12,8 @@ from typing import Any
 
 STITCH_FOUR_FILES_V1 = "STITCH_FOUR_FILES_V1"
 STITCH_FOUR_FILES_PLAYBACK_RECIPE = STITCH_FOUR_FILES_V1
+# FF-036 — four-files slots must never re-enter se_slot / mux_preview artifact tiers.
+STITCH_FOUR_FILES_LEGACY_PURGE_V1 = "STITCH_FOUR_FILES_LEGACY_PURGE_V1"
 
 _LEGACY_ARTIFACT_FIELDS = (
     "ambient_mix_hash",
@@ -33,6 +35,26 @@ def clear_legacy_playback_artifact_fields(slot: dict) -> None:
     """Remove superseded cache-authority fields from slot JSON."""
     for key in _LEGACY_ARTIFACT_FIELDS:
         slot.pop(key, None)
+
+
+def slot_skips_legacy_playback_artifact_tiers(slot: dict | None) -> bool:
+    """True when slot authority is baked playback MP4 only (no se_slot / mux ladder)."""
+    return playback_recipe_is_four_files(slot)
+
+
+def slot_had_legacy_playback_artifact_fields(slot: dict) -> bool:
+    """True when any split-authority field is still present on slot JSON."""
+    return any((slot.get(key) or "").strip() for key in _LEGACY_ARTIFACT_FIELDS if not key.startswith("_"))
+
+
+def reconcile_four_files_slot_authority(slot: dict) -> bool:
+    """Purge legacy artifact fields from four-files slots. Returns True if anything removed."""
+    if not playback_recipe_is_four_files(slot):
+        return False
+    had_legacy = slot_had_legacy_playback_artifact_fields(slot)
+    clear_legacy_playback_artifact_fields(slot)
+    slot.pop("_waveform_peaks_url", None)
+    return had_legacy
 
 
 def slot_has_playback_mix_layers(slot: dict) -> bool:

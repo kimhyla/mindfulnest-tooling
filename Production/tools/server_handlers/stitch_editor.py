@@ -2520,9 +2520,14 @@ def handle_stitch_load_job(h, name: str)-> None:
                 defaults_changed = True
 
         mux_cleared_on_load = False
+        four_files_purged_on_load = False
         for slot_key, slot in live_slots.items():
             if not isinstance(slot, dict):
                 continue
+            from server_handlers.stitch_slot_playback import reconcile_four_files_slot_authority  # noqa: PLC0415
+
+            if reconcile_four_files_slot_authority(slot):
+                four_files_purged_on_load = True
             before_mux = (slot.get("mux_preview_hash") or "").strip()
             slot_artifact_warnings = validate_stitch_slot_media_artifacts(h, slot, fast=True)
             if slot_artifact_warnings:
@@ -2532,12 +2537,14 @@ def handle_stitch_load_job(h, name: str)-> None:
                 artifacts_healed = True
                 mux_cleared_on_load = True
             attach_stitch_slot_derived_media_urls(h, slot)
-        if mux_cleared_on_load and job_persisted:
+        if (mux_cleared_on_load or four_files_purged_on_load) and job_persisted:
 
             def persist_mux_clears(state: dict) -> None:
                 _persist_stitch_job_healed_slots(state, name, live_slots)
 
             stitch_store.mutate_state(persist_mux_clears)
+        if four_files_purged_on_load:
+            artifacts_healed = True
 
     response_job = copy.deepcopy(job) if isinstance(job, dict) else job
     if isinstance(response_job, dict) and isinstance(live_slots, dict):
@@ -2934,6 +2941,11 @@ def rebuild_stitch_ambient_mixes_for_job(
         persist_stitch_slot_ambient_mix_artifacts,
     )
     from server_handlers.stitch_media_sig import compute_stitch_ambient_mix_sig_from_slot  # noqa: PLC0415
+    from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+        STITCH_FOUR_FILES_LEGACY_PURGE_V1,
+        reconcile_four_files_slot_authority,
+        slot_skips_legacy_playback_artifact_tiers,
+    )
 
     stitch_store = stitch_state_store_for_job(h, job_name)
     orig_stitch_state = None
@@ -2961,6 +2973,24 @@ def rebuild_stitch_ambient_mixes_for_job(
             if not isinstance(slot, dict):
                 continue
             if not (slot.get("video_path") or "").strip():
+                continue
+            if slot_skips_legacy_playback_artifact_tiers(slot):
+                purged = reconcile_four_files_slot_authority(slot)
+                if purged:
+                    def persist_four_files_purge(state: dict) -> None:
+                        j = (state.get("jobs") or {}).get(job_name)
+                        if not isinstance(j, dict):
+                            return
+                        s = (j.get("slots") or {}).get(slot_key)
+                        if isinstance(s, dict):
+                            reconcile_four_files_slot_authority(s)
+
+                    stitch_store.mutate_state(persist_four_files_purge)
+                built[slot_key] = {
+                    "ok": True,
+                    "skipped": True,
+                    "code": STITCH_FOUR_FILES_LEGACY_PURGE_V1,
+                }
                 continue
             ambient_bed = (slot.get("ambient_bed") or "").strip()
             if not ambient_bed:
