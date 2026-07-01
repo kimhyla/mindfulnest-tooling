@@ -460,6 +460,7 @@ type BgModalState =
       referenceImage: BgBeat['reference_image'];
       bgRefImage: BgBeat['bg_ref_image'];
       message: string;
+      submitting?: boolean;
     };
 
 /** Option key for **Approve still for stitch** — works even when sidecar row lacks ``key``. */
@@ -828,6 +829,7 @@ export function BgTab() {
   const pollResults = bgPollResults.value;
 
   const o3SubmitPendingTimersRef = useRef<Record<string, number>>({});
+  const voiceDriftSubmitInFlightRef = useRef<string | null>(null);
   const markO3SubmitPending = useCallback((beatId: string) => {
     bgO3SubmitPending.value = { ...bgO3SubmitPending.value, [beatId]: true };
     const existingTimer = o3SubmitPendingTimersRef.current[beatId];
@@ -1935,7 +1937,7 @@ export function BgTab() {
           [beatId]: result.data!.submitted!,
         };
       }
-      void refreshState();
+      await refreshState();
       const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
       const mode = result.data.o3_generate_mode;
       const modeLabel = mode === 'avatar_pro'
@@ -2028,10 +2030,29 @@ export function BgTab() {
   const confirmVoiceDriftSubmit = async () => {
     if (modalState.kind !== 'voice-drift-confirm') return;
     const { beatId, promptToSave, replaceSlotIndex, referenceImage, bgRefImage } = modalState;
-    closeModal();
+    if (modalState.submitting || voiceDriftSubmitInFlightRef.current === beatId) return;
     const beat = beatsRef.current.find((b) => b.beat_id === beatId)
       ?? beats.find((b) => b.beat_id === beatId);
     if (!beat) return;
+    const serverFlightCtx = {
+      activeO3Jobs: bgActiveO3Jobs.value,
+      submitPollLatch: submitPollLatchRef.current,
+    };
+    if (beatO3ServerJobInFlight(beatId, beat, serverFlightCtx)) {
+      closeModal();
+      pushToast({
+        kind: 'info',
+        message: 'This beat is already generating.',
+        source: 'bg-voice-drift-already-busy',
+      });
+      return;
+    }
+    voiceDriftSubmitInFlightRef.current = beatId;
+    setModalState((prev) => (
+      prev.kind === 'voice-drift-confirm' && prev.beatId === beatId
+        ? { ...prev, submitting: true }
+        : prev
+    ));
     const workBeat: BgBeat = {
       ...beat,
       kling_o3_prompt: promptToSave,
@@ -2039,7 +2060,19 @@ export function BgTab() {
       reference_image: referenceImage ?? beat.reference_image ?? null,
       bg_ref_image: bgRefImage ?? beat.bg_ref_image ?? null,
     };
-    await submitO3Voice(beatId, workBeat, promptToSave, true);
+    try {
+      const submitted = await submitO3Voice(beatId, workBeat, promptToSave, true);
+      if (submitted) closeModal();
+    } finally {
+      if (voiceDriftSubmitInFlightRef.current === beatId) {
+        voiceDriftSubmitInFlightRef.current = null;
+      }
+      setModalState((prev) => (
+        prev.kind === 'voice-drift-confirm' && prev.beatId === beatId && prev.submitting
+          ? { ...prev, submitting: false }
+          : prev
+      ));
+    }
   };
 
   const onGenerateBatch = async (
@@ -3330,16 +3363,27 @@ export function BgTab() {
         onClose={closeModal}
         footer={(
           <>
-            <button type="button" class="mn-btn" data-testid="bg-voice-drift-cancel" onClick={closeModal}>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="bg-voice-drift-cancel"
+              disabled={modalState.kind === 'voice-drift-confirm' && !!modalState.submitting}
+              onClick={closeModal}
+            >
               Cancel
             </button>
             <button
               type="button"
               class="mn-btn mn-btn-primary"
               data-testid="bg-voice-drift-confirm"
+              disabled={modalState.kind === 'voice-drift-confirm' && !!modalState.submitting}
               onClick={() => { void confirmVoiceDriftSubmit(); }}
             >
-              Generate with current registry voice
+              {modalState.kind === 'voice-drift-confirm' && modalState.submitting ? (
+                <><Spinner size="sm" inline /> Submitting…</>
+              ) : (
+                'Generate with current registry voice'
+              )}
             </button>
           </>
         )}
