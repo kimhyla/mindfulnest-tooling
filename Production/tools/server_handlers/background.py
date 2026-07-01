@@ -2240,6 +2240,13 @@ def _enrich_beats_job_busy(
             continue
         beat_event_dirs = _o3_job_event_dir_candidates(h, beat_id)
         beat_event = beat_event_dirs[0]
+        if session_read_only:
+            from o3_job_status_contract import resolve_o3_current_job_id
+
+            busy = _resolve_beat_job_busy_for_session(beat, beat_event_dirs)
+            beat["job_busy"] = busy
+            beat["o3_current_job_id"] = resolve_o3_current_job_id(beat) if busy else None
+            continue
         if not bg.beat_is_still_insert(beat):
             for ev in beat_event_dirs:
                 if clear_o3_pointer_if_terminal(beat, ev):

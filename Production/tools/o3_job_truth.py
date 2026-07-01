@@ -19,6 +19,7 @@ def resolve_beat_o3_truth(
     sidecar: dict | None = None,
     in_memory_jobs: dict | None = None,
     orphan_recovery=None,
+    orphan_preview: bool = False,
 ) -> dict[str, Any]:
     """Return authoritative O3 view for one beat after reconcile + busy resolution."""
     import beat_generator as bg
@@ -48,6 +49,7 @@ def resolve_beat_o3_truth(
         sidecar,
         event_dir,
         orphan_recovery=orphan_recovery,
+        orphan_preview=orphan_preview,
     )
 
     video_path = str(working.get("kling_o3_video_path") or "")
@@ -76,6 +78,49 @@ def resolve_beat_o3_truth(
         "kling_o3_options": list(working.get("kling_o3_options") or []),
         "reconciled_beat": working,
     }
+
+
+def apply_session_o3_truth_fields(beat: dict, truth: dict[str, Any]) -> bool:
+    """In-memory session GET merge — reconciled authority fields onto live beat."""
+    return apply_beat_o3_truth_to_beat(beat, truth)
+
+
+def resolve_beat_o3_truth_for_session_compose(
+    beat: dict,
+    sidecar: dict,
+    *,
+    server_event_dir: Path | None,
+    library_event_dir: Path | None,
+    scope_type: str,
+    in_memory_jobs: dict | None = None,
+) -> dict[str, Any] | None:
+    """Session GET read path — try event-dir candidates; orphan preview only (no persist)."""
+    from o3_generation_intent import resolve_o3_job_event_dir_candidates
+
+    beat_id = str(beat.get("beat_id") or "").strip()
+    if not beat_id:
+        return None
+    beat_event_dirs = resolve_o3_job_event_dir_candidates(
+        beat_id,
+        server_event_dir=server_event_dir,
+        library_event_dir=library_event_dir,
+        scope_type=scope_type,
+    )
+    truth: dict[str, Any] | None = None
+    for ev in beat_event_dirs:
+        before = dict(beat)
+        truth = resolve_beat_o3_truth(
+            beat_id,
+            ev,
+            beat,
+            sidecar=sidecar,
+            in_memory_jobs=in_memory_jobs,
+            orphan_preview=True,
+        )
+        apply_session_o3_truth_fields(beat, truth)
+        if beat != before:
+            break
+    return truth
 
 
 def apply_beat_o3_truth_to_beat(beat: dict, truth: dict[str, Any]) -> bool:

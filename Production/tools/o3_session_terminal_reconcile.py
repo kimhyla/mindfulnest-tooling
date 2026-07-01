@@ -258,45 +258,28 @@ def compose_session_terminal_view(
     library_event_dir: Path | None = None,
     scope_type: str = "event",
 ) -> list[dict[str, Any]]:
-    """Read-only session GET — merge terminal/disk into response beats; no sidecar persist."""
-    from o3_generation_intent import (
-        load_intent_terminal,
-        resolve_o3_job_event_dir_candidates,
-        terminal_path_for_job,
-    )
-    from o3_job_status_contract import resolve_o3_job_id_for_lifecycle
+    """Read-only session GET — merge terminal/disk via O3_JOB_TRUTH_STACK_V1; no sidecar persist."""
+    import copy
+
+    from o3_job_truth import resolve_beat_o3_truth_for_session_compose
 
     outcomes: list[dict[str, Any]] = []
     for beat in beats:
         beat_id = str(beat.get("beat_id") or "").strip()
         if not beat_id:
             continue
-        beat_event_dirs = resolve_o3_job_event_dir_candidates(
-            beat_id,
+        before = copy.deepcopy(beat)
+        truth = resolve_beat_o3_truth_for_session_compose(
+            beat,
+            sidecar,
             server_event_dir=server_event_dir,
             library_event_dir=library_event_dir,
             scope_type=scope_type,
         )
-        beat_event = beat_event_dirs[0]
-        before = copy.deepcopy(beat)
-        reconciled = False
-        for ev in beat_event_dirs:
-            if reconcile_beat_terminal_disk(
-                beat,
-                sidecar,
-                ev,
-                orphan_preview=True,
-            ):
-                reconciled = True
-                beat_event = ev
-                break
-        if not reconciled:
+        if not truth:
             continue
-        job_id = resolve_o3_job_id_for_lifecycle(before) or resolve_o3_job_id_for_lifecycle(beat)
-        terminal_status = ""
-        if job_id:
-            terminal = load_intent_terminal(terminal_path_for_job(job_id, beat_event))
-            terminal_status = str((terminal or {}).get("status") or "").strip()
+        job_id = str(truth.get("job_id") or "")
+        terminal_status = str(truth.get("terminal_status") or "")
         outcome = terminal_outcome_row(
             beat_id,
             before,
