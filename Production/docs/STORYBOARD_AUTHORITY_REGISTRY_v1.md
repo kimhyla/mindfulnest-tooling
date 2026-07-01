@@ -76,6 +76,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_mux_preview_lineage** — post-export playback artifact | disk | `stitch_slot_needs_playback_artifact_bake` | `ensure_stitch_slot_playback_artifacts_on_export` | partial | same |
 | **stitch_slot_playback_mp4** — sole Stitcher playback + Bake Final input per slot | disk | `resolve_slot_playback_path` | `bake_and_persist_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_END_TO_END_CLOSURE_v1.md` |
 | **stitch_ambient_loop_seam_budget** — ambient loop seams | derived | `build_ambient_bed_filter_lane` | `STITCH_AMBIENT_FULL_PERIOD_TILE_V2` | shipped | same |
+| **stitch_export_truth** — concat join fade + speech waveform + playback remux | disk | `_kling_export_audio_lane_filter` / `resolveSlotWaveformVideoPath` | `concat_kling_o3_approved_beats` / `bake_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V1.md` |
 | **stitch_playback_url** — composer video when SFX exist | derived | `resolveSlotPlaybackPreviewUrl` | mux artifact bake | shipped | `TECH_SPEC_STITCH_SFX_PLAYBACK_TRUTH_V1.md` |
 | **stitch_single_owner** — who mutates slot video post-export | disk | `STITCH_SINGLE_OWNER_V1` load_job read-only | export path owns ingest | shipped | `TECH_SPEC_STITCH_SINGLE_OWNER_V1.md` |
 

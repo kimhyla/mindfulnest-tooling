@@ -104,6 +104,7 @@ import {
   resolveDrySlotSourceVideoUrl,
   resolvePersistedPlaybackFromArtifacts,
   resolveSlotPlaybackPreviewUrl,
+  resolveSlotWaveformVideoPath,
   selectSlotsForMuxRebuild,
   stitchSlotTimelineDurMs,
   STITCH_MUX_REBUILD_QUEUE_V1,
@@ -1143,6 +1144,7 @@ export function StitcherTab() {
   });
   viewerSlotRef.current = viewerSlot;
   const viewerSlotData = job?.slots?.[viewerSlot];
+  const viewerWaveformVideoPath = resolveSlotWaveformVideoPath(viewerSlotData);
   const viewerSlotNeedsMux = stitchSlotRequiresMuxedPreview(viewerSlotData);
   const viewerSlotNeedsAmbientMix = stitchSlotRequiresAmbientMix(viewerSlotData);
   const composerVideoUrl = composerSlotUrls[viewerSlot];
@@ -2498,9 +2500,10 @@ export function StitcherTab() {
                     {composerVideoError}
                   </p>
                 ) : null}
+                {viewerWaveformVideoPath ? (
                 <StitcherSlotWaveform
                   slotKey={viewerSlot}
-                  {...(viewerSlotData?.video_path ? { videoPath: viewerSlotData.video_path } : {})}
+                  videoPath={viewerWaveformVideoPath}
                   {...(viewerSlotData?.ambient_bed ? { ambientBed: viewerSlotData.ambient_bed } : {})}
                   {...(viewerSlotData?.mix_sig ? { mixSig: viewerSlotData.mix_sig } : {})}
                   {...(viewerSlotData?._waveform_peaks_url ? { artifactPeaksUrl: viewerSlotData._waveform_peaks_url } : {})}
@@ -2519,6 +2522,7 @@ export function StitcherTab() {
                   onCueRangeChange={onSfxCueRangeChangeOnSlot(viewerSlot)}
                   onCueClick={onSfxClickOnSlot(viewerSlot)}
                 />
+                ) : null}
               </div>
               <div
                 class={`mn-beat-timeline${beatBoundariesLoading ? ' mn-beat-timeline-loading' : ''}`}
@@ -2561,6 +2565,7 @@ export function StitcherTab() {
               const busy = busySlot?.slot === sd.key;
               const slotDurMs = stitchSlotTimelineDurMs(slot, DEFAULT_SLOT_DUR_MS);
               const cues = slot?.sfx_cues ?? [];
+              const waveformVideoPath = resolveSlotWaveformVideoPath(slot);
               return (
                 <div
                   class="mn-stitcher-slot"
@@ -2585,10 +2590,10 @@ export function StitcherTab() {
                     <p class="mn-dim mn-stitcher-slot-composer-hint" data-testid={`stitcher-slot-hint-${sd.key}`}>
                       ↑ Synced playback in slot review above — drop SFX on that waveform
                     </p>
-                  ) : (
+                ) : slot?.video_path && waveformVideoPath ? (
                     <StitcherSlotWaveform
                       slotKey={sd.key}
-                      {...(slot?.video_path ? { videoPath: slot.video_path } : {})}
+                      videoPath={waveformVideoPath}
                       {...(slot?.ambient_bed ? { ambientBed: slot.ambient_bed } : {})}
                       {...(slot?.mix_sig ? { mixSig: slot.mix_sig } : {})}
                       {...(slot?._waveform_peaks_url ? { artifactPeaksUrl: slot._waveform_peaks_url } : {})}
@@ -2601,7 +2606,7 @@ export function StitcherTab() {
                       onCueRangeChange={onSfxCueRangeChangeOnSlot(sd.key)}
                       onCueClick={onSfxClickOnSlot(sd.key)}
                     />
-                  )}
+                  ) : null}
                   {/* Per-slot trim controls (G9-G10) — values in seconds for
                       UX; wire format = ms. trim_out blank/zero → null = full
                       clip end (audit doc §5 LOCKED). */}

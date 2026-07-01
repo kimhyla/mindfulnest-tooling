@@ -14178,7 +14178,10 @@ def resolve_bg_export_stitch_slot(*, phase: str, video_role: str | None = None) 
 
 # KLING_EXPORT_AUDIO_JOIN_V1 — PCM mono + micro fade at hard beat joins (de-click).
 KLING_EXPORT_AUDIO_JOIN_V1 = "KLING_EXPORT_AUDIO_JOIN_V1"
-KLING_EXPORT_AUDIO_JOIN_FADE_MS = 25
+# STITCH_EXPORT_TRUTH_JOIN_FADE_V1 — 25ms insufficient for still-insert→Kling timbre joins (~34s intro).
+STITCH_EXPORT_TRUTH_JOIN_FADE_V1 = "STITCH_EXPORT_TRUTH_JOIN_FADE_V1"
+KLING_EXPORT_AUDIO_JOIN_FADE_MS = 80
+KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS = 150
 
 
 def _ffprobe_audio_lane_duration(path: Path, *, has_audio: bool) -> float:
@@ -14192,6 +14195,10 @@ def _ffprobe_audio_lane_duration(path: Path, *, has_audio: bool) -> float:
     return _ffprobe_duration(path)
 
 
+def _kling_export_clip_path_is_still_insert(path: Path) -> bool:
+    return "_still_insert_" in path.name.lower()
+
+
 def _kling_export_audio_lane_filter(
     input_label: str,
     out_label: str,
@@ -14199,18 +14206,21 @@ def _kling_export_audio_lane_filter(
     *,
     is_first: bool,
     is_last: bool,
+    fade_in_ms: int | None = None,
+    fade_out_ms: int | None = None,
 ) -> str:
     """Decode to PCM mono; trim to timeline authority; micro fade at hard-cut joins."""
-    join_fade_s = KLING_EXPORT_AUDIO_JOIN_FADE_MS / 1000.0
+    fade_in_s = (fade_in_ms if fade_in_ms is not None else KLING_EXPORT_AUDIO_JOIN_FADE_MS) / 1000.0
+    fade_out_s = (fade_out_ms if fade_out_ms is not None else KLING_EXPORT_AUDIO_JOIN_FADE_MS) / 1000.0
     chain = (
         f"{input_label}aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,"
         f"atrim=duration={dur_s:.6f},asetpts=PTS-STARTPTS"
     )
-    if not is_first and join_fade_s > 0:
-        chain += f",afade=t=in:st=0:d={join_fade_s:.6f}"
-    if not is_last and dur_s > join_fade_s * 2 and join_fade_s > 0:
+    if not is_first and fade_in_s > 0:
+        chain += f",afade=t=in:st=0:d={fade_in_s:.6f}"
+    if not is_last and dur_s > fade_out_s * 2 and fade_out_s > 0:
         chain += (
-            f",afade=t=out:st={dur_s - join_fade_s:.6f}:d={join_fade_s:.6f}"
+            f",afade=t=out:st={dur_s - fade_out_s:.6f}:d={fade_out_s:.6f}"
         )
     return f"{chain}[{out_label}]"
 
@@ -14265,6 +14275,11 @@ def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> N
     a_parts: list[str] = []
     for i in range(n):
         src = silent_lavfi_indices.get(i, i)
+        exit_ms = (
+            KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS
+            if _kling_export_clip_path_is_still_insert(clip_paths[i]) and i < n - 1
+            else KLING_EXPORT_AUDIO_JOIN_FADE_MS
+        )
         a_parts.append(
             _kling_export_audio_lane_filter(
                 f"[{src}:a:0]",
@@ -14272,6 +14287,7 @@ def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> N
                 durations[i],
                 is_first=(i == 0),
                 is_last=(i == n - 1),
+                fade_out_ms=exit_ms,
             )
         )
     concat_in = "".join(f"[v{i}][a{i}]" for i in range(n))

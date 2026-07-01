@@ -3349,6 +3349,22 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                    retry_safe=False,
                )
 
+    peaks_video_path_str = video_path_str
+    from server_handlers.stitch_media_artifacts import find_stitch_job_slot_for_video  # noqa: PLC0415
+    from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+        STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1,
+        resolve_four_files_waveform_video_path,
+    )
+
+    job_slot_early = find_stitch_job_slot_for_video(h, video_path_str)
+    if job_slot_early:
+        _job_name, _slot_key = job_slot_early
+        _state = h.app.stitch_state.read_state() or {}
+        _slot = ((_state.get("jobs") or {}).get(_job_name) or {}).get("slots") or {}
+        _slot = _slot.get(_slot_key) if isinstance(_slot, dict) else None
+        if isinstance(_slot, dict):
+            peaks_video_path_str = resolve_four_files_waveform_video_path(_slot)
+
     try:
         abs_path = h._stitch_resolve_path(video_path_str)
     except ValueError:
@@ -3378,9 +3394,14 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                )
 
     # Cache key: md5(path) + mtime — Producer/Consumer drift rule (source identity)
-    mtime_ms = int(os.path.getmtime(abs_path) * 1000)
+    try:
+        peaks_abs_path = h._stitch_resolve_path(peaks_video_path_str)
+    except ValueError:
+        peaks_abs_path = abs_path
+    peaks_mtime_ms = int(os.path.getmtime(peaks_abs_path) * 1000)
     cache_key = _hl.md5(
-        f"{abs_path}:{mtime_ms}".encode(), usedforsecurity=False
+        f"{STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1}:{peaks_abs_path}:{peaks_mtime_ms}".encode(),
+        usedforsecurity=False,
     ).hexdigest()[:16]
 
     cache_dir = h._stitch_cache_dir()

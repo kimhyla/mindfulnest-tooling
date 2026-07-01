@@ -12770,6 +12770,7 @@ body {{padding-top:44px!important;}}
                 "-map", "[aout]",
                 "-c:v", "copy",
                 "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+                "-movflags", "+faststart",
                 str(out_path),
             ]
         )

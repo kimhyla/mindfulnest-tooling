@@ -366,6 +366,22 @@ export function previewUrlMatchesPersistedAmbientMix(
 }
 
 /**
+ * Waveform peaks must track speech-only dry export under four-files — not ambient-mixed playback.
+ * STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1
+ */
+export function resolveSlotWaveformVideoPath(
+  slot: StitchSlotMediaArtifactFields | null | undefined,
+): string | undefined {
+  if (!slot?.video_path) return undefined;
+  const reconciled = reconcileFourFilesSlotArtifacts(slot) ?? slot;
+  if (stitchSlotUsesFourFilesPlayback(reconciled)) {
+    const dry = (reconciled.dry_export_path ?? '').trim();
+    if (dry) return dry;
+  }
+  return reconciled.video_path;
+}
+
+/**
  * Resolve composer playback URL without triggering remux — state, session cache,
  * then persisted server artifacts, then dry slot source (speech-only and ambient-only
  * slots without a baked mix yet).

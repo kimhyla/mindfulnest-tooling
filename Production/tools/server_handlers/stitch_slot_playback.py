@@ -14,6 +14,10 @@ STITCH_FOUR_FILES_V1 = "STITCH_FOUR_FILES_V1"
 STITCH_FOUR_FILES_PLAYBACK_RECIPE = STITCH_FOUR_FILES_V1
 # FF-036 — four-files slots must never re-enter se_slot / mux_preview artifact tiers.
 STITCH_FOUR_FILES_LEGACY_PURGE_V1 = "STITCH_FOUR_FILES_LEGACY_PURGE_V1"
+# FF-037 — post-bake browser-safe remux (+faststart, avoid_negative_ts).
+STITCH_EXPORT_TRUTH_PLAYBACK_REMUX_V1 = "STITCH_EXPORT_TRUTH_PLAYBACK_REMUX_V1"
+# FF-037 — waveform peaks must track speech-only dry export, not ambient-mixed playback.
+STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1 = "STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1"
 
 _LEGACY_ARTIFACT_FIELDS = (
     "ambient_mix_hash",
@@ -75,6 +79,16 @@ def resolve_slot_playback_path(slot: dict) -> str:
     return path
 
 
+def resolve_four_files_waveform_video_path(slot: dict) -> str:
+    """Speech-only path for WaveSurfer peaks — dry concat, not ambient-mixed playback."""
+    if not playback_recipe_is_four_files(slot):
+        return resolve_slot_playback_path(slot)
+    dry = (slot.get("dry_export_path") or "").strip()
+    if dry:
+        return dry
+    return resolve_slot_playback_path(slot)
+
+
 def playback_recipe_is_four_files(slot: dict | None) -> bool:
     if not isinstance(slot, dict):
         return False
@@ -113,6 +127,9 @@ def bake_slot_playback_mp4(
         shutil.copy2(dry_video_path, dest)
 
     ensure_mp4_playback_timestamps(dest)
+    from credentials_lib.ffmpeg_stitch import _remux_mp4_copy_safe  # noqa: PLC0415
+
+    _remux_mp4_copy_safe(dest)
     drift = av_duration_drift_s(dest)
     if drift > STITCH_EXPORT_AV_MAX_DRIFT_S:
         try:

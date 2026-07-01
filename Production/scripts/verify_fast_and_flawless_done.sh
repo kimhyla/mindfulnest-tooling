@@ -57,6 +57,7 @@ for g in \
   verify_stitch_export_trim_authority_durability \
   verify_stitch_ambient_durability \
   verify_stitch_four_files_durability \
+  verify_stitch_export_truth_durability \
   verify_operator_export_truth_closure_durability \
   verify_voice_reliability_durability \
   verify_o3_job_truth_durability \
