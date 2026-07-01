@@ -4013,6 +4013,44 @@ def handle_stitch_preview(h, body: dict)-> None:
                 retry_safe=False,
             )
 
+        from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+            STITCH_FOUR_FILES_V1,
+            clear_legacy_playback_artifact_fields,
+            playback_recipe_is_four_files,
+            resolve_slot_playback_path,
+        )
+
+        if playback_recipe_is_four_files(slot):
+            from urllib.parse import quote  # noqa: PLC0415
+
+            playback_rel = resolve_slot_playback_path(slot)
+
+            def _clear_four_files_legacy(state: dict) -> None:
+                job = (state.get("jobs") or {}).get(job_name)
+                if not isinstance(job, dict):
+                    return
+                slots_map = job.get("slots")
+                if not isinstance(slots_map, dict):
+                    return
+                persisted = slots_map.get(slot_key)
+                if isinstance(persisted, dict):
+                    clear_legacy_playback_artifact_fields(persisted)
+
+            stitch_store.mutate_state(_clear_four_files_legacy)
+            dur_ms = int(slot.get("video_dur_ms") or 0)
+            preview_url = f"/files?path={quote(playback_rel)}"
+            return h._send_json(200, {
+                "preview_url": _stitch_media_public_url(h, preview_url),
+                "duration_ms": dur_ms,
+                "slot_durations": slot_durations,
+                "slot_start_offsets_ms": slot_start_offsets_ms,
+                "video_playable": True,
+                "code": STITCH_FOUR_FILES_V1,
+                "four_files_passthrough": True,
+                "orchestrator_code": STITCH_ARTIFACT_ORCHESTRATOR_V1,
+                "cache_hit": True,
+            })
+
         hash_id = (slot.get("mux_preview_hash") or "").strip()
         preview_url = (slot.get("_mux_preview_url") or "").strip()
         if hash_id and preview_url:
