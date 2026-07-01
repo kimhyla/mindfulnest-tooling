@@ -250,6 +250,14 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | GAP-004 | BG trim overlay mid-drag poll | Tier D | `useBgO3CutSession` | **shipped** |
 | GAP-005 | Storyboard LD-756 trim mid-edit | Tier D | `useStoryboardTrimFields` | **shipped** |
 | GAP-006 | Phase ambient + Stitcher ambient refresh | Tier D | ambient merge hooks | **shipped** |
+| G1 | Failed O3 redo leaves sidecar running / prior clip not restored | O3 | `O3_FAILED_REDO_HEAL_V1` + `verify_o3_failed_redo_heal_durability.sh` | **shipped** |
+| G2 | O3 subprocess lost on server restart — paid work orphaned | O3 | `O3_SUBPROCESS_LIFECYCLE_V1` + `verify_o3_subprocess_lifecycle_durability.sh` | **shipped** |
+| G3 | Terminal / disk / sidecar / UI disagree after O3 attempt | O3 | `O3_JOB_TRUTH_STACK_V1` + `verify_o3_job_truth_durability.sh` | **shipped** |
+| G4 | Sidecar beats disappear / mirror stale / JSON conflicts | Sidecar | `verify_beatgen_truth_stack_durability.sh` | **shipped** |
+| G5 | Crop/upload lands in wrong library root on milestone scope | Library | `verify_event_library_scope_durability.sh` | **shipped** |
+| G6 | Master tile shows uncropped when delivery exists / Directus timeout | Library | `DIRECTUS_HAS_CROP_DISK_FALLBACK_V1` | **shipped** |
+| G7 | Library sessionStorage stale after crop/upload/delete | Library | `LIBRARY_CLIENT_CACHE_COHERENCE_V1` | **shipped** |
+| G8 | Trim/cut/option change doesn't invalidate stitch slot preview | Stitch | `BG_O3_STITCH_EXPORT_LINEAGE_V1` | **shipped** |
 
 ---
 

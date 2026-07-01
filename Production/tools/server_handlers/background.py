@@ -5045,30 +5045,40 @@ def _enriched_beat_snapshot_for_o3_poll(
     if not beat:
         return None
     try:
-        from o3_session_terminal_reconcile import reconcile_beat_terminal_disk
+        from o3_job_truth import resolve_beat_o3_truth
 
-        beat_work = dict(beat)
-        if reconcile_beat_terminal_disk(
-            beat_work,
-            sidecar,
+        truth = resolve_beat_o3_truth(
+            str(beat_id),
             event_dir,
+            dict(beat),
+            sidecar=sidecar,
             orphan_recovery=_try_orphan_o3_delivery_recovery,
-        ):
+        )
+        beat_work = truth.get("reconciled_beat") or dict(beat)
+        _truth_keys = (
+            "status",
+            "kling_o3_status",
+            "kling_o3_voice_fix_status",
+            "kling_o3_video_path",
+            "kling_o3_generation",
+            "kling_o3_options",
+        )
+        if any(beat.get(k) != beat_work.get(k) for k in _truth_keys):
             def _commit(sc: dict) -> None:
                 bg.ensure_sidecar_schema_defaults(sc)
                 _, live = bg.find_beat(sc, str(beat_id))
                 if live:
-                    live.update({k: v for k, v in beat_work.items() if k in beat_work})
+                    live.update({k: beat_work[k] for k in _truth_keys if k in beat_work})
 
             try:
                 bg.mutate_sidecar_locked(_commit, timeout_s=5)
                 sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
                 _, beat = bg.find_beat(sidecar, str(beat_id))
             except Exception as exc:
-                print(f"[bg_o3_poll] terminal reconcile persist skipped for {beat_id}: {exc}", flush=True)
+                print(f"[bg_o3_poll] truth persist skipped for {beat_id}: {exc}", flush=True)
                 beat = beat_work
     except Exception as exc:
-        print(f"[bg_o3_poll] terminal reconcile failed for {beat_id}: {exc}", flush=True)
+        print(f"[bg_o3_poll] truth reconcile failed for {beat_id}: {exc}", flush=True)
     snap = bg.enrich_beat_kling_o3_pinned(dict(beat), event_dir)
     from o3_job_status_contract import clear_o3_pointer_if_terminal
 

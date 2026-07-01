@@ -118,8 +118,27 @@ def reconcile_beat_terminal_disk(
             if fail_msg and beat.get("kling_o3_voice_fix_error") != fail_msg:
                 beat["kling_o3_voice_fix_error"] = fail_msg
                 changed = True
+            from o3_generation_intent import restore_last_good_o3_delivery_after_failed_attempt
+
+            intent_gen = None
+            intent = (terminal or {}).get("intent") or {}
+            if isinstance(intent, dict):
+                slot = intent.get("generation_slot") or intent.get("generation")
+                if slot and str(slot).startswith("g"):
+                    try:
+                        intent_gen = int(str(slot)[1:])
+                    except ValueError:
+                        intent_gen = None
+            if restore_last_good_o3_delivery_after_failed_attempt(
+                beat,
+                event_dir,
+                failed_generation=intent_gen,
+            ):
+                changed = True
+            elif heal_o3_beat_after_aborted_attempt(beat, event_dir):
+                changed = True
         elif status == "cancelled":
-            if heal_o3_beat_after_aborted_attempt(beat):
+            if heal_o3_beat_after_aborted_attempt(beat, event_dir):
                 changed = True
     elif bg.reconcile_beat_gallery_from_disk(beat, event_dir):
         changed = True

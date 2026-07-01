@@ -302,7 +302,37 @@ def _resolve_parent_asset_id_from_source_key(source_key: str) -> int | None:
     return None
 
 
-def _enrich_library_items_prod_assets(images: list) -> None:
+def _enrich_has_crop_from_disk(images: list, library_event_dir: str | Path) -> None:
+    """DIRECTUS_HAS_CROP_DISK_FALLBACK_V1 — stem match in library/images/crops/."""
+    library_event_dir = Path(library_event_dir)
+    crops_dir = library_event_dir / "library" / "images" / "crops"
+    if not crops_dir.is_dir():
+        return
+    crop_stems = {p.stem.lower() for p in crops_dir.iterdir() if p.is_file()}
+    if not crop_stems:
+        return
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        if item.get("has_crop"):
+            continue
+        is_master = bool(item.get("is_master")) or str(item.get("asset_type") or "") == "still_master"
+        if not is_master:
+            continue
+        fp = str(item.get("abs_path") or item.get("file_path") or "")
+        if not fp:
+            continue
+        master_stem = Path(fp).stem.lower()
+        if not master_stem:
+            continue
+        for crop_stem in crop_stems:
+            if crop_stem == master_stem or master_stem in crop_stem or crop_stem.startswith(master_stem[:12]):
+                item["has_crop"] = True
+                item["has_crop_source"] = "disk_stem_match"
+                break
+
+
+def _enrich_library_items_prod_assets(images: list, *, library_event_dir: str | Path | None = None) -> None:
     """LD-738 — annotate library items with is_master / has_crop from prod_assets."""
     import concurrent.futures
 
@@ -318,11 +348,13 @@ def _enrich_library_items_prod_assets(images: list) -> None:
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(_run)
-            fut.result(timeout=3.0)
+            fut.result(timeout=10.0)
     except concurrent.futures.TimeoutError:
-        print("[library] WARN: Directus enrich skipped — timed out after 3s", flush=True)
+        print("[library] WARN: Directus enrich skipped — timed out after 10s", flush=True)
     except Exception as e:
         print(f"[library] WARN: Directus enrich skipped: {e}", flush=True)
+    if library_event_dir is not None:
+        _enrich_has_crop_from_disk(images, library_event_dir)
 
 
 def _enrich_library_items_prod_assets_inner(images: list) -> None:
@@ -747,7 +779,7 @@ def handle_cr_library(h)-> None:
         _append(row)
 
     attach_panel_tabs_all(images)
-    _enrich_library_items_prod_assets(images)
+    _enrich_library_items_prod_assets(images, library_event_dir=library_event_dir)
     attach_panel_tabs_all(images)
 
     response_images = _cr_library_response_images(images, panel_filter)

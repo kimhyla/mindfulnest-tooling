@@ -4403,6 +4403,19 @@ def _perform_server_restart_locked(server, app, reason: str = "api") -> None:
     app.accept_new_jobs = False
     _wait_sync_inflight_drain(app)
     try:
+        from o3_generation_intent import finalize_live_o3_jobs_before_shutdown
+
+        event_dir = Path(getattr(app, "event_dir", "") or "")
+        if event_dir.is_dir():
+            n = finalize_live_o3_jobs_before_shutdown(
+                event_dir,
+                in_memory_jobs=getattr(app, "o3_in_memory_jobs", None),
+            )
+            if n:
+                print(f"[restart] finalized {n} live O3 job(s) before shutdown", flush=True)
+    except Exception as exc:
+        print(f"[restart] O3 shutdown finalize skipped: {exc}", flush=True)
+    try:
         import beat_generator as _bg
 
         if _bg.flush_sidecar_mirror_export():

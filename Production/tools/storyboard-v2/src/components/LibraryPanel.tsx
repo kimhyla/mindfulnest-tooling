@@ -41,6 +41,11 @@ import {
   prependCropLibraryItem,
   type LibraryCropSavedDetail,
 } from '../utils/libraryCropSave';
+import {
+  invalidateLibrarySessionCache,
+  libraryItemsStorageKey,
+  mergeLibraryRefetchWithOptimistic,
+} from '../utils/libraryCachePolicy';
 
 // ----------------------------------------------------------------
 // Types
@@ -207,11 +212,6 @@ export type LibraryTier = LibraryPanelTab;
 const LIBRARY_TIERS: LibraryTier[] = ['images', 'ambient', 'sfx', 'transitions', 'watercolors'];
 const DEFAULT_LIBRARY_TIER: LibraryTier = 'images';
 const LIBRARY_TIER_LS_KEY = 'mn.library.tier';
-const LIBRARY_ITEMS_SESSION_KEY = 'mn.library.items.v4';
-
-function libraryItemsStorageKey(eventId: string): string {
-  return `${LIBRARY_ITEMS_SESSION_KEY}:${eventId}`;
-}
 
 function readPersistedLibraryItems(eventId: string): LibItem[] {
   if (typeof sessionStorage === 'undefined') return [];
@@ -522,6 +522,7 @@ export function LibraryPanel() {
   // mn:library-crop-saved — optimistic insert before refetch (CROP_SAVE_LIBRARY_VISIBILITY_V1).
   useEffect(() => {
     const onLibRefresh = () => {
+      invalidateLibrarySessionCache(eventId);
       setRefreshTick((n) => n + 1);
       if (listRef.current) listRef.current.scrollTop = 0;
     };
@@ -636,8 +637,12 @@ export function LibraryPanel() {
           existingKeys.add(w.key);
         }
       }
-      setItems(merged);
-      persistLibraryItems(eventId, merged);
+      const serverMerged = merged;
+      setItems((prev) => {
+        const next = mergeLibraryRefetchWithOptimistic(serverMerged, prev);
+        persistLibraryItems(eventId, next);
+        return next;
+      });
       setError(null);
     })();
     return () => {
@@ -663,6 +668,8 @@ export function LibraryPanel() {
     });
     if (result.ok) {
       pushToast({ kind: 'success', message: `Deleted ${displayName(item)}`, source: 'library-delete' });
+      invalidateLibrarySessionCache(eventId);
+      setItems((prev) => prev.filter((row) => (row.key ?? row.abs_path) !== k));
       setRefreshTick((n) => n + 1);
     } else if (result.status === 404) {
       pushToast({ kind: 'info', message: `Already removed: ${displayName(item)}`, source: 'library-delete-gone' });
