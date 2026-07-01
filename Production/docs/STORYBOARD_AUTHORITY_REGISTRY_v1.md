@@ -59,6 +59,13 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **kling_o3_export_trim** — trim window materialized on export | disk | `prepare_beats_for_stitch_export` | `set_o3_option_trim` | shipped | `beat_generator.py` |
 | **magic_render_visible** — magic sparkle contract | disk | `magic_render_contract` compositor kwargs + durability tests | `write_magic_delivery` | shipped | `HOW_TO_MAKE_VISIBLE_MAGIC.md` |
 | **bg_export_stitcher_job** — async BG→Stitcher job truth | disk | `readBgExportBusyLatch` + poll terminal | export job API | shipped | inline `BG_EXPORT_TO_STITCHER_ASYNC_V1` |
+| **o3_job_truth_stack** — terminal/disk/sidecar read parity | derived | `resolve_beat_o3_truth` | `close_o3_attempt` | shipped | `TECH_SPEC_CROSS_PIPELINE_G1_G8_CLOSURE_v1.md` |
+| **o3_failed_redo_heal** — restore prior clip after failed regen | disk | `restore_last_good_o3_delivery_after_failed_attempt` | same | shipped | same |
+| **o3_subprocess_lifecycle** — shutdown finalize live jobs | explicit_approve | `load_intent_terminal` | `finalize_live_o3_jobs_before_shutdown` | shipped | same |
+| **cr_library_milestone_scope** — library CR event_dir on milestone | derived | `_resolve_cr_library_scope` | `assert_production_scope` | shipped | same |
+| **directus_has_crop_disk_fallback** — has_crop when Directus slow | disk | `_enrich_has_crop_from_disk` | same | shipped | same |
+| **library_client_cache_coherence** — bust sessionStorage after mutations | derived | `invalidateLibrarySessionCache` | crop/upload/delete handlers | shipped | same |
+| **bg_o3_stitch_export_lineage** — invalidate stitch preview on export change | derived | `compute_bg_segment_o3_export_lineage_sig` | `invalidate_stitch_slots_for_o3_export_change` | shipped | same |
 
 ### Stitcher
 

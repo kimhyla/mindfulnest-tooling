@@ -19,11 +19,15 @@ fail() { echo "FATAL: $1" >&2; exit 1; }
 
 grep -q 'STITCH_DEFAULT_AMBIENT_BEDS' "$EDITOR" || fail "missing STITCH_DEFAULT_AMBIENT_BEDS in stitch_editor.py"
 grep -q 'STITCH_AMBIENT_BED_VOLUME = 0.15' "$EDITOR" || fail "missing STITCH_AMBIENT_BED_VOLUME constant"
-grep -q 'STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
-  || fail "missing STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3"
+grep -q 'STITCH_AMBIENT_FULL_PERIOD_TILE_V2' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
+  || fail "missing STITCH_AMBIENT_FULL_PERIOD_TILE_V2"
+grep -q 'concat=n=2:v=0:a=1\[.*tile\]' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
+  || fail "ambient tile must use pre+wrap concat (V2)"
+grep -q '\[amb1p1\]' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
+  && fail "V3 offset tile labels must not be present in shipped ambient loop"
 grep -q 'build_ambient_seamless_period_tile' "$ROOT/Production/tools/server_handlers/stitch_ambient_loop.py" \
   || fail "missing build_ambient_seamless_period_tile"
-grep -q 'STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3:STITCH_AMBIENT_BED_MIX_FADE_IN_V1' "$CONST" \
+grep -q 'STITCH_AMBIENT_FULL_PERIOD_TILE_V2:STITCH_AMBIENT_BED_MIX_FADE_IN_V1' "$CONST" \
   || fail "STITCH_AMBIENT_LOOP_SIG_V1 must mirror server ambient_loop_sig_token()"
 grep -q 'previewUrlMatchesPersistedMux' "$ROOT/Production/tools/storyboard-v2/src/utils/stitchJobMediaHydrate.ts" \
   || fail "resolveSlotPlaybackPreviewUrl must reject stale mux hash URLs"

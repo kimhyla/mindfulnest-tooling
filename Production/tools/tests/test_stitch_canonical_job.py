@@ -26,11 +26,23 @@ class _MockStitchState:
 class _MockApp:
     def __init__(self, state=None):
         self.stitch_state = _MockStitchState(state)
+        self._event_stitch_state = self.stitch_state
+        self.event_dir = "Production/Event_1"
 
 
 class _MockHandler:
     def __init__(self, state=None):
         self.app = _MockApp(state)
+
+    def _stitch_project_root(self):
+        from pathlib import Path
+        return Path("/tmp/mn-stitch-test")
+
+    def _stitch_resolve_path(self, raw: str) -> str:
+        return raw
+
+    def _ffprobe_duration_ms(self, _path) -> int:
+        return 60_000
 
 
 class StitchCanonicalJobTests(unittest.TestCase):
@@ -86,6 +98,9 @@ class StitchCanonicalJobTests(unittest.TestCase):
         ), mock.patch(
             "server_handlers.stitch_editor.ensure_stitch_slot_canonical_default_sfx_cues",
             return_value=False,
+        ), mock.patch(
+            "server_handlers.stitch_slot_playback.bake_slot_playback_mp4",
+            return_value=60.0,
         ):
             stitch_upsert_event_slot(
                 h,
@@ -96,7 +111,7 @@ class StitchCanonicalJobTests(unittest.TestCase):
         slots = h.app.stitch_state.state["jobs"]["Event_1_stitch"]["slots"]
         self.assertIn("resolution", slots)
         self.assertIn("phase_b", slots)
-        self.assertTrue(slots["phase_b"]["video_path"].endswith("phase_b_preview_abc.mp4"))
+        self.assertIn("assembled/phase_b_playback_", slots["phase_b"]["video_path"])
 
     def test_slot_order_constant(self):
         self.assertEqual(

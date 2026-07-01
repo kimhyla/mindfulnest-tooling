@@ -173,6 +173,8 @@ def invalidate_stitch_slot_for_bg_o3_selection_change(
             slot.pop("video_path", None)
             slot.pop("video_dur_ms", None)
             slot.pop("beat_boundaries", None)
+            slot.pop("playback_recipe_version", None)
+            slot.pop("dry_export_path", None)
             logs.append(
                 f"{slot_key}: cleared BG export video ({Path(old_video).name}) — {reason}",
             )
@@ -260,6 +262,8 @@ def invalidate_stitch_slot_if_export_lineage_stale(
             slot.pop("video_path", None)
             slot.pop("video_dur_ms", None)
             slot.pop("beat_boundaries", None)
+            slot.pop("playback_recipe_version", None)
+            slot.pop("dry_export_path", None)
             logs.append(
                 f"{slot_key}: cleared stale BG export ({Path(old_video).name}) — {reason}",
             )

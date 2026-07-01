@@ -763,6 +763,7 @@ export function LibraryPanel() {
     }
     setUploading(false);
     if (added > 0) {
+      invalidateLibrarySessionCache(eventId);
       setRefreshTick((n) => n + 1);
       if (listRef.current) listRef.current.scrollTop = 0;
     }

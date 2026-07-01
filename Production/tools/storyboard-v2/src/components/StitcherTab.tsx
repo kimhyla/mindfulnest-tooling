@@ -85,6 +85,7 @@ import {
   stitchSlotRequiresMuxedPreview,
   stitchSlotRequiresAmbientMix,
   stitchSlotLiveAmbientSig,
+  stitchSlotUsesFourFilesPlayback,
   STITCH_AMBIENT_BAKE_ON_SAVE_V1,
   stripStaleStitchSlotArtifacts,
 } from '../utils/stitchSlotMuxAudioSig';
@@ -161,6 +162,7 @@ import {
   stitchSlotSessionExpectedSig,
   STITCH_PREVIEW_LS_HYDRATE_V1,
   writeCachedStitcherPreviewLs,
+  type CachedStitcherPreviewLs,
   type StitchSessionSlotKey,
 } from '../utils/stitchSlotSessionCache';
 
@@ -225,6 +227,8 @@ interface StitchSlot {
   _mux_preview_url?: string;
   _waveform_peaks_url?: string;
   _ambient_mix_url?: string;
+  playback_recipe_version?: string;
+  dry_export_path?: string;
 }
 
 interface StitchJob {
@@ -684,10 +688,14 @@ export function StitcherTab() {
       const slotData = job.slots?.[sd.key];
       const path = slotData?.video_path;
       const audioSig = stitchSlotSessionExpectedSig(slotData);
-      const cached = readCachedStitcherPreviewLs(stitchSessionKey, sd.key);
+      const cached = readCachedStitcherPreviewLs(stitchSessionKey, sd.key, slotData);
       const cacheStale = cached && (
         cached.video_path !== path
         || (cached.audio_sig ?? '') !== audioSig
+        || (
+          (slotData?.playback_recipe_version ?? '').trim()
+          !== (cached.playback_recipe_version ?? '').trim()
+        )
       );
       if (cacheStale) {
         clearCachedStitcherPreviewLs(stitchSessionKey, sd.key);
@@ -1500,6 +1508,26 @@ export function StitcherTab() {
       if (!opts?.quiet) setStatusMsg(`Slot ${slot} has no video assigned.`);
       return false;
     }
+    if (stitchSlotUsesFourFilesPlayback(slotData)) {
+      const flatUrl = resolveDrySlotSourceVideoUrl(slotData.video_path);
+      if (!flatUrl) return false;
+      const audioSig = stitchSlotSessionExpectedSig(slotData);
+      bindSlotPreviewUrl(slot, flatUrl, 'hydrate');
+      const cacheEntry: CachedStitcherPreviewLs = {
+        video_path: slotData.video_path,
+        preview_url: flatUrl,
+        audio_sig: audioSig,
+      };
+      const recipe = (slotData.playback_recipe_version ?? '').trim();
+      if (recipe) cacheEntry.playback_recipe_version = recipe;
+      writeCachedStitcherPreviewLs(stitchSessionKey, slot, cacheEntry);
+      commitMuxSession(stitchSessionKey, slot, {
+        previewUrl: flatUrl,
+        videoPath: slotData.video_path,
+        audioSig,
+      });
+      return true;
+    }
     const audioSig = stitchSlotSessionExpectedSig(slotData);
     const persistedArtifactUrl = resolvePersistedPlaybackFromArtifacts(slotData);
     if (persistedArtifactUrl && isMuxSessionFresh(stitchSessionKey, slot, slotData)) {
@@ -1546,7 +1574,7 @@ export function StitcherTab() {
       });
       return true;
     }
-    const cached = readCachedStitcherPreviewLs(stitchSessionKey, slot);
+    const cached = readCachedStitcherPreviewLs(stitchSessionKey, slot, slotData);
     if (
       !stitchSlotRequiresMuxedPreview(slotData)
       && cached?.video_path === slotData.video_path

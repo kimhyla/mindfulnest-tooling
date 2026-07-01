@@ -34,6 +34,9 @@ class _MockStitchState:
 
 
 class _MockHandler:
+    class app:
+        event_dir = "Production/Event_test"
+
     def _stitch_project_root(self) -> Path:
         return Path(
             os.environ.get(
@@ -122,23 +125,38 @@ class StitchSlotAudioMixTests(unittest.TestCase):
 
     def test_default_ambient_applied_on_upsert_when_empty(self):
         h = _MockHandler()
-        h.app = type("A", (), {"stitch_state": _MockStitchState()})()
-        with mock.patch(
-            "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
-            return_value=(60_000, []),
-        ), mock.patch(
-            "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
-            return_value=False,
-        ):
-            stitch_upsert_event_slot(
-                h,
-                "Event_test",
-                "phase_b",
-                {"video_path": "Production/Event_test/phase_b.mp4"},
-            )
-        slot = h.app.stitch_state.state["jobs"]["Event_test_stitch"]["slots"]["phase_b"]
-        self.assertEqual(slot["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["phase_b"])
-        self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+        h.app = type("A", (), {
+            "stitch_state": _MockStitchState(),
+            "event_dir": "Production/Event_test",
+        })()
+        dry = Path("Production/Event_test/phase_b.mp4")
+        dry.parent.mkdir(parents=True, exist_ok=True)
+        dry.write_bytes(b"dry")
+        try:
+            with mock.patch(
+                "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
+                return_value=(60_000, []),
+            ), mock.patch(
+                "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
+                return_value=False,
+            ), mock.patch(
+                "server_handlers.stitch_slot_playback.bake_slot_playback_mp4",
+                return_value=60.0,
+            ):
+                stitch_upsert_event_slot(
+                    h,
+                    "Event_test",
+                    "phase_b",
+                    {"video_path": str(dry)},
+                )
+            slot = h.app.stitch_state.state["jobs"]["Event_test_stitch"]["slots"]["phase_b"]
+            self.assertEqual(slot["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["phase_b"])
+            self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+        finally:
+            if dry.is_file():
+                dry.unlink()
+            if dry.parent.is_dir() and not any(dry.parent.iterdir()):
+                dry.parent.rmdir()
 
     def test_default_ambient_preset_sets_volume_without_extra_normalize(self):
         slot = {"video_path": "Production/Event_1/resolution.mp4"}

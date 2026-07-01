@@ -1,0 +1,9 @@
+# O3_JOB_TRUTH_STACK_V1 — allowed direct kling_o3_status / voice_fix reads outside truth module.
+# Session GET compose and poll merge must route through resolve_beat_o3_truth*.
+o3_job_truth.py
+o3_session_terminal_reconcile.py
+server_handlers/background.py
+o3_generation_intent.py
+o3_job_status_contract.py
+kling_stitch_readiness.py
+beat_generator.py

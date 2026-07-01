@@ -15,6 +15,24 @@ export interface StitchAmbientMixLineageFields {
   ambient_mix_video_path?: string;
 }
 
+export interface StitchBgO3ExportLineageFields {
+  video_path?: string;
+  bg_o3_export_lineage_sig?: string;
+  bg_o3_export_lineage_sig_expected?: string;
+}
+
+/** BG_O3_EXPORT_LINEAGE_HYDRATE_V1 — slot video must match server export lineage sig. */
+export function stitchSlotBgO3ExportLineageMatches(
+  slot: StitchBgO3ExportLineageFields | null | undefined,
+): boolean {
+  const videoPath = (slot?.video_path ?? '').trim();
+  const stored = (slot?.bg_o3_export_lineage_sig ?? '').trim();
+  const expected = (slot?.bg_o3_export_lineage_sig_expected ?? stored).trim();
+  if (!videoPath || !stored) return true;
+  if (!expected) return true;
+  return stored === expected;
+}
+
 /** Server ambient mix artifact is pinned to the slot's current source video. */
 export function stitchSlotAmbientMixLineageMatches(
   slot: StitchAmbientMixLineageFields | null | undefined,

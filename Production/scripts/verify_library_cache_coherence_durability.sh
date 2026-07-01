@@ -17,6 +17,11 @@ grep -q 'mergeLibraryRefetchWithOptimistic' "$SB/src/components/LibraryPanel.tsx
   && mark 'LibraryPanel uses cache policy' \
   || err 'LibraryPanel missing cache policy wiring'
 
+grep -q 'onUpload' "$SB/src/components/LibraryPanel.tsx" \
+  && awk '/const onUpload = async/,/^  };/' "$SB/src/components/LibraryPanel.tsx" | grep -q 'invalidateLibrarySessionCache' \
+  && mark 'upload path invalidates session cache' \
+  || err 'upload path missing invalidateLibrarySessionCache'
+
 grep -q 'mn.library.items.v4' "$SB/src/utils/libraryCachePolicy.ts" \
   && mark 'v4 session key in libraryCachePolicy authority' \
   || err 'libraryCachePolicy missing v4 session key'

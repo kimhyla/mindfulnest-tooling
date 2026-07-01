@@ -13,7 +13,7 @@ sys.path.insert(0, str(TOOLS))
 sys.path.insert(0, str(TOOLS / "server_handlers"))
 
 from server_handlers.stitch_ambient_loop import (  # noqa: E402
-    STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3,
+    STITCH_AMBIENT_FULL_PERIOD_TILE_V2,
     STITCH_AMBIENT_LOOP_TRIM_V2,
     STITCH_AMBIENT_LOOP_XFADE_V1,
     ambient_bed_needs_seamless_loop,
@@ -35,15 +35,14 @@ class StitchAmbientLoopTests(unittest.TestCase):
         self.assertFalse(ambient_bed_needs_seamless_loop(32.0, 30.0))
         self.assertFalse(ambient_bed_needs_seamless_loop(0.5, 10.0))
 
-    def test_filter_uses_acrossfade_when_looping(self):
+    def test_filter_uses_full_period_tile_when_looping(self):
         lane = build_ambient_bed_filter_lane(1, 32.808, 65.0, 0.15)
         self.assertIn("acrossfade", lane)
         self.assertIn("[bed]", lane)
         self.assertIn("[amb1tile]aloop=loop=-1", lane)
-        self.assertIn("[amb1p1]", lane)
-        self.assertIn("[amb1p2]", lane)
-        self.assertIn("[amb1xfaded]", lane)
-        self.assertNotIn("concat=n=2:v=0:a=1[amb1tile]", lane)
+        self.assertIn("[amb1pre]", lane)
+        self.assertIn("[amb1wrap]", lane)
+        self.assertIn("concat=n=2:v=0:a=1[amb1tile]", lane)
 
     def test_filter_not_crossfade_only_tile(self):
         lane = build_ambient_bed_filter_lane(1, 27.35, 49.0, 0.15)
@@ -53,7 +52,6 @@ class StitchAmbientLoopTests(unittest.TestCase):
             "[amb1tile]aloop",
             lane,
         )
-        self.assertIn(f"atrim=0:{27.35:.3f}", lane)
         self.assertAlmostEqual(estimate_ambient_tile_period_s(27.35), 27.35)
 
     def test_filter_no_acrossfade_when_no_loop(self):
@@ -65,9 +63,8 @@ class StitchAmbientLoopTests(unittest.TestCase):
         lane = build_ambient_bed_filter_lane(1, 8.0, 25.0, 0.15)
         self.assertIn("acrossfade", lane)
         self.assertIn("[amb1tile]aloop=loop=-1", lane)
-        self.assertIn("[amb1p1]", lane)
-        self.assertNotIn("concat=n=2:v=0:a=1[amb1tile]", lane)
-        # Raw trimmed bed must not loop without the seamless tile glue first.
+        self.assertIn("[amb1pre]", lane)
+        self.assertIn("concat=n=2:v=0:a=1[amb1tile]", lane)
         self.assertNotIn(
             "asetpts=PTS-STARTPTS,aloop=loop=-1",
             lane.replace("[amb1tile]aloop=loop=-1", ""),
@@ -124,7 +121,7 @@ class StitchAmbientLoopTests(unittest.TestCase):
         self.assertIn("atrim=start=", lane)
         self.assertIn("acrossfade", lane)
 
-    def test_sig_token_includes_trim_v2(self):
+    def test_sig_token_includes_v2_marker(self):
         from server_handlers.stitch_ambient_loop import (
             STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1,
             ambient_loop_sig_token,
@@ -132,7 +129,7 @@ class StitchAmbientLoopTests(unittest.TestCase):
 
         tok = ambient_loop_sig_token()
         self.assertIn(STITCH_AMBIENT_LOOP_TRIM_V2, tok)
-        self.assertIn(STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3, tok)
+        self.assertIn(STITCH_AMBIENT_FULL_PERIOD_TILE_V2, tok)
         self.assertIn(STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1, tok)
         self.assertIn("no_hard_aloop_v1", tok)
         editor = (TOOLS / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")
@@ -160,6 +157,7 @@ class StitchAmbientLoopTests(unittest.TestCase):
         self.assertIn("force_ambient_mix_rebuild", export_block)
         preview = editor.split("def handle_stitch_preview", 1)[1].split("\ndef ", 1)[0]
         self.assertNotIn("force_ambient_mix_rebuild", preview)
+        self.assertIn("four_files_passthrough", preview)
 
 
 if __name__ == "__main__":

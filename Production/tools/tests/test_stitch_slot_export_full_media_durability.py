@@ -63,6 +63,8 @@ class StitchSlotExportFullMediaTests(unittest.TestCase):
             h.app.stitch_state = store
             # stitch_state_store_for_job prefers _event_stitch_state over stitch_state.
             h.app._event_stitch_state = store
+            h.app.event_dir = "Production/Event_FULL"
+            h._stitch_project_root = lambda: root
             h._stitch_resolve_path = lambda raw: str(root / raw)
             h._ffprobe_duration_ms = lambda p: int(
                 float(
@@ -91,6 +93,9 @@ class StitchSlotExportFullMediaTests(unittest.TestCase):
             ), mock.patch(
                 "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
                 return_value=False,
+            ), mock.patch(
+                "server_handlers.stitch_slot_playback.bake_slot_playback_mp4",
+                return_value=38.5,
             ):
                 job_name, probed_ms, _warnings, _playback = stitch_upsert_event_slot(
                     h,
@@ -100,7 +105,7 @@ class StitchSlotExportFullMediaTests(unittest.TestCase):
                 )
 
             slot = store.state["jobs"][job_name]["slots"]["intro"]
-            self.assertEqual(slot["video_path"], rel)
+            self.assertIn("assembled/intro_playback_", slot["video_path"])
             self.assertGreater(probed_ms, 35_000)
             self.assertEqual(slot["video_dur_ms"], probed_ms)
 

@@ -11,6 +11,7 @@ export const STITCH_AMBIENT_BAKE_ON_SAVE_V1 = 'STITCH_AMBIENT_BAKE_ON_SAVE_V1';
 
 export interface StitchSlotMuxSigInput {
   video_path?: string;
+  playback_recipe_version?: string;
   mix_sig?: string;
   ambient_mix_sig?: string;
   ambient_mix_hash?: string;

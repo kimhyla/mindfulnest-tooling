@@ -32,7 +32,16 @@ for id in WTA-017 WTA-018 WTA-023 WTA-024 WTA-028 O3-004 O3-005 O3-006 SB-009 GA
   fi
 done
 
-echo "[fast-and-flawless] pass 3/10 — durability sub-gates"
+echo "[fast-and-flawless] pass 2b/14 — cross-pipeline G1–G8 matrix (Phase 7 only when MN_FAF_REQUIRE_MATRIX_SHIPPED=1)"
+if [[ "${MN_FAF_REQUIRE_MATRIX_SHIPPED:-0}" == "1" ]]; then
+  for id in G1 G2 G3 G4 G5 G6 G7 G8; do
+    if grep -E "\\| ${id} \\|" "$MATRIX" | grep -qE 'partial|spec-only|in_progress'; then
+      fail "matrix row ${id} not shipped — update after Phase 7 proof"
+    fi
+  done
+fi
+
+echo "[fast-and-flawless] pass 3/14 — durability sub-gates"
 for g in \
   verify_operator_edit_surfaces_durability \
   verify_o3_prompt_lineage_durability \
@@ -46,8 +55,16 @@ for g in \
   verify_parallel_event_isolation_durability \
   verify_stitch_slot_artifact_freshness \
   verify_stitch_export_trim_authority_durability \
+  verify_stitch_ambient_durability \
+  verify_stitch_four_files_durability \
   verify_operator_export_truth_closure_durability \
-  verify_voice_reliability_durability; do
+  verify_voice_reliability_durability \
+  verify_o3_job_truth_durability \
+  verify_o3_failed_redo_heal_durability \
+  verify_o3_subprocess_lifecycle_durability \
+  verify_library_cache_coherence_durability \
+  verify_bg_o3_stitch_lineage_client_durability \
+  verify_cross_pipeline_g1_g8_closure_durability; do
   bash "$SCRIPTS/${g}.sh"
 done
 
@@ -58,6 +75,12 @@ for marker in \
   SB-TRIM-HYDRATE-1 \
   BG-O3-CUT-HYDRATE-1 \
   BG-SESSION-TERMINAL-1 \
+  O3-FAILED-REDO-1 \
+  O3-RESTART-SURVIVAL-1 \
+  LIBRARY-SCOPE-PARITY-1 \
+  DIRECTUS-HAS-CROP-1 \
+  LIBRARY-CACHE-COHERENCE-1 \
+  TRIM-EXPORT-LINEAGE-1 \
   DROP-WC-1 \
   DROP-WC-2 \
   REMOUNT-1 \
@@ -76,7 +99,19 @@ echo "[fast-and-flawless] pass 5/10 — fixture playwright hydrate + poll"
     -g "HYDRATE-1|REMOUNT-1|DROP-WC-1|DROP-WC-2|AMBIENT-HYDRATE-1|PHASE-CLIP-HYDRATE-1"
 ) || fail "fixture hydrate/playhead e2e failed"
 
-echo "[fast-and-flawless] pass 6/10 — full behavioral parity"
+echo "[fast-and-flawless] pass 6b/14 — cross-pipeline G1–G8 fixture e2e (no test.skip)"
+(
+  cd "$SB"
+  npx playwright test \
+    e2e/o3_failed_redo_restores_prior_clip.spec.ts \
+    e2e/o3_restart_survival.spec.ts \
+    e2e/library_scope_parity.spec.ts \
+    e2e/directus_has_crop_disk_fallback.spec.ts \
+    e2e/library_cache_coherence.spec.ts \
+    e2e/trim_then_export_shows_new_clip.spec.ts
+) || fail "cross-pipeline G1-G8 e2e failed"
+
+echo "[fast-and-flawless] pass 6/14 — full behavioral parity"
 (
   cd "$SB"
   npx playwright test e2e/behavioral-parity.spec.ts

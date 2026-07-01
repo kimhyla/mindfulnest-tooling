@@ -44,6 +44,7 @@ Extends V2 with Phase G (RC11–RC14). No carve-outs.
 | FF-033 | Directus has_crop disk fallback (G6) | `verify_directus_has_crop_disk_fallback_durability.sh` |
 | FF-034 | Library client cache coherence (G7) | `verify_library_cache_coherence_durability.sh` |
 | FF-035 | Stitch export lineage authority (G8) | `verify_stitch_export_trim_authority_durability.sh` + `bg_o3_stitch_invalidation.py` |
+| FF-036 | Stitch four-files playback authority | `verify_stitch_four_files_durability.sh` + `stitch_slot_playback.py` |
 
 ## Non-blocking (explicit)
 
