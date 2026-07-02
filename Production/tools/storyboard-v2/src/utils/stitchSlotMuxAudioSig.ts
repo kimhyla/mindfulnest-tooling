@@ -80,13 +80,31 @@ export function stitchSlotMuxAudioSig(
   return stitchSlotLiveGeometrySig(slot);
 }
 
-/** STITCH_FOUR_FILES_V1 — one baked video_path is playback + bake input. */
+/** STITCH_FOUR_FILES_V1 — legacy baked video_path (FF-036). */
 export const STITCH_FOUR_FILES_V1 = 'STITCH_FOUR_FILES_V1';
+
+/** FF-042 — dry video_path + client Web Audio preview mix. */
+export const STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 = 'STITCH_DRY_AUTHORITY_CLIENT_MIX_V1';
 
 export function stitchSlotUsesFourFilesPlayback(
   slot: { playback_recipe_version?: string } | null | undefined,
 ): boolean {
   return (slot?.playback_recipe_version ?? '').trim() === STITCH_FOUR_FILES_V1;
+}
+
+export function stitchSlotUsesDryAuthorityClientMix(
+  slot: { playback_recipe_version?: string } | null | undefined,
+): boolean {
+  return (slot?.playback_recipe_version ?? '').trim() === STITCH_DRY_AUTHORITY_CLIENT_MIX_V1;
+}
+
+export function stitchSlotRequiresClientPreviewMix(
+  slot: StitchSlotMuxSigInput | null | undefined,
+): boolean {
+  if (!slot || !stitchSlotUsesDryAuthorityClientMix(slot)) return false;
+  const hasAmbient = Boolean((slot.ambient_bed_path || slot.ambient_bed || '').trim());
+  const hasSfx = (slot.sfx_cues ?? []).some((c) => Boolean(c && typeof c === 'object'));
+  return hasAmbient || hasSfx;
 }
 
 /** STITCH_FOUR_FILES_LEGACY_PURGE_V1 — client mirror of server load_job purge. */
@@ -122,7 +140,9 @@ export function reconcileFourFilesSlotArtifacts<
 export function stitchSlotRequiresMuxedPreview(
   slot: StitchSlotMuxSigInput | null | undefined,
 ): boolean {
-  if (!slot || stitchSlotUsesFourFilesPlayback(slot)) return false;
+  if (!slot || stitchSlotUsesFourFilesPlayback(slot) || stitchSlotUsesDryAuthorityClientMix(slot)) {
+    return false;
+  }
   return (slot.sfx_cues ?? []).some((c) => Boolean(c && typeof c === 'object'));
 }
 
@@ -130,7 +150,9 @@ export function stitchSlotRequiresMuxedPreview(
 export function stitchSlotRequiresAmbientMix(
   slot: StitchSlotMuxSigInput | null | undefined,
 ): boolean {
-  if (!slot || stitchSlotUsesFourFilesPlayback(slot)) return false;
+  if (!slot || stitchSlotUsesFourFilesPlayback(slot) || stitchSlotUsesDryAuthorityClientMix(slot)) {
+    return false;
+  }
   const hasAmbient = Boolean((slot.ambient_bed_path || slot.ambient_bed || '').trim());
   return hasAmbient && !stitchSlotRequiresMuxedPreview(slot);
 }

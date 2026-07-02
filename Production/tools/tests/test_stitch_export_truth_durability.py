@@ -29,11 +29,14 @@ def test_still_insert_exit_fade_in_concat_loop() -> None:
     assert "fade_out_ms=exit_ms" in block
 
 
-def test_playback_bake_post_remux() -> None:
+def test_playback_bake_timestamp_authority_final_heal() -> None:
     src = (TOOLS / "server_handlers" / "stitch_slot_playback.py").read_text(encoding="utf-8")
     bake = src.split("def bake_slot_playback_mp4", 1)[1].split("\ndef _assembled_playback_dest", 1)[0]
     assert "STITCH_EXPORT_TRUTH_PLAYBACK_REMUX_V1" in src
-    assert "_remux_mp4_copy_safe" in bake
+    assert "STITCH_PLAYBACK_LIPSYNC_TIMESTAMP_AUTHORITY_V1" in src
+    assert "ensure_mp4_playback_timestamps(dest)" in bake
+    assert "mp4_operator_playback_timestamps_safe(dest)" in bake
+    assert "_remux_mp4_copy_safe" not in bake
 
 
 def test_waveform_speech_path_resolver() -> None:

@@ -1,10 +1,13 @@
-"""STITCH_FOUR_FILES_V1 — one baked MP4 per stitch slot (speech + ambient + SFX).
+"""Stitch slot playback authority — dry concat (FF-042) and legacy baked playback (FF-036).
 
-Authority: TECH_SPEC_STITCH_FOUR_FILES_V1.md (FF-036)
-Rule: slot.video_path is playback is Bake Final input — or fail closed.
+FF-042: TECH_SPEC_STITCH_DRY_AUTHORITY_CLIENT_MIX_V1.md — video_path IS dry concat;
+Stitcher preview mixes ambient/SFX in client Web Audio; module bake server-mixes.
+
+FF-036 (legacy): TECH_SPEC_STITCH_FOUR_FILES_V1.md — baked *_playback_* on video_path.
 """
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,14 +17,20 @@ STITCH_FOUR_FILES_V1 = "STITCH_FOUR_FILES_V1"
 STITCH_FOUR_FILES_PLAYBACK_RECIPE = STITCH_FOUR_FILES_V1
 # FF-036 — four-files slots must never re-enter se_slot / mux_preview artifact tiers.
 STITCH_FOUR_FILES_LEGACY_PURGE_V1 = "STITCH_FOUR_FILES_LEGACY_PURGE_V1"
-# FF-037 — post-bake browser-safe remux (+faststart, avoid_negative_ts).
+# FF-037 — playback bake must end on timestamp heal (never copy-remux after).
 STITCH_EXPORT_TRUTH_PLAYBACK_REMUX_V1 = "STITCH_EXPORT_TRUTH_PLAYBACK_REMUX_V1"
+# FF-041 — lipsync: stream start_time parity + duration drift gate on playback bake.
+STITCH_PLAYBACK_LIPSYNC_TIMESTAMP_AUTHORITY_V1 = "STITCH_PLAYBACK_LIPSYNC_TIMESTAMP_AUTHORITY_V1"
 # FF-037 — waveform peaks must track speech-only dry export, not ambient-mixed playback.
 STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1 = "STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1"
 # FF-038 — force peaks re-extract after every export bake (stale hash misaligns composer).
 STITCH_EXPORT_TRUTH_WAVEFORM_INVALIDATE_ON_EXPORT_V1 = (
     "STITCH_EXPORT_TRUTH_WAVEFORM_INVALIDATE_ON_EXPORT_V1"
 )
+# FF-042 — dry concat is video_path; client Web Audio for ambient/SFX preview.
+STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 = "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1"
+STITCH_DRY_AUTHORITY_PLAYBACK_RECIPE = STITCH_DRY_AUTHORITY_CLIENT_MIX_V1
+STITCH_FOUR_FILES_MIGRATE_V1 = "STITCH_FOUR_FILES_MIGRATE_V1"
 
 _LEGACY_ARTIFACT_FIELDS = (
     "ambient_mix_hash",
@@ -46,8 +55,21 @@ def clear_legacy_playback_artifact_fields(slot: dict) -> None:
 
 
 def slot_skips_legacy_playback_artifact_tiers(slot: dict | None) -> bool:
-    """True when slot authority is baked playback MP4 only (no se_slot / mux ladder)."""
-    return playback_recipe_is_four_files(slot)
+    """True when server preview mux ladder is inactive (four-files or dry-authority)."""
+    return playback_recipe_is_four_files(slot) or playback_recipe_is_dry_authority_client_mix(slot)
+
+
+def playback_recipe_is_dry_authority_client_mix(slot: dict | None) -> bool:
+    if not isinstance(slot, dict):
+        return False
+    return (slot.get("playback_recipe_version") or "").strip() == STITCH_DRY_AUTHORITY_PLAYBACK_RECIPE
+
+
+def slot_requires_client_preview_mix(slot: dict | None) -> bool:
+    """True when Stitcher should layer ambient and/or SFX via client Web Audio."""
+    if not isinstance(slot, dict) or not playback_recipe_is_dry_authority_client_mix(slot):
+        return False
+    return slot_has_playback_mix_layers(slot)
 
 
 def slot_had_legacy_playback_artifact_fields(slot: dict) -> bool:
@@ -84,13 +106,89 @@ def resolve_slot_playback_path(slot: dict) -> str:
 
 
 def resolve_four_files_waveform_video_path(slot: dict) -> str:
-    """Speech-only path for WaveSurfer peaks — dry concat, not ambient-mixed playback."""
+    """Speech-only path for WaveSurfer peaks — dry concat authority."""
+    if playback_recipe_is_dry_authority_client_mix(slot):
+        return resolve_slot_playback_path(slot)
     if not playback_recipe_is_four_files(slot):
         return resolve_slot_playback_path(slot)
     dry = (slot.get("dry_export_path") or "").strip()
     if dry:
         return dry
     return resolve_slot_playback_path(slot)
+
+
+def _video_path_looks_like_playback_bake(path: str) -> bool:
+    name = Path(path).name.lower()
+    return "_playback_" in name
+
+
+def migrate_four_files_slot_to_dry_authority(h, slot: dict, slot_key: str) -> bool:
+    """Move four-files baked authority to dry video_path. Returns True if slot mutated."""
+    if not isinstance(slot, dict):
+        return False
+    recipe = (slot.get("playback_recipe_version") or "").strip()
+    video_rel = (slot.get("video_path") or "").strip()
+    if recipe != STITCH_FOUR_FILES_PLAYBACK_RECIPE and not _video_path_looks_like_playback_bake(video_rel):
+        if recipe == STITCH_DRY_AUTHORITY_PLAYBACK_RECIPE:
+            reconcile_dry_authority_slot_artifacts(slot)
+        return False
+
+    dry_rel = (slot.get("dry_export_path") or "").strip()
+    migrated = False
+    if dry_rel:
+        try:
+            dry_abs = h._stitch_resolve_path(dry_rel)
+            if dry_abs.is_file():
+                if video_rel != dry_rel:
+                    slot["video_path"] = dry_rel
+                    slot.pop("waveform_peaks_hash", None)
+                    migrated = True
+        except (ValueError, TypeError, OSError):
+            dry_rel = ""
+
+    if not dry_rel and _video_path_looks_like_playback_bake(video_rel):
+        event_dir = Path(h.app.event_dir) / "assembled"
+        patterns = {
+            "intro": "intro_kling_o3_*.mp4",
+            "phase_a": "phase_a_stitched_*.mp4",
+            "phase_b": "phase_b_stitched_*.mp4",
+            "resolution": "resolution_kling_o3_*.mp4",
+        }
+        glob_pat = patterns.get(slot_key, f"{slot_key}_kling_o3_*.mp4")
+        candidates = sorted(event_dir.glob(glob_pat), key=lambda p: p.stat().st_mtime, reverse=True)
+        for cand in candidates:
+            if "_playback_" in cand.name:
+                continue
+            try:
+                rel = str(cand.resolve().relative_to(h._stitch_project_root()))
+            except ValueError:
+                rel = f"Production/{event_dir.parent.name}/assembled/{cand.name}"
+            slot["video_path"] = rel
+            slot.pop("waveform_peaks_hash", None)
+            migrated = True
+            break
+        if not migrated:
+            slot["playback_migration_required"] = True
+
+    slot["playback_recipe_version"] = STITCH_DRY_AUTHORITY_PLAYBACK_RECIPE
+    slot.pop("dry_export_path", None)
+    clear_legacy_playback_artifact_fields(slot)
+    slot.pop("_waveform_peaks_url", None)
+    if migrated:
+        from server_handlers.stitch_editor import sync_stitch_slot_video_dur_ms  # noqa: PLC0415
+
+        sync_stitch_slot_video_dur_ms(h, slot, force=True)
+    return True
+
+
+def reconcile_dry_authority_slot_artifacts(slot: dict) -> bool:
+    """Purge legacy mux fields from dry-authority slots."""
+    if not playback_recipe_is_dry_authority_client_mix(slot):
+        return False
+    had = slot_had_legacy_playback_artifact_fields(slot)
+    clear_legacy_playback_artifact_fields(slot)
+    slot.pop("dry_export_path", None)
+    return had
 
 
 def playback_recipe_is_four_files(slot: dict | None) -> bool:
@@ -110,6 +208,7 @@ def bake_slot_playback_mp4(
     from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415
         STITCH_EXPORT_AV_MAX_DRIFT_S,
         av_duration_drift_s,
+        mp4_operator_playback_timestamps_safe,
     )
     from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
 
@@ -130,10 +229,18 @@ def bake_slot_playback_mp4(
     else:
         shutil.copy2(dry_video_path, dest)
 
+    # Timestamp heal is the final pass. Copy-remux after heal reintroduces ~23ms
+    # video start_time vs audio@0 and lengthens audio past video (lipsync drift).
     ensure_mp4_playback_timestamps(dest)
-    from credentials_lib.ffmpeg_stitch import _remux_mp4_copy_safe  # noqa: PLC0415
-
-    _remux_mp4_copy_safe(dest)
+    if not mp4_operator_playback_timestamps_safe(dest):
+        try:
+            dest.unlink()
+        except OSError:
+            pass
+        raise RuntimeError(
+            f"{STITCH_PLAYBACK_LIPSYNC_TIMESTAMP_AUTHORITY_V1}: playback bake "
+            f"stream start misaligned ({dest.name})",
+        )
     drift = av_duration_drift_s(dest)
     if drift > STITCH_EXPORT_AV_MAX_DRIFT_S:
         try:
@@ -244,6 +351,147 @@ def bake_and_persist_slot_playback_mp4(
     result["video_dur_ms"] = probed_ms
     result["export_full_media"] = STITCH_SLOT_EXPORT_FULL_MEDIA_V1
     return playback_rel, probed_ms, result
+
+
+def persist_dry_authority_slot_export(
+    h,
+    job_name: str,
+    slot_key: str,
+    *,
+    dry_video_rel: str,
+    slot_patch: dict,
+    beat_boundaries: list | None,
+    stitch_store,
+    peek_slot: dict | None = None,
+) -> tuple[str, int, dict[str, Any]]:
+    """FF-042 — dry concat IS video_path; no playback bake on export."""
+    from server_handlers.stitch_editor import (  # noqa: PLC0415
+        STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+        apply_stitch_slot_default_ambient_preset,
+        ensure_stitch_slot_canonical_default_sfx_cues,
+        enrich_beat_boundaries,
+        normalize_slot_audio_mix_levels,
+        sync_stitch_slot_video_dur_ms,
+        STITCH_SLOT_CANONICAL_DEFAULT_SFX,
+        _clear_canonical_sfx_dismiss_flags,
+        _hydrate_slot_ambient_paths,
+    )
+
+    dry_abs = Path(h._stitch_resolve_path(dry_video_rel))
+    if not dry_abs.is_file():
+        raise FileNotFoundError(f"dry export missing: {dry_abs}")
+
+    prospective = dict(peek_slot or {})
+    prospective.update(slot_patch)
+    apply_stitch_slot_default_ambient_preset(slot_key, prospective)
+    if slot_key in STITCH_SLOT_CANONICAL_DEFAULT_SFX:
+        ensure_stitch_slot_canonical_default_sfx_cues(h, slot_key, prospective)
+    normalize_slot_audio_mix_levels(prospective)
+    _hydrate_slot_ambient_paths(h, [prospective])
+
+    probed_ms = h._ffprobe_duration_ms(dry_abs)
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result: dict[str, Any] = {"ok": True, "code": STITCH_DRY_AUTHORITY_CLIENT_MIX_V1}
+
+    def upsert(state: dict) -> None:
+        job = (state.get("jobs") or {}).get(job_name)
+        if not isinstance(job, dict):
+            raise ValueError(f"job missing during dry export upsert: {job_name!r}")
+        slots = job.get("slots")
+        if not isinstance(slots, dict):
+            raise ValueError(f"job slots missing: {job_name!r}")
+        slot = slots.setdefault(slot_key, {})
+        old_video = (slot.get("video_path") or "").strip()
+        slot.update(slot_patch)
+        slot["video_path"] = dry_video_rel
+        slot["video_dur_ms"] = probed_ms
+        slot["playback_recipe_version"] = STITCH_DRY_AUTHORITY_PLAYBACK_RECIPE
+        slot.pop("dry_export_path", None)
+        slot.pop("playback_migration_required", None)
+        clear_legacy_playback_artifact_fields(slot)
+        slot.pop("waveform_peaks_hash", None)
+        apply_stitch_slot_default_ambient_preset(slot_key, slot)
+        if old_video and old_video != dry_video_rel:
+            _clear_canonical_sfx_dismiss_flags(slot, slot_key)
+        if slot_key in STITCH_SLOT_CANONICAL_DEFAULT_SFX:
+            ensure_stitch_slot_canonical_default_sfx_cues(h, slot_key, slot)
+        normalize_slot_audio_mix_levels(slot)
+        if beat_boundaries is not None:
+            slot["beat_boundaries"] = enrich_beat_boundaries(beat_boundaries)
+        sync_stitch_slot_video_dur_ms(h, slot, force=True)
+        job["updated_at"] = now_iso
+
+    stitch_store.mutate_state(upsert)
+    result["video_path"] = dry_video_rel
+    result["video_dur_ms"] = probed_ms
+    result["export_full_media"] = STITCH_SLOT_EXPORT_FULL_MEDIA_V1
+    return dry_video_rel, probed_ms, result
+
+
+def build_slot_ambient_loop_audio_file(h, slot: dict, cache_dir: Path) -> Path:
+    """Render slot-length ambient bed audio for client preview (FF-039 graph parity)."""
+    import hashlib as _hl  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    from server_handlers.stitch_ambient_loop import (  # noqa: PLC0415
+        ambient_loop_sig_token,
+        build_ambient_bed_filter_lane_for_file,
+    )
+
+    ambient_path = (slot.get("ambient_bed_path") or "").strip()
+    if not ambient_path:
+        raise ValueError("ambient_bed_path required for ambient loop render")
+    if not Path(ambient_path).is_file():
+        raise FileNotFoundError(f"ambient bed not found: {ambient_path}")
+
+    slot_dur_ms = int(slot.get("video_dur_ms") or 0)
+    if slot_dur_ms <= 0:
+        vp = (slot.get("video_path") or "").strip()
+        if vp:
+            slot_dur_ms = h._ffprobe_duration_ms(Path(h._stitch_resolve_path(vp)))
+    slot_dur_s = max(slot_dur_ms / 1000.0, 0.001)
+    ambient_volume = float(slot.get("ambient_volume", 0.15))
+    bed_dur_ms = h._ffprobe_duration_ms(Path(ambient_path))
+    bed_dur_s = bed_dur_ms / 1000.0 if bed_dur_ms else 0.0
+
+    sig_parts = [
+        ambient_path,
+        str(ambient_volume),
+        str(slot_dur_ms),
+        ambient_loop_sig_token(),
+    ]
+    sig = _hl.md5("|".join(sig_parts).encode(), usedforsecurity=False).hexdigest()[:12]
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    out_path = cache_dir / f"ambient_loop_{sig}.m4a"
+    if out_path.is_file():
+        return out_path
+
+    lane = build_ambient_bed_filter_lane_for_file(
+        0, ambient_path, bed_dur_s, slot_dur_s, ambient_volume, out_label="aout",
+    )
+    tmp = out_path.with_suffix(f".tmp.{os.getpid()}.m4a")
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(Path(ambient_path).resolve()),
+                "-filter_complex", lane,
+                "-map", "[aout]",
+                "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+                str(tmp),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=300,
+        )
+        os.replace(tmp, out_path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+    return out_path
 
 
 def rebake_slot_playback_from_dry(h, job_name: str, slot_key: str, *, stitch_store=None) -> dict:

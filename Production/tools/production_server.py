@@ -6305,6 +6305,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return handle_stitch_serve_module_final(self)
             if path == "/api/stitch_editor/beat_boundaries":
                 return self._handle_stitch_beat_boundaries()
+            if path == "/api/stitch_editor/slot_ambient_loop":
+                return self._handle_stitch_slot_ambient_loop()
             if path == "/api/stitch_editor/bake/status":
                 return self._handle_stitch_bake_status()
             if path.startswith("/api/stitch_editor/audio_file/"):
@@ -11763,6 +11765,22 @@ body {{padding-top:44px!important;}}
                    retry_safe=False,
                )
 
+    def _handle_stitch_slot_ambient_loop(self) -> None:
+        """GET /api/stitch_editor/slot_ambient_loop?job_name=&slot_key= — client preview bed."""
+        from server_handlers.stitch_editor import build_stitch_slot_ambient_loop_response  # noqa: PLC0415
+
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        job_name = (qs.get("job_name") or [""])[0]
+        slot_key = (qs.get("slot_key") or [""])[0]
+        if not job_name or not slot_key:
+            return self._send_error_v59(
+                400,
+                error_code="GENERIC_ERROR",
+                error_message="job_name and slot_key query params required",
+                retry_safe=False,
+            )
+        return build_stitch_slot_ambient_loop_response(self, job_name, slot_key)
+
     def _handle_stitch_beat_boundaries(self) -> None:
         """GET /api/stitch_editor/beat_boundaries?scope_target_video=resolution
         Returns beat boundary timecodes for a storyboard video partition.
@@ -12757,7 +12775,8 @@ body {{padding-top:44px!important;}}
 
         n_mix = len(mix_inputs)
         filter_lanes.append(
-            f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=first:normalize=0[aout]"
+            f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=first:normalize=0,"
+            f"atrim=end={slot_dur_s:.6f},asetpts=PTS-STARTPTS[aout]"
         )
 
         filter_complex = ";".join(filter_lanes)
@@ -12770,6 +12789,7 @@ body {{padding-top:44px!important;}}
                 "-map", "[aout]",
                 "-c:v", "copy",
                 "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+                "-shortest",
                 "-movflags", "+faststart",
                 str(out_path),
             ]

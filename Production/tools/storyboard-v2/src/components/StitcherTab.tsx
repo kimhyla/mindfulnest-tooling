@@ -18,6 +18,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
+import { useStitchSlotClientMix } from '../hooks/useStitchSlotClientMix';
 import { effect } from '@preact/signals';
 import { activeScope, activeProjectType, activeMilestoneId, producerScopeChipLabel, activeTargetVideo } from '../state/scope';
 import { pushToast } from './ui/Toast';
@@ -86,6 +87,9 @@ import {
   stitchSlotRequiresAmbientMix,
   stitchSlotLiveAmbientSig,
   stitchSlotUsesFourFilesPlayback,
+  stitchSlotUsesDryAuthorityClientMix,
+  stitchSlotRequiresClientPreviewMix,
+  STITCH_DRY_AUTHORITY_CLIENT_MIX_V1,
   STITCH_AMBIENT_BAKE_ON_SAVE_V1,
   stripStaleStitchSlotArtifacts,
 } from '../utils/stitchSlotMuxAudioSig';
@@ -565,6 +569,7 @@ export function StitcherTab() {
   const [beatBoundaries, setBeatBoundaries] = useState<BeatBoundary[]>([]);
   const [beatBoundariesLoading, setBeatBoundariesLoading] = useState(false);
   const composerVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [composerVideoNode, setComposerVideoNode] = useState<HTMLVideoElement | null>(null);
   const composerPoolRef = useRef<StitchComposerVideoPoolHandle | null>(null);
   const [composerVideoLoading, setComposerVideoLoading] = useState(false);
   const [composerVideoError, setComposerVideoError] = useState<string | null>(null);
@@ -1164,8 +1169,16 @@ export function StitcherTab() {
   const composerAmbientBuilding = busySlot?.slot === viewerSlot && busySlot.action === 'ambient';
 
   useLayoutEffect(() => {
-    composerVideoRef.current = composerPoolRef.current?.getVideo(viewerSlot) ?? null;
+    const video = composerPoolRef.current?.getVideo(viewerSlot) ?? null;
+    composerVideoRef.current = video;
+    setComposerVideoNode(video);
   }, [viewerSlot, composerSlotUrls, previewUrls]);
+
+  useStitchSlotClientMix(
+    composerVideoNode,
+    viewerSlotData,
+    job?.name ? { jobName: job.name, slotKey: viewerSlot } : null,
+  );
 
   useEffect(() => {
     setComposerVideoError(null);
@@ -1510,7 +1523,7 @@ export function StitcherTab() {
       if (!opts?.quiet) setStatusMsg(`Slot ${slot} has no video assigned.`);
       return false;
     }
-    if (stitchSlotUsesFourFilesPlayback(slotData)) {
+    if (stitchSlotUsesFourFilesPlayback(slotData) || stitchSlotUsesDryAuthorityClientMix(slotData)) {
       const flatUrl = resolveDrySlotSourceVideoUrl(slotData.video_path);
       if (!flatUrl) return false;
       const audioSig = stitchSlotSessionExpectedSig(slotData);
@@ -2463,7 +2476,12 @@ export function StitcherTab() {
                 </span>
               </div>
               <div class="mn-stitcher-slot-composer-body">
-                <div class="mn-stitcher-composer-video-wrap">
+                <div
+                  class="mn-stitcher-composer-video-wrap"
+                  {...(stitchSlotRequiresClientPreviewMix(viewerSlotData)
+                    ? { 'data-stitch-client-mix': STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 }
+                    : {})}
+                >
                   {composerVideoUrl ? (
                     <StitchComposerVideoPool
                       activeSlot={viewerSlot as StitchSessionSlotKey}

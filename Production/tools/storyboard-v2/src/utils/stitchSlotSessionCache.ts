@@ -11,6 +11,7 @@ import {
   stitchSlotRequiresAmbientMix,
   stitchSlotRequiresMuxedPreview,
   stitchSlotUsesFourFilesPlayback,
+  stitchSlotUsesDryAuthorityClientMix,
   stitchSlotSpeechPeaksSig,
   type StitchSlotMuxSigInput,
 } from './stitchSlotMuxAudioSig';
@@ -270,7 +271,7 @@ export function hydrateMuxFromLocalStorage(
     const slotData = slots[slot];
     const videoPath = (slotData?.video_path ?? '').trim();
     if (!videoPath) continue;
-    if (stitchSlotUsesFourFilesPlayback(slotData)) {
+    if (stitchSlotUsesFourFilesPlayback(slotData) || stitchSlotUsesDryAuthorityClientMix(slotData)) {
       continue;
     }
     // Ambient/SFX previews must come from server artifacts — never dry LS alone.

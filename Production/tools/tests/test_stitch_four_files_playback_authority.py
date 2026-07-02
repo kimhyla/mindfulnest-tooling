@@ -65,11 +65,11 @@ def test_bake_slot_playback_mp4_copy_when_no_mix_layers(tmp_path: Path) -> None:
     assert dur_s == pytest.approx(1.0, abs=0.05)
 
 
-def test_stitch_upsert_event_slot_uses_four_files_branch() -> None:
+def test_stitch_upsert_event_slot_uses_dry_authority_branch() -> None:
     src = Path(__file__).resolve().parents[1] / "server_handlers" / "stitch_editor.py"
     text = src.read_text(encoding="utf-8")
-    assert "STITCH_FOUR_FILES_V1" in text
-    assert "bake_and_persist_slot_playback_mp4" in text
+    assert "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1" in text
+    assert "persist_dry_authority_slot_export" in text
 
 
 def test_module_bake_passthrough_branch() -> None:

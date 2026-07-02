@@ -13,6 +13,7 @@ import {
   stitchSlotLiveGeometrySig,
   stitchSlotRequiresAmbientMix,
   stitchSlotRequiresMuxedPreview,
+  stitchSlotUsesDryAuthorityClientMix,
   stitchSlotUsesFourFilesPlayback,
   reconcileFourFilesSlotArtifacts,
   type StitchSlotMuxSigInput,
@@ -396,7 +397,7 @@ export function resolveSlotPlaybackPreviewUrl(
 
   const reconciled = reconcileFourFilesSlotArtifacts(slot) ?? slot;
 
-  if (stitchSlotUsesFourFilesPlayback(reconciled)) {
+  if (stitchSlotUsesFourFilesPlayback(reconciled) || stitchSlotUsesDryAuthorityClientMix(reconciled)) {
     return resolveDrySlotSourceVideoUrl(reconciled.video_path);
   }
 
