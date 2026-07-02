@@ -133,7 +133,7 @@ class StitchAmbientLoopTests(unittest.TestCase):
         self.assertIn(STITCH_AMBIENT_LOOP_TRIM_V2, tok)
         self.assertIn(STITCH_AMBIENT_FULL_PERIOD_TILE_V2, tok)
         self.assertIn(STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1, tok)
-        self.assertIn("tile_concat_loop_v1", tok)
+        self.assertIn("period_junction_xfade_v1", tok)
         editor = (TOOLS / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")
         server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
         self.assertIn("build_ambient_bed_filter_lane_for_file", editor)

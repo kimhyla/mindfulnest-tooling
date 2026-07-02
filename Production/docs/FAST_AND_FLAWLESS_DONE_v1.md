@@ -45,6 +45,10 @@ Extends V2 with Phase G (RC11–RC14). No carve-outs.
 | FF-034 | Library client cache coherence (G7) | `verify_library_cache_coherence_durability.sh` |
 | FF-035 | Stitch export lineage authority (G8) | `verify_stitch_export_trim_authority_durability.sh` + `bg_o3_stitch_invalidation.py` |
 | FF-036 | Stitch four-files playback authority | `verify_stitch_four_files_durability.sh` + `stitch_slot_playback.py` |
+| FF-037 | Stitch intro export truth v1 (join fade / legacy purge) | `verify_stitch_export_truth_v1_durability.sh` |
+| FF-038 | Stitch intro export truth v2 (still-insert fade / ambient tile concat) | `verify_stitch_export_truth_v2_durability.sh` |
+| FF-039 | Ambient period junction crossfade (no extraneous bed restart) | `verify_stitch_ambient_period_junction_durability.sh` |
+| FF-040 | Lipsync export video A/V authority (norm + concat) | `verify_stitch_export_lipsync_video_authority_durability.sh` |
 
 ## Non-blocking (explicit)
 
