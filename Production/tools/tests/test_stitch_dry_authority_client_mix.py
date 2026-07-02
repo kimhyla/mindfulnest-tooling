@@ -30,6 +30,8 @@ def test_client_mix_engine_marker() -> None:
     src = (TOOLS / "storyboard-v2/src/audio/StitchSlotAudioMixEngine.ts").read_text(encoding="utf-8")
     assert "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1" in src
     assert "createMediaElementSource" in src
+    assert "videoSpeechChains" in src
+    assert "ctx.close()" not in src
 
 
 def test_stitcher_tab_client_mix_hook() -> None:

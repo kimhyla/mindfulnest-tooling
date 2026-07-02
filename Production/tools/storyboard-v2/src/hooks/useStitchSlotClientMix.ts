@@ -18,6 +18,7 @@ export function useStitchSlotClientMix(
 ): void {
   const engineRef = useRef<StitchSlotAudioMixEngine | null>(null);
   const sigRef = useRef('');
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
     const needsMix = stitchSlotRequiresClientPreviewMix(slot);
@@ -25,24 +26,34 @@ export function useStitchSlotClientMix(
       engineRef.current?.detach();
       engineRef.current = null;
       sigRef.current = '';
+      videoRef.current = null;
       return;
     }
 
     const sig = stitchSlotLiveGeometrySig(slot);
-    if (sigRef.current === sig && engineRef.current) {
+    if (sigRef.current === sig && engineRef.current && videoRef.current === video) {
       return;
     }
 
-    sigRef.current = sig;
     const engine = engineRef.current ?? new StitchSlotAudioMixEngine();
     engineRef.current = engine;
+    const reuseVideo = videoRef.current === video && sigRef.current !== '';
 
     let cancelled = false;
     void (async () => {
       try {
         if (engineRef.current !== engine) return;
-        await engine.attach(video, slot, jobCtx);
-        if (cancelled) engine.detach();
+        if (reuseVideo) {
+          await engine.rebuildGeometry(slot);
+        } else {
+          await engine.attach(video, slot, jobCtx);
+        }
+        if (cancelled) {
+          engine.detach();
+          return;
+        }
+        videoRef.current = video;
+        sigRef.current = sig;
       } catch (err) {
         console.warn('[stitch-client-mix] attach failed', err);
       }

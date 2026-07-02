@@ -30,10 +30,31 @@ export interface StitchClientMixJobContext {
 
 const DRIFT_RESYNC_MS = 80;
 
+/** One MediaElementSource per pooled <video> — browser forbids a second createMediaElementSource. */
+type VideoSpeechChain = {
+  ctx: AudioContext;
+  speechNode: MediaElementAudioSourceNode;
+  speechGain: GainNode;
+};
+
+const videoSpeechChains = new WeakMap<HTMLVideoElement, VideoSpeechChain>();
+
+function speechChainForVideo(video: HTMLVideoElement): VideoSpeechChain {
+  const existing = videoSpeechChains.get(video);
+  if (existing) return existing;
+  const ctx = new AudioContext();
+  const speechNode = ctx.createMediaElementSource(video);
+  const speechGain = ctx.createGain();
+  speechGain.gain.value = 1;
+  speechNode.connect(speechGain);
+  speechGain.connect(ctx.destination);
+  const chain = { ctx, speechNode, speechGain };
+  videoSpeechChains.set(video, chain);
+  return chain;
+}
+
 export class StitchSlotAudioMixEngine {
   private ctx: AudioContext | null = null;
-
-  private speechNode: MediaElementAudioSourceNode | null = null;
 
   private ambientSource: AudioBufferSourceNode | null = null;
 
@@ -87,16 +108,15 @@ export class StitchSlotAudioMixEngine {
     slot: StitchClientMixSlotInput,
     jobCtx: StitchClientMixJobContext,
   ): Promise<void> {
-    this.detach();
+    this.detachLayers();
     this.video = video;
     this.slotInput = slot;
     this.jobCtx = jobCtx;
-    this.ctx = new AudioContext();
-    this.speechNode = this.ctx.createMediaElementSource(video);
-    const speechGain = this.ctx.createGain();
-    speechGain.gain.value = 1;
-    this.speechNode.connect(speechGain);
-    speechGain.connect(this.ctx.destination);
+    const chain = speechChainForVideo(video);
+    this.ctx = chain.ctx;
+    if (this.ctx.state === 'suspended') {
+      await this.ctx.resume();
+    }
     await this.loadAmbient();
     this.bindVideoEvents();
     if (!video.paused) {
@@ -115,26 +135,20 @@ export class StitchSlotAudioMixEngine {
     }
   }
 
-  detach(): void {
+  /** Stop ambient/SFX layers only — keep pooled video speech chain alive. */
+  detachLayers(): void {
     this.unbindVideoEvents();
     this.stopAmbient();
     this.stopSfx();
-    if (this.speechNode) {
-      try {
-        this.speechNode.disconnect();
-      } catch {
-        /* already disconnected */
-      }
-      this.speechNode = null;
-    }
-    if (this.ctx) {
-      void this.ctx.close();
-      this.ctx = null;
-    }
+    this.ambientBuffer = null;
+  }
+
+  detach(): void {
+    this.detachLayers();
     this.video = null;
     this.slotInput = null;
     this.jobCtx = null;
-    this.ambientBuffer = null;
+    this.ctx = null;
   }
 
   private bindVideoEvents(): void {
