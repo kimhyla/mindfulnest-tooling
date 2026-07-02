@@ -179,7 +179,7 @@ class StitchAmbientLoopSeamBudgetTests(unittest.TestCase):
         self.assertNotIn("[amb0p1]", frag)
 
     def test_rendered_loop_period_is_bed_not_crossfade(self):
-        """49s slot, 8s sine bed — dominant autocorr peak must be ~8s, not ~2.5s."""
+        """49s slot, 8s sine bed — dominant period must be >>2.5s (not glue-only bug)."""
         with tempfile.TemporaryDirectory() as tmp:
             bed = Path(tmp) / "bed.mp3"
             out = Path(tmp) / "looped.mp3"
@@ -208,7 +208,8 @@ class StitchAmbientLoopSeamBudgetTests(unittest.TestCase):
             self.assertAlmostEqual(_ffprobe_duration(out), 49.0, delta=0.2)
             samples, sr = _extract_mono_pcm(out)
             period = _dominant_loop_period_s(samples, sr)
-            self.assertGreater(period, 6.0, msg=f"loop period {period:.2f}s too short (crossfade-only bug)")
+            # FF-039 junction xfades shorten autocorr peak to ~content_s - xf (~5.5s on 8s bed).
+            self.assertGreater(period, 4.0, msg=f"loop period {period:.2f}s too short (crossfade-only bug)")
             self.assertLess(period, 10.0, msg=f"loop period {period:.2f}s unexpected")
 
     def test_resolution_bed_filter_is_full_period(self):
@@ -287,7 +288,7 @@ class StitchAmbientLoopSeamBudgetTests(unittest.TestCase):
                 )
             fixed_period = _dominant_loop_period_s(*_extract_mono_pcm(fixed_out))
             broken_period = _dominant_loop_period_s(*_extract_mono_pcm(broken_out))
-            self.assertGreater(fixed_period, 6.0)
+            self.assertGreater(fixed_period, 4.0)
             self.assertLess(broken_period, 4.0)
             self.assertGreater(fixed_period, broken_period * 2.0)
 
