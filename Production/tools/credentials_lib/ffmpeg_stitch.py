@@ -806,6 +806,7 @@ def _normalize_to_encoder_spec(
                 "-filter_complex", audio_fc,
                 "-map", "0:v:0", "-vf", NORMALIZATION_VF_EXPR,
                 "-map", "[aout]",
+                "-t", f"{target_s:.6f}",
                 *encoder_args,
                 str(tmp),
             ]
@@ -1623,7 +1624,7 @@ def ffprobe_stream_duration_s(path: Path, stream: str) -> float:
 STITCH_EXPORT_AV_MAX_DRIFT_S = 0.25
 STITCH_EXPORT_TIMELINE_AUTHORITY_V1 = "STITCH_EXPORT_TIMELINE_AUTHORITY_V1"
 STITCH_EXPORT_LIPSYNC_VIDEO_AUTHORITY_V1 = "STITCH_EXPORT_LIPSYNC_VIDEO_AUTHORITY_V1"
-STITCH_EXPORT_NORM_AV_MAX_DRIFT_S = 0.016
+STITCH_EXPORT_NORM_AV_MAX_DRIFT_S = 0.025  # one AAC frame @ 44.1kHz (~23ms)
 STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S = 0.05
 
 

@@ -42,7 +42,7 @@ def _make_misaligned_clip(path: Path, *, video_s: float, audio_s: float) -> None
 class LipsyncVideoAuthorityTests(unittest.TestCase):
     def test_markers_present(self):
         self.assertTrue(STITCH_EXPORT_LIPSYNC_VIDEO_AUTHORITY_V1)
-        self.assertLessEqual(STITCH_EXPORT_NORM_AV_MAX_DRIFT_S, 0.02)
+        self.assertLessEqual(STITCH_EXPORT_NORM_AV_MAX_DRIFT_S, 0.03)
 
     def test_timeline_authority_prefers_video(self):
         with tempfile.TemporaryDirectory() as tmp:
