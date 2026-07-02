@@ -137,7 +137,7 @@ def migrate_four_files_slot_to_dry_authority(h, slot: dict, slot_key: str) -> bo
     migrated = False
     if dry_rel:
         try:
-            dry_abs = h._stitch_resolve_path(dry_rel)
+            dry_abs = Path(h._stitch_resolve_path(dry_rel))
             if dry_abs.is_file():
                 if video_rel != dry_rel:
                     slot["video_path"] = dry_rel

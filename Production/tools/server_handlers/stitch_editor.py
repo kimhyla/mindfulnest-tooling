@@ -4019,7 +4019,6 @@ def _preview_module_timing_from_hydrated(h, hydrated: dict) -> tuple[list[int], 
 
 def build_stitch_slot_ambient_loop_response(h, job_name: str, slot_key: str) -> None:
     """GET /api/stitch_editor/slot_ambient_loop — FF-039 ambient graph for client preview."""
-    from server_handlers.stitch_scope import stitch_state_store_for_job  # noqa: PLC0415
     from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
         STITCH_DRY_AUTHORITY_CLIENT_MIX_V1,
         build_slot_ambient_loop_audio_file,
