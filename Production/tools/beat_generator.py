@@ -14180,6 +14180,10 @@ def resolve_bg_export_stitch_slot(*, phase: str, video_role: str | None = None) 
 KLING_EXPORT_AUDIO_JOIN_V1 = "KLING_EXPORT_AUDIO_JOIN_V1"
 # STITCH_EXPORT_TRUTH_JOIN_FADE_V1 — 25ms insufficient for still-insert→Kling timbre joins (~34s intro).
 STITCH_EXPORT_TRUTH_JOIN_FADE_V1 = "STITCH_EXPORT_TRUTH_JOIN_FADE_V1"
+# FF-038 — beat metadata drives still-insert exit fades (not _norm_concat filename).
+STITCH_EXPORT_TRUTH_STILL_INSERT_VIDEO_FADE_V1 = (
+    "STITCH_EXPORT_TRUTH_STILL_INSERT_VIDEO_FADE_V1"
+)
 KLING_EXPORT_AUDIO_JOIN_FADE_MS = 80
 KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS = 150
 
@@ -14225,7 +14229,47 @@ def _kling_export_audio_lane_filter(
     return f"{chain}[{out_label}]"
 
 
-def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> None:
+def _expand_still_insert_flags_for_pair_fades(
+    still_insert_flags: list[bool],
+    pair_fades: list[int],
+) -> list[bool]:
+    """Align still-insert flags with expand_clips_with_black_pause_boundaries output."""
+    fs = _ffmpeg_stitch_module()
+    allocate_pair_fade_budget = fs.allocate_pair_fade_budget
+    visual_out_ms = _load_intro_fade_out_video_tail_ms()
+    visual_in_ms = _load_intro_fade_in_video_head_ms()
+    n = len(still_insert_flags)
+    out: list[bool] = []
+    for i in range(n):
+        out.append(bool(still_insert_flags[i]))
+        if i < n - 1 and pair_fades[i] > 0:
+            _, _, black_ms = allocate_pair_fade_budget(
+                pair_fades[i],
+                visual_out_ms=visual_out_ms,
+                visual_in_ms=visual_in_ms,
+            )
+            if black_ms > 0:
+                out.append(False)
+    return out
+
+
+def _still_insert_exit_at_join(
+    index: int,
+    clip_paths: list[Path],
+    still_insert_flags: list[bool] | None,
+) -> bool:
+    """True when outgoing clip at join is still-insert (beat metadata wins over path)."""
+    if still_insert_flags is not None and index < len(still_insert_flags):
+        return bool(still_insert_flags[index])
+    return _kling_export_clip_path_is_still_insert(clip_paths[index])
+
+
+def _ffmpeg_concat_kling_clips_reencode(
+    clip_paths: list[Path],
+    dest: Path,
+    *,
+    still_insert_flags: list[bool] | None = None,
+) -> None:
     """Concat Kling clips with re-encode — ``-c copy`` causes A/V desync across mixed encodes."""
     import shutil
 
@@ -14264,20 +14308,31 @@ def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> N
         silent_lavfi_indices[i] = lavfi_input_idx
         lavfi_input_idx += 1
 
-    v_parts = [
-        (
+    still_exit_s = KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS / 1000.0
+    v_parts: list[str] = []
+    for i in range(n):
+        v_chain = (
             f"[{i}:v:0]scale=1920:1080:force_original_aspect_ratio=decrease,"
             f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,"
-            f"trim=duration={durations[i]:.6f},setpts=PTS-STARTPTS[v{i}]"
+            f"trim=duration={durations[i]:.6f},setpts=PTS-STARTPTS"
         )
-        for i in range(n)
-    ]
+        if (
+            i < n - 1
+            and still_exit_s > 0
+            and durations[i] > still_exit_s * 2
+            and _still_insert_exit_at_join(i, clip_paths, still_insert_flags)
+        ):
+            v_chain += (
+                f",fade=t=out:st={durations[i] - still_exit_s:.6f}:"
+                f"d={still_exit_s:.6f}"
+            )
+        v_parts.append(f"{v_chain}[v{i}]")
     a_parts: list[str] = []
     for i in range(n):
         src = silent_lavfi_indices.get(i, i)
         exit_ms = (
             KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS
-            if _kling_export_clip_path_is_still_insert(clip_paths[i]) and i < n - 1
+            if _still_insert_exit_at_join(i, clip_paths, still_insert_flags) and i < n - 1
             else KLING_EXPORT_AUDIO_JOIN_FADE_MS
         )
         a_parts.append(
@@ -14342,6 +14397,8 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
     dest: Path,
     pair_fades: list[int],
     scratch_dir: Path,
+    *,
+    still_insert_flags: list[bool] | None = None,
 ) -> None:
     """Concat with fade-through-black at selected boundaries (no A/V overlap).
 
@@ -14362,8 +14419,11 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
     if len(clip_paths) == 1:
         shutil.copy2(clip_paths[0], dest)
         return
+    flags = still_insert_flags
+    if flags is None:
+        flags = [False] * len(clip_paths)
     if not pair_fades or all(f <= 0 for f in pair_fades):
-        _ffmpeg_concat_kling_clips_reencode(clip_paths, dest)
+        _ffmpeg_concat_kling_clips_reencode(clip_paths, dest, still_insert_flags=flags)
         return
 
     body_dir = scratch_dir / "fade_black"
@@ -14378,8 +14438,12 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
         visual_in_ms=visual_in_ms,
         fade_audio=False,
     )
+    expanded_flags = _expand_still_insert_flags_for_pair_fades(flags, pair_fades)
+    if len(expanded_flags) != len(parts):
+        expanded_flags = flags[: len(parts)] + [False] * max(0, len(parts) - len(flags))
+        expanded_flags = expanded_flags[: len(parts)]
 
-    _ffmpeg_concat_kling_clips_reencode(parts, dest)
+    _ffmpeg_concat_kling_clips_reencode(parts, dest, still_insert_flags=expanded_flags)
 
 
 def _boundaries_for_pair_fade_concat(
@@ -14421,7 +14485,7 @@ def resolve_segment_stitch_export_clip_paths(
     event_name: str | None = None,
     event_id: str | None = None,
     progress_cb=None,
-) -> tuple[list[Path], Path]:
+) -> tuple[list[Path], list[bool], Path]:
     """Clip paths in beat order — must match ``concat_kling_o3_approved_beats`` inputs."""
     if not beats:
         raise ValueError("no beats to resolve")
@@ -14453,6 +14517,7 @@ def resolve_segment_stitch_export_clip_paths(
             canonical_tail = None
 
     clip_paths: list[Path] = []
+    still_insert_flags: list[bool] = []
     beat_total = len(beats)
     for i, beat in enumerate(beats):
         if progress_cb:
@@ -14460,6 +14525,7 @@ def resolve_segment_stitch_export_clip_paths(
         is_last = i == len(beats) - 1
         if is_last and canonical_tail is not None:
             clip_paths.append(canonical_tail.resolve())
+            still_insert_flags.append(False)
         else:
             raw_clip = materialize_beat_export_clip_with_retry(
                 beat,
@@ -14481,7 +14547,8 @@ def resolve_segment_stitch_export_clip_paths(
             norm_out = scratch_dir / f"{beat.get('beat_id') or i}_norm_concat.mp4"
             fs.normalize_for_concat(loudnorm_clip, norm_out)
             clip_paths.append(norm_out)
-    return clip_paths, scratch_dir
+            still_insert_flags.append(beat_is_still_insert(beat))
+    return clip_paths, still_insert_flags, scratch_dir
 
 
 def concat_kling_o3_approved_beats(
@@ -14514,7 +14581,7 @@ def concat_kling_o3_approved_beats(
         raise ValueError("; ".join(trim_errors))
     out_dir = Path(event_dir) / "assembled"
     out_dir.mkdir(parents=True, exist_ok=True)
-    clip_paths, scratch_dir = resolve_segment_stitch_export_clip_paths(
+    clip_paths, still_insert_flags, scratch_dir = resolve_segment_stitch_export_clip_paths(
         beats,
         event_dir,
         phase=phase,
@@ -14538,14 +14605,20 @@ def concat_kling_o3_approved_beats(
     if pair_fades and any(f > 0 for f in pair_fades):
         try:
             _ffmpeg_concat_kling_clips_with_pair_fades(
-                clip_paths, out_path, pair_fades, scratch_dir,
+                clip_paths,
+                out_path,
+                pair_fades,
+                scratch_dir,
+                still_insert_flags=still_insert_flags,
             )
         except ImportError as exc:
             raise RuntimeError(
                 f"intro xfade concat requires ffmpeg_stitch: {exc}",
             ) from exc
     else:
-        _ffmpeg_concat_kling_clips_reencode(clip_paths, out_path)
+        _ffmpeg_concat_kling_clips_reencode(
+            clip_paths, out_path, still_insert_flags=still_insert_flags,
+        )
     if not _ffprobe_ok(out_path):
         raise RuntimeError(f"assembled clip failed ffprobe: {out_path}")
 

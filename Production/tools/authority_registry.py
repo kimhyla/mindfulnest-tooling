@@ -246,6 +246,18 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         notes="Join fade + dry waveform peaks + playback remux; rebake required after deploy.",
     ),
     AuthorityConcept(
+        id="stitch_export_truth_v2",
+        status="shipped",
+        marker="STITCH_EXPORT_TRUTH_STILL_INSERT_VIDEO_FADE_V1",
+        question="How do still-insert exits and ambient loops avoid intro seam clicks?",
+        authority_shape="disk",
+        server_module="beat_generator.py",
+        server_read="_still_insert_exit_at_join",
+        server_write="concat_kling_o3_approved_beats",
+        spec_doc="Production/docs/TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V2.md",
+        notes="Beat-metadata still-insert fades + tile concat ambient + peaks hash purge on export.",
+    ),
+    AuthorityConcept(
         id="operator_still_scene",
         status="shipped",
         marker="OPERATOR_WORKBENCH_AUTHORITY",

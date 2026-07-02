@@ -155,7 +155,8 @@ class StitchAmbientLoopSeamBudgetTests(unittest.TestCase):
         self.assertIn("[amb1pre]", lane)
         self.assertIn("[amb1wrap]", lane)
         self.assertIn("concat=n=2:v=0:a=1[amb1tile]", lane)
-        self.assertIn("[amb1tile]aloop=loop=-1", lane)
+        self.assertIn("asplit=", lane)
+        self.assertNotIn("[amb1tile]aloop=loop=-1", lane)
         self.assertNotIn("[amb1p1]", lane)
         self.assertNotIn("[amb1xfaded]", lane)
 
@@ -244,10 +245,14 @@ class StitchAmbientLoopSeamBudgetTests(unittest.TestCase):
         self.assertNotIn("[amb0p1]", lane)
 
     def test_sig_token_uses_v2_marker(self):
-        from server_handlers.stitch_ambient_loop import ambient_loop_sig_token
+        from server_handlers.stitch_ambient_loop import (
+            STITCH_AMBIENT_TILE_CONCAT_LOOP_V1,
+            ambient_loop_sig_token,
+        )
 
         tok = ambient_loop_sig_token()
         self.assertIn(STITCH_AMBIENT_FULL_PERIOD_TILE_V2, tok)
+        self.assertIn(STITCH_AMBIENT_TILE_CONCAT_LOOP_V1, tok)
         self.assertNotIn(STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3, tok)
 
     def test_broken_crossfade_only_regression_on_sine(self):

@@ -18,6 +18,10 @@ STITCH_FOUR_FILES_LEGACY_PURGE_V1 = "STITCH_FOUR_FILES_LEGACY_PURGE_V1"
 STITCH_EXPORT_TRUTH_PLAYBACK_REMUX_V1 = "STITCH_EXPORT_TRUTH_PLAYBACK_REMUX_V1"
 # FF-037 — waveform peaks must track speech-only dry export, not ambient-mixed playback.
 STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1 = "STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1"
+# FF-038 — force peaks re-extract after every export bake (stale hash misaligns composer).
+STITCH_EXPORT_TRUTH_WAVEFORM_INVALIDATE_ON_EXPORT_V1 = (
+    "STITCH_EXPORT_TRUTH_WAVEFORM_INVALIDATE_ON_EXPORT_V1"
+)
 
 _LEGACY_ARTIFACT_FIELDS = (
     "ambient_mix_hash",
@@ -222,6 +226,8 @@ def bake_and_persist_slot_playback_mp4(
         slot["video_dur_ms"] = probed_ms
         slot["playback_recipe_version"] = STITCH_FOUR_FILES_PLAYBACK_RECIPE
         clear_legacy_playback_artifact_fields(slot)
+        # FF-038 — peaks hash must not survive path/dry changes across re-export.
+        slot.pop("waveform_peaks_hash", None)
         apply_stitch_slot_default_ambient_preset(slot_key, slot)
         if old_video and old_video != playback_rel:
             _clear_canonical_sfx_dismiss_flags(slot, slot_key)

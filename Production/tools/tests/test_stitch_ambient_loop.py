@@ -39,7 +39,8 @@ class StitchAmbientLoopTests(unittest.TestCase):
         lane = build_ambient_bed_filter_lane(1, 32.808, 65.0, 0.15)
         self.assertIn("acrossfade", lane)
         self.assertIn("[bed]", lane)
-        self.assertIn("[amb1tile]aloop=loop=-1", lane)
+        self.assertIn("asplit=", lane)
+        self.assertNotIn("[amb1tile]aloop=loop=-1", lane)
         self.assertIn("[amb1pre]", lane)
         self.assertIn("[amb1wrap]", lane)
         self.assertIn("concat=n=2:v=0:a=1[amb1tile]", lane)
@@ -62,7 +63,8 @@ class StitchAmbientLoopTests(unittest.TestCase):
     def test_long_bed_uses_xfade_tile_not_raw_aloop(self):
         lane = build_ambient_bed_filter_lane(1, 8.0, 25.0, 0.15)
         self.assertIn("acrossfade", lane)
-        self.assertIn("[amb1tile]aloop=loop=-1", lane)
+        self.assertIn("asplit=", lane)
+        self.assertNotIn("[amb1tile]aloop=loop=-1", lane)
         self.assertIn("[amb1pre]", lane)
         self.assertIn("concat=n=2:v=0:a=1[amb1tile]", lane)
         self.assertNotIn(
@@ -131,7 +133,7 @@ class StitchAmbientLoopTests(unittest.TestCase):
         self.assertIn(STITCH_AMBIENT_LOOP_TRIM_V2, tok)
         self.assertIn(STITCH_AMBIENT_FULL_PERIOD_TILE_V2, tok)
         self.assertIn(STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1, tok)
-        self.assertIn("no_hard_aloop_v1", tok)
+        self.assertIn("tile_concat_loop_v1", tok)
         editor = (TOOLS / "server_handlers" / "stitch_editor.py").read_text(encoding="utf-8")
         server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
         self.assertIn("build_ambient_bed_filter_lane_for_file", editor)

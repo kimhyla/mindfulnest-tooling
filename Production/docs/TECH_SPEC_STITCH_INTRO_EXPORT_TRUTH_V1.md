@@ -1,6 +1,6 @@
 # TECH_SPEC — Stitch Intro Export Truth v1 (FF-037)
 
-**Status:** In progress (2026-07-01)  
+**Status:** Shipped (2026-07-01, commit `c96e048`)  
 **Scope:** Event_4 intro first; all BG `pre`/`post`/`phase_*` exports via same pipeline  
 **Agents:** 4×4 debate consensus — LEGACY_PURGE was wrong layer for intro symptoms
 

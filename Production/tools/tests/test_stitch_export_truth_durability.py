@@ -24,7 +24,7 @@ def test_still_insert_exit_fade_in_concat_loop() -> None:
     block = src.split("def _ffmpeg_concat_kling_clips_reencode", 1)[1].split(
         "\ndef _TOOLS_DIR", 1,
     )[0]
-    assert "_kling_export_clip_path_is_still_insert" in block
+    assert "_still_insert_exit_at_join" in block
     assert "KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS" in block
     assert "fade_out_ms=exit_ms" in block
 

@@ -1254,7 +1254,7 @@ def _run_bg_export_to_stitcher_core(
             h.app.event_dir,
             reason="send_to_stitcher",
         )
-        clip_paths, _scratch = bg.resolve_segment_stitch_export_clip_paths(
+        clip_paths, _, _scratch = bg.resolve_segment_stitch_export_clip_paths(
             beats,
             h.app.event_dir,
             phase=phase,

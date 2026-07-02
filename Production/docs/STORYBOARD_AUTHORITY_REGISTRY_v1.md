@@ -77,6 +77,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_slot_playback_mp4** — sole Stitcher playback + Bake Final input per slot | disk | `resolve_slot_playback_path` | `bake_and_persist_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_END_TO_END_CLOSURE_v1.md` |
 | **stitch_ambient_loop_seam_budget** — ambient loop seams | derived | `build_ambient_bed_filter_lane` | `STITCH_AMBIENT_FULL_PERIOD_TILE_V2` | shipped | same |
 | **stitch_export_truth** — concat join fade + speech waveform + playback remux | disk | `_kling_export_audio_lane_filter` / `resolveSlotWaveformVideoPath` | `concat_kling_o3_approved_beats` / `bake_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V1.md` |
+| **stitch_export_truth_v2** — still-insert video fade + ambient tile concat + peaks invalidate | disk | `_still_insert_exit_at_join` / `build_ambient_explicit_tile_concat_loop` | `concat_kling_o3_approved_beats` / `bake_and_persist_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V2.md` |
 | **stitch_playback_url** — composer video when SFX exist | derived | `resolveSlotPlaybackPreviewUrl` | mux artifact bake | shipped | `TECH_SPEC_STITCH_SFX_PLAYBACK_TRUTH_V1.md` |
 | **stitch_single_owner** — who mutates slot video post-export | disk | `STITCH_SINGLE_OWNER_V1` load_job read-only | export path owns ingest | shipped | `TECH_SPEC_STITCH_SINGLE_OWNER_V1.md` |
 

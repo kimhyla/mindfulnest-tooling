@@ -6,6 +6,7 @@ build a one-period seamless tile (tail crossfaded into head), then loop to slot 
 """
 from __future__ import annotations
 
+import math
 import re
 import subprocess
 from pathlib import Path
@@ -13,6 +14,8 @@ from pathlib import Path
 STITCH_AMBIENT_LOOP_XFADE_V1 = "STITCH_AMBIENT_LOOP_XFADE_V1"
 STITCH_AMBIENT_SINGLE_SEAM_V1 = "STITCH_AMBIENT_SINGLE_SEAM_V1"  # superseded — glue-only tile (~2.5s loop)
 STITCH_AMBIENT_FULL_PERIOD_TILE_V2 = "STITCH_AMBIENT_FULL_PERIOD_TILE_V2"
+# FF-038 — explicit tile concat replaces hard aloop after period tile (de-click at period boundary).
+STITCH_AMBIENT_TILE_CONCAT_LOOP_V1 = "STITCH_AMBIENT_TILE_CONCAT_LOOP_V1"
 STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3 = "STITCH_AMBIENT_PERIOD_OFFSET_XFADE_V3"  # superseded — atrim mid-crossfade click at period
 STITCH_AMBIENT_LOOP_TRIM_V2 = "STITCH_AMBIENT_LOOP_TRIM_V2"
 STITCH_AMBIENT_LOOP_CROSSFADE_S = 2.5
@@ -171,6 +174,27 @@ def build_ambient_seamless_period_tile(
     )
 
 
+def build_ambient_explicit_tile_concat_loop(
+    tile_label: str,
+    period_s: float,
+    slot_s: float,
+) -> str:
+    """Repeat one period tile via asplit+concat — avoids hard ``aloop`` seam at period boundary."""
+    period = max(float(period_s), 0.001)
+    slot = max(float(slot_s), 0.001)
+    reps = max(2, int(math.ceil(slot / period)) + 1)
+    reps = min(reps, 24)
+    split_labels = [f"{tile_label}rep{i}" for i in range(reps)]
+    split_targets = "".join(f"[{lab}]" for lab in split_labels)
+    concat_inputs = "".join(f"[{lab}]" for lab in split_labels)
+    loop_label = f"{tile_label}loop"
+    return (
+        f"[{tile_label}]asplit={reps}{split_targets};"
+        f"{concat_inputs}concat=n={reps}:v=0:a=1[{loop_label}];"
+        f"[{loop_label}]atrim=duration={slot:.3f}"
+    )
+
+
 def build_ambient_bed_filter_lane(
     input_idx: int,
     bed_dur_s: float,
@@ -219,7 +243,9 @@ def build_ambient_bed_filter_lane(
     period_tile = build_ambient_seamless_period_tile(
         trimmed, prefix_label=p, content_s=content_s, crossfade_s=crossfade_s,
     )
-    lane_body = f"{period_tile};[{p}tile]aloop=loop=-1:size=2147483647,atrim=duration={slot_s:.3f}"
+    tile_label = f"{p}tile"
+    loop_body = build_ambient_explicit_tile_concat_loop(tile_label, content_s, slot_s)
+    lane_body = f"{period_tile};{loop_body}"
     return _ambient_bed_lane_out(lane_body, vol, out_label, slot_s)
 
 
@@ -251,7 +277,8 @@ def ambient_loop_sig_token(crossfade_s: float | None = None) -> str:
     return (
         f"{STITCH_AMBIENT_LOOP_TRIM_V2}:{STITCH_AMBIENT_LOOP_XFADE_V1}:"
         f"{STITCH_AMBIENT_FULL_PERIOD_TILE_V2}:"
+        f"{STITCH_AMBIENT_TILE_CONCAT_LOOP_V1}:"
         f"{STITCH_AMBIENT_BED_MIX_FADE_IN_V1}:{STITCH_AMBIENT_BED_SLOT_FADE_OUT_V1}:"
         f"{xf:.3f}:{STITCH_AMBIENT_BED_MIX_FADE_IN_S:.3f}:"
-        f"{STITCH_AMBIENT_BED_SLOT_FADE_OUT_S:.3f}:no_hard_aloop_v1"
+        f"{STITCH_AMBIENT_BED_SLOT_FADE_OUT_S:.3f}:tile_concat_loop_v1"
     )

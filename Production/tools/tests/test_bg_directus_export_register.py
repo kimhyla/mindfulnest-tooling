@@ -57,7 +57,7 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
             "normalize_for_concat": staticmethod(_norm),
         })(),
     )
-    monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_reencode", lambda c, d: d.write_bytes(b"x"))
+    monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_reencode", lambda c, d, **k: d.write_bytes(b"x"))
     monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_with_pair_fades", lambda *a, **k: a[1].write_bytes(b"x"))
     monkeypatch.setattr(bg, "_intro_export_pair_fades", lambda *a, **k: [])
     monkeypatch.setattr(bg, "_boundaries_for_pair_fade_concat", lambda b, c, f: [])
@@ -78,7 +78,7 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
             "kling_o3_status": "approved",
         },
     ]
-    resolved, _ = bg.resolve_segment_stitch_export_clip_paths(
+    resolved, _, _ = bg.resolve_segment_stitch_export_clip_paths(
         beats, event_dir, phase="pre", event_id="2",
     )
     assert len(resolved) == 2
