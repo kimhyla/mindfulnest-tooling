@@ -1,8 +1,10 @@
 """Unit tests for canonical per-event stitch job upsert + legacy migration."""
 from __future__ import annotations
 
+import tempfile
 import unittest
 import unittest.mock as mock
+from pathlib import Path
 
 from server_handlers.stitch_editor import (
     stitch_event_job_name,
@@ -75,43 +77,48 @@ class StitchCanonicalJobTests(unittest.TestCase):
         )
 
     def test_upsert_does_not_drop_other_slots(self):
-        h = _MockHandler(
-            {
-                "jobs": {
-                    "Event_1_stitch": {
-                        "slots": {
-                            "resolution": {"video_path": "/proj/scene_resolution.mp4"},
+        dry_rel = "Production/Event_1/preview/phase_b/phase_b_preview_abc.mp4"
+        with tempfile.TemporaryDirectory() as tmp:
+            dry_abs = Path(tmp) / dry_rel
+            dry_abs.parent.mkdir(parents=True, exist_ok=True)
+            dry_abs.write_bytes(b"\x00")
+
+            h = _MockHandler(
+                {
+                    "jobs": {
+                        "Event_1_stitch": {
+                            "slots": {
+                                "resolution": {"video_path": "/proj/scene_resolution.mp4"},
+                            },
                         },
                     },
                 },
-            },
-        )
-        with mock.patch(
-            "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
-            return_value=(60_000, []),
-        ), mock.patch(
-            "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
-            return_value=False,
-        ), mock.patch(
-            "server_handlers.stitch_editor.apply_stitch_slot_default_ambient_preset",
-            return_value=False,
-        ), mock.patch(
-            "server_handlers.stitch_editor.ensure_stitch_slot_canonical_default_sfx_cues",
-            return_value=False,
-        ), mock.patch(
-            "server_handlers.stitch_slot_playback.bake_slot_playback_mp4",
-            return_value=60.0,
-        ):
-            stitch_upsert_event_slot(
-                h,
-                "Event_1",
-                "phase_b",
-                {"video_path": "Production/Event_1/preview/phase_b/phase_b_preview_abc.mp4"},
             )
-        slots = h.app.stitch_state.state["jobs"]["Event_1_stitch"]["slots"]
-        self.assertIn("resolution", slots)
-        self.assertIn("phase_b", slots)
-        self.assertIn("assembled/phase_b_playback_", slots["phase_b"]["video_path"])
+            h._stitch_resolve_path = lambda raw: str(Path(tmp) / raw)
+
+            with mock.patch(
+                "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
+                return_value=(60_000, []),
+            ), mock.patch(
+                "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
+                return_value=False,
+            ), mock.patch(
+                "server_handlers.stitch_editor.apply_stitch_slot_default_ambient_preset",
+                return_value=False,
+            ), mock.patch(
+                "server_handlers.stitch_editor.ensure_stitch_slot_canonical_default_sfx_cues",
+                return_value=False,
+            ):
+                stitch_upsert_event_slot(
+                    h,
+                    "Event_1",
+                    "phase_b",
+                    {"video_path": dry_rel},
+                )
+            slots = h.app.stitch_state.state["jobs"]["Event_1_stitch"]["slots"]
+            self.assertIn("resolution", slots)
+            self.assertIn("phase_b", slots)
+            self.assertEqual(slots["phase_b"]["video_path"], dry_rel)
 
     def test_slot_order_constant(self):
         self.assertEqual(
