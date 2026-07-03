@@ -27,11 +27,23 @@
 | P2 Authority | **PASS** | — | strict audit A–L |
 | P3 Session | **PASS** | — | operator edit surfaces |
 | P4 Export | **PASS** | — | export truth closure |
-| P5 Live | **PASS** (deployed `cb2a22c`) | eba8ee6+cb2a22c | fleet build-sha + pre-WIP FaF |
+| P5 Live | **PASS** (deployed `90f2ca7`) | 90f2ca7 | multipass final |
 
 ## Next action (always one line)
 
-Commit WIP → deploy → re-run Fast & Flawless → update registry partial→shipped → deep Event_4 ffprobe.
+**DONE** — deployed `90f2ca7` on :5111–5116; FaF meta gate green (`/tmp/faf_final_multipass.log`). PR pending.
+
+## Multipass proof (2026-07-03 final)
+
+| Check | Result |
+|-------|--------|
+| Fleet build-sha :5111–5116 | **90f2ca7** all YES |
+| `deploy_storyboard_v59.sh` | `/tmp/deploy_final_multipass.log` complete |
+| TRUTH-LIVE-1 on :5112 | PASS build-sha=90f2ca7 |
+| `verify_fast_and_flawless_done.sh` | **PASS** all V3 criteria |
+| `verify_live_fleet_interaction.sh` | PASS DROP-WC-LIVE-1 |
+| `verify_operator_export_truth_closure` | PASS |
+| `audit_authority_duplicates --strict-subset` | PASS A–L |
 
 ## Stash recovery
 

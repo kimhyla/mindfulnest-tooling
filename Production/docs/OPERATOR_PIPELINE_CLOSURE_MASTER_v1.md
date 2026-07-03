@@ -75,7 +75,7 @@ Legend: **PASS** = gate green + live proof where required · **PARTIAL** = code 
 | Run | HEAD | Result | Log |
 |-----|------|--------|-----|
 | Pre-WIP | ac7e79c | **PASS** | `/tmp/faf_audit_run.log` |
-| Post-deploy | cb2a22c | **PASS** (fleet build-sha) | deploy log; FaF re-run hit server timeout mid-pass 3 — rerun scheduled |
+| Post-deploy | cb2a22c → **90f2ca7** | **PASS** | `/tmp/faf_final_multipass.log` + deploy_final_multipass.log |
 
 Live highlights from pre-WIP run:
 - pass 9: LIVE-HYDRATE 1–5 green on :5111
