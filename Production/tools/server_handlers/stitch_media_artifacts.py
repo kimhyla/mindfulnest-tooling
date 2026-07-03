@@ -82,9 +82,22 @@ def attach_stitch_slot_derived_media_urls(h, slot: dict) -> None:
     """Attach ephemeral media URLs for client hydrate."""
     if not isinstance(slot, dict):
         return
+    from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+        reconcile_four_files_slot_authority,
+        slot_skips_legacy_playback_artifact_tiers,
+    )
+
     slot.pop("_mux_preview_url", None)
     slot.pop("_waveform_peaks_url", None)
     slot.pop("_ambient_mix_url", None)
+    if slot_skips_legacy_playback_artifact_tiers(slot):
+        reconcile_four_files_slot_authority(slot)
+        peaks_hash = (slot.get("waveform_peaks_hash") or "").strip()
+        if peaks_hash:
+            slot["_waveform_peaks_url"] = _stitch_media_public_url(
+                h, f"/api/stitch_editor/peaks_file/stitch_peaks_{peaks_hash}.json",
+            )
+        return
     ambient_hash = (slot.get("ambient_mix_hash") or "").strip()
     if ambient_hash:
         slot["_ambient_mix_url"] = _stitch_media_public_url(
@@ -121,7 +134,11 @@ def _stitch_slot_requires_layered_audio(slot: dict) -> bool:
 
 def stitch_slot_needs_playback_artifact_bake(h, slot: dict) -> bool:
     """True when slot has video + SFX/ambient config but durable playback artifact is missing."""
+    from server_handlers.stitch_slot_playback import slot_skips_legacy_playback_artifact_tiers  # noqa: PLC0415
+
     if not isinstance(slot, dict):
+        return False
+    if slot_skips_legacy_playback_artifact_tiers(slot):
         return False
     video_path = (slot.get("video_path") or "").strip()
     if not video_path:

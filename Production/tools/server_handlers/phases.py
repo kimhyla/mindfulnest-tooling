@@ -3428,6 +3428,25 @@ def _phase_ensure_overlay_mp4(
 
 def handle_phase_export_stitcher(h, body: dict) -> None:
     """POST /api/phase/export_stitcher — bake watercolors and upsert stitch slot."""
+    from server_handlers.core import server_mutation_gate_reason  # noqa: PLC0415
+
+    gate_reason = server_mutation_gate_reason(h.app)
+    if gate_reason:
+        return h._send_error_v59(
+            503,
+            error_code="SERVER_NOT_READY",
+            error_message=gate_reason,
+            retry_safe=True,
+            extra={
+                "code": "SERVER_RESTART_OR_DRAIN_V1",
+                "handler": "_handle_phase_export_stitcher",
+                "hint": (
+                    "Server is restarting or draining — Send to Stitcher was not queued. "
+                    "Wait until the server is live, then retry."
+                ),
+            },
+        )
+
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
 
@@ -3537,7 +3556,7 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
     )
 
     try:
-        job_name, export_dur_ms, export_warnings, _playback = stitch_upsert_event_slot(
+        job_name, export_dur_ms, export_warnings, playback_artifacts = stitch_upsert_event_slot(
             h,
             event_id,
             slot_key,
@@ -3557,6 +3576,40 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             extra={
                 "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
                 "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+            },
+        )
+    except (OSError, RuntimeError) as exc:
+        return h._send_error_v59(
+            500,
+            error_code="STITCH_PLAYBACK_BAKE_FAILED",
+            error_message=str(exc),
+            retry_safe=True,
+            extra={
+                "code": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+                "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+                "video_path": video_rel,
+            },
+        )
+
+    from server_handlers.stitch_slot_playback import verify_event_slot_four_files_export_applied  # noqa: PLC0415
+
+    try:
+        verify_event_slot_four_files_export_applied(
+            h,
+            job_name=job_name,
+            slot_key=slot_key,
+            dry_video_rel=video_rel,
+            playback_artifacts=playback_artifacts or {},
+        )
+    except RuntimeError as exc:
+        return h._send_error_v59(
+            500,
+            error_code="STITCH_EXPORT_SLOT_NOT_APPLIED",
+            error_message=str(exc),
+            retry_safe=True,
+            extra={
+                "video_path": video_rel,
+                "playback_artifacts": playback_artifacts,
             },
         )
 
@@ -3634,20 +3687,31 @@ def ensure_phase_b_stitch_slot_for_bake(h) -> dict:
     h._stitch_resolve_path(video_rel)
 
     from server_handlers.stitch_editor import stitch_upsert_event_slot  # noqa: PLC0415
+    from server_handlers.stitch_slot_playback import verify_event_slot_four_files_export_applied  # noqa: PLC0415
 
     event_id = h.app.event_dir.name
     slot_key = f"phase_{phase}"
-    job_name, export_dur_ms, export_warnings, _playback = stitch_upsert_event_slot(
-        h,
-        event_id,
-        slot_key,
-        {
-            "video_path": video_rel,
-            "overlay_baked": True,
-            "source": f"phase_{phase}_export",
-        },
-        operator_export=True,
-    )
+    try:
+        job_name, export_dur_ms, export_warnings, playback_artifacts = stitch_upsert_event_slot(
+            h,
+            event_id,
+            slot_key,
+            {
+                "video_path": video_rel,
+                "overlay_baked": True,
+                "source": f"phase_{phase}_export",
+            },
+            operator_export=True,
+        )
+        verify_event_slot_four_files_export_applied(
+            h,
+            job_name=job_name,
+            slot_key=slot_key,
+            dry_video_rel=video_rel,
+            playback_artifacts=playback_artifacts or {},
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        return {"ok": False, "error": str(exc), "code": "STITCH_BAKE_PHASE_B_DELIVERY_V1"}
 
     return {
         "ok": True,
@@ -3658,6 +3722,7 @@ def ensure_phase_b_stitch_slot_for_bake(h) -> dict:
         "job_name": job_name,
         "video_dur_ms": export_dur_ms,
         "warnings": export_warnings,
+        "playback_artifacts": playback_artifacts,
         "code": "STITCH_BAKE_PHASE_B_DELIVERY_V1",
     }
 

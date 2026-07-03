@@ -23,6 +23,39 @@ def test_prepare_mirrors_option_trim_to_beat(tmp_path: Path):
     assert beat.get("kling_o3_trim_back") == 0.6
 
 
+def test_prepare_mirrors_trim_from_exact_slot_not_untrimmed_alias(tmp_path: Path):
+    full = tmp_path / "7300_kling_idle_tts.mp4"
+    trimmed = tmp_path / "7300_kling_idle_tts_trimmed.mp4"
+    full.write_bytes(b"f")
+    trimmed.write_bytes(b"t")
+    beat = {
+        "beat_id": "bg_arc1_event4_post_beat_05",
+        "pipeline": "still_insert",
+        "kling_o3_video_path": str(full),
+        "kling_o3_options": [
+            {
+                "video_path": str(trimmed),
+                "o3_untrimmed_video_path": str(full),
+                "slot_index": 0,
+                "source": "still_insert_kling_idle",
+            },
+            {
+                "video_path": str(full),
+                "slot_index": 2,
+                "source": "kling_o3_disk_reconcile",
+                "trim_start_s": 4.31,
+                "trim_back_s": 1.9,
+            },
+        ],
+    }
+    with patch.object(bg, "_ffprobe_duration", return_value=10.042):
+        changed, errors = bg.prepare_beats_for_stitch_export([beat])
+    assert not errors
+    assert changed
+    assert beat.get("kling_o3_trim_start") == 4.31
+    assert beat.get("kling_o3_trim_back") == 1.9
+
+
 def test_heal_invalid_trim_clears_option_and_beat(tmp_path: Path):
     clip = tmp_path / "short.mp4"
     clip.write_bytes(b"x")

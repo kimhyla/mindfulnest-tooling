@@ -4769,7 +4769,10 @@ def o3_option_visible_in_ui_slots(option: dict, generation_mode: str) -> bool:
     """UI shows three newest clips for the active pipeline — hide cross-pipeline history."""
     opt_mode = infer_o3_option_pipeline_mode(option)
     if generation_mode == PIPELINE_MODE_STILL:
-        return opt_mode == PIPELINE_MODE_STILL
+        if opt_mode == PIPELINE_MODE_STILL:
+            return True
+        path = str(option.get("video_path") or "").lower()
+        return "_delivery" in path
     if opt_mode == PIPELINE_MODE_STILL:
         return False
     if generation_mode in (
@@ -6569,6 +6572,8 @@ def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
     if not vp:
         return None
     resolved_vp = _resolve_o3_video_path_for_match(vp)
+    exact: dict | None = None
+    untrimmed_match: dict | None = None
     for opt in beat.get("kling_o3_options") or []:
         if not isinstance(opt, dict):
             continue
@@ -6576,8 +6581,39 @@ def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
         if not op:
             continue
         if op == vp or _resolve_o3_video_path_for_match(op) == resolved_vp:
-            return opt
-    return None
+            exact = opt
+            break
+        untrimmed = str(opt.get("o3_untrimmed_video_path") or "").strip()
+        if untrimmed and (
+            untrimmed == vp
+            or _resolve_o3_video_path_for_match(untrimmed) == resolved_vp
+        ):
+            untrimmed_match = opt
+    return exact or untrimmed_match
+
+
+def _o3_trim_stem(path: str) -> str:
+    """Normalize pre/post still-insert bake filenames for option lookup."""
+    name = Path(path).stem
+    if name.endswith("_trimmed"):
+        return name[: -len("_trimmed")]
+    return name
+
+
+def _o3_option_paths_same_clip_family(a: str, b: str) -> bool:
+    """True when paths are the same clip or a pre-bake / *_trimmed successor pair."""
+    left = str(a or "").strip()
+    right = str(b or "").strip()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    try:
+        if Path(left).resolve() == Path(right).resolve():
+            return True
+    except OSError:
+        pass
+    return _o3_trim_stem(left) == _o3_trim_stem(right)
 
 
 def _resolve_o3_video_path_for_match(video_path: str) -> str:
@@ -6698,6 +6734,10 @@ def find_o3_option_by_slot_index(
             direct = find_o3_option_by_video_path(beat, vp)
             if direct is not None:
                 return direct
+            # After still-insert Apply Cut bake, sidecar points at *_trimmed.mp4 while
+            # the client may still send the pre-bake path — trust the slot container.
+            if slot_vp and _o3_option_paths_same_clip_family(vp, slot_vp):
+                return slot_opt if isinstance(slot_opt, dict) else None
             raise ValueError(f"video_path not in beat O3 options: {vp}")
     return slot_opt if isinstance(slot_opt, dict) else None
 
@@ -7137,6 +7177,29 @@ def o3_trim_effective_is_shorter(
     return float(effective_duration_s) < float(raw_duration_s) - epsilon
 
 
+def _o3_trim_authority_path(beat: dict, opt: dict | None, vp: str) -> Path:
+    """File whose ffprobe duration defines trim_start/trim_back for this option."""
+    vp_path = Path(vp)
+    if not vp_path.is_file():
+        return vp_path
+    if not isinstance(opt, dict) or not beat_is_still_insert(beat):
+        return vp_path
+    untrimmed = _guess_o3_untrimmed_video_path(beat, opt)
+    if not untrimmed or not os.path.isfile(untrimmed):
+        return vp_path
+    unt_path = Path(untrimmed)
+    vp_res = str(vp_path.resolve())
+    unt_res = str(unt_path.resolve())
+    if vp_res == unt_res:
+        return vp_path
+    # Ken-burns TTS still: trim coords stay relative to the full TTS render.
+    if str(opt.get("source") or "").strip() == "still_insert_ken_burns":
+        return unt_path
+    # All other still-insert edits (kling idle, delivery import, re-trim after bake):
+    # authority = the file the operator sees in Beat Gen — never a longer sibling.
+    return vp_path
+
+
 def set_o3_option_trim(
     beat: dict,
     *,
@@ -7156,11 +7219,7 @@ def set_o3_option_trim(
     vp = str(video_path or opt.get("video_path") or "").strip()
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before trimming")
-    duration_path = Path(vp)
-    if beat_is_still_insert(beat):
-        untrimmed = _guess_o3_untrimmed_video_path(beat, opt)
-        if untrimmed and os.path.isfile(untrimmed):
-            duration_path = Path(untrimmed)
+    duration_path = _o3_trim_authority_path(beat, opt, vp)
     raw_dur = _ffprobe_duration(duration_path)
     if raw_dur <= 0:
         raise ValueError("Could not read clip duration")
@@ -7283,6 +7342,13 @@ def _guess_o3_untrimmed_video_path(beat: dict, opt: dict) -> str | None:
         if "_trimmed" in op.lower() or "_kling_o3_trim_scratch" in op.lower():
             continue
         if opt_key and opt_key not in op and Path(op).stem not in Path(vp).stem:
+            continue
+        vp_lower = vp.lower()
+        op_lower = op.lower()
+        # Never treat an O3 delivery import as the untrimmed lineage for a still-insert clip.
+        if "still_insert" in vp_lower and "still_insert" not in op_lower and "_delivery" in op_lower:
+            continue
+        if "_delivery" in vp_lower and "still_insert" in op_lower and "_delivery" not in op_lower:
             continue
         dur = _ffprobe_duration(Path(op))
         if dur <= 0:
@@ -7728,15 +7794,16 @@ def resolve_still_insert_trim_bake_source(
     *,
     source_path: Path | str | None = None,
 ) -> tuple[Path, dict | None]:
-    """Untrimmed still-insert source + option row for trim bake (never double-trim)."""
+    """Trim-authority source + option row for still-insert bake (never double-trim)."""
     active = Path(source_path or beat.get("kling_o3_video_path") or "")
     opt = find_o3_option_by_video_path(beat, str(active)) if str(active) else None
     if opt is None and active.is_file():
         opt = find_o3_option_by_video_path(beat, str(active.resolve()))
-    untrimmed = _guess_o3_untrimmed_video_path(beat, opt) if isinstance(opt, dict) else None
-    if untrimmed and Path(untrimmed).is_file():
-        src = Path(untrimmed)
-    elif active.is_file() and "_trimmed" not in active.stem.lower():
+    vp = str(active) if active.is_file() else str(beat.get("kling_o3_video_path") or "")
+    authority = _o3_trim_authority_path(beat, opt, vp)
+    if authority.is_file():
+        src = authority.resolve()
+    elif active.is_file():
         src = active.resolve()
     else:
         src = active
@@ -12429,6 +12496,67 @@ def _sync_o3_option_gen_label(opt: dict) -> bool:
     return changed
 
 
+def heal_duplicate_o3_slot_indexes(beat: dict) -> bool:
+    """Ensure at most one option row owns each UI slot_index (0–2)."""
+    options = [
+        o for o in (beat.get("kling_o3_options") or [])
+        if isinstance(o, dict) and str(o.get("video_path") or "").strip()
+    ]
+    if len(options) < 2:
+        return False
+
+    def _slot_rank(opt: dict) -> tuple[int, int, str]:
+        source = str(opt.get("source") or "").strip().lower()
+        path = str(opt.get("video_path") or "").lower()
+        if source in O3_OPTION_SOURCE_STILL:
+            tier = 0
+        elif "_delivery" in path:
+            tier = 1
+        elif source == "kling_o3_disk_reconcile":
+            tier = 3
+        else:
+            tier = 2
+        gen = int(opt.get("generation") or 0)
+        if gen <= 0:
+            gen = _kling_o3_gen_from_video_path(str(opt.get("video_path") or "")) or 0
+        return (tier, -gen, path)
+
+    changed = False
+    by_slot: dict[int, list[dict]] = {}
+    for opt in options:
+        si = opt.get("slot_index")
+        if isinstance(si, int) and 0 <= si <= 2:
+            by_slot.setdefault(si, []).append(opt)
+    used: set[int] = set()
+    for si, rows in by_slot.items():
+        if len(rows) <= 1:
+            used.add(si)
+            continue
+        rows.sort(key=_slot_rank)
+        winner = rows[0]
+        used.add(si)
+        for loser in rows[1:]:
+            loser.pop("slot_index", None)
+            changed = True
+        if winner.get("slot_index") != si:
+            winner["slot_index"] = si
+            changed = True
+    next_free = 0
+    for opt in sorted(options, key=_slot_rank):
+        si = opt.get("slot_index")
+        if isinstance(si, int) and 0 <= si <= 2:
+            continue
+        while next_free in used and next_free <= 2:
+            next_free += 1
+        if next_free > 2:
+            break
+        opt["slot_index"] = next_free
+        used.add(next_free)
+        changed = True
+        next_free += 1
+    return changed
+
+
 def refresh_o3_ui_slot_layout(beat: dict) -> bool:
     """Sync generation labels only — does not reorder pin-slot layout."""
     options = [
@@ -12438,6 +12566,8 @@ def refresh_o3_ui_slot_layout(beat: dict) -> bool:
     if not options:
         return False
     changed = migrate_o3_options_edge_cut_to_trim(beat)
+    if heal_duplicate_o3_slot_indexes(beat):
+        changed = True
     for opt in options:
         if _sync_o3_option_gen_label(opt):
             changed = True
@@ -14178,7 +14308,14 @@ def resolve_bg_export_stitch_slot(*, phase: str, video_role: str | None = None) 
 
 # KLING_EXPORT_AUDIO_JOIN_V1 — PCM mono + micro fade at hard beat joins (de-click).
 KLING_EXPORT_AUDIO_JOIN_V1 = "KLING_EXPORT_AUDIO_JOIN_V1"
-KLING_EXPORT_AUDIO_JOIN_FADE_MS = 25
+# STITCH_EXPORT_TRUTH_JOIN_FADE_V1 — 25ms insufficient for still-insert→Kling timbre joins (~34s intro).
+STITCH_EXPORT_TRUTH_JOIN_FADE_V1 = "STITCH_EXPORT_TRUTH_JOIN_FADE_V1"
+# FF-038 — beat metadata drives still-insert exit fades (not _norm_concat filename).
+STITCH_EXPORT_TRUTH_STILL_INSERT_VIDEO_FADE_V1 = (
+    "STITCH_EXPORT_TRUTH_STILL_INSERT_VIDEO_FADE_V1"
+)
+KLING_EXPORT_AUDIO_JOIN_FADE_MS = 80
+KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS = 150
 
 
 def _ffprobe_audio_lane_duration(path: Path, *, has_audio: bool) -> float:
@@ -14192,6 +14329,10 @@ def _ffprobe_audio_lane_duration(path: Path, *, has_audio: bool) -> float:
     return _ffprobe_duration(path)
 
 
+def _kling_export_clip_path_is_still_insert(path: Path) -> bool:
+    return "_still_insert_" in path.name.lower()
+
+
 def _kling_export_audio_lane_filter(
     input_label: str,
     out_label: str,
@@ -14199,23 +14340,66 @@ def _kling_export_audio_lane_filter(
     *,
     is_first: bool,
     is_last: bool,
+    fade_in_ms: int | None = None,
+    fade_out_ms: int | None = None,
 ) -> str:
     """Decode to PCM mono; trim to timeline authority; micro fade at hard-cut joins."""
-    join_fade_s = KLING_EXPORT_AUDIO_JOIN_FADE_MS / 1000.0
+    fade_in_s = (fade_in_ms if fade_in_ms is not None else KLING_EXPORT_AUDIO_JOIN_FADE_MS) / 1000.0
+    fade_out_s = (fade_out_ms if fade_out_ms is not None else KLING_EXPORT_AUDIO_JOIN_FADE_MS) / 1000.0
     chain = (
         f"{input_label}aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,"
         f"atrim=duration={dur_s:.6f},asetpts=PTS-STARTPTS"
     )
-    if not is_first and join_fade_s > 0:
-        chain += f",afade=t=in:st=0:d={join_fade_s:.6f}"
-    if not is_last and dur_s > join_fade_s * 2 and join_fade_s > 0:
+    if not is_first and fade_in_s > 0:
+        chain += f",afade=t=in:st=0:d={fade_in_s:.6f}"
+    if not is_last and dur_s > fade_out_s * 2 and fade_out_s > 0:
         chain += (
-            f",afade=t=out:st={dur_s - join_fade_s:.6f}:d={join_fade_s:.6f}"
+            f",afade=t=out:st={dur_s - fade_out_s:.6f}:d={fade_out_s:.6f}"
         )
     return f"{chain}[{out_label}]"
 
 
-def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> None:
+def _expand_still_insert_flags_for_pair_fades(
+    still_insert_flags: list[bool],
+    pair_fades: list[int],
+) -> list[bool]:
+    """Align still-insert flags with expand_clips_with_black_pause_boundaries output."""
+    fs = _ffmpeg_stitch_module()
+    allocate_pair_fade_budget = fs.allocate_pair_fade_budget
+    visual_out_ms = _load_intro_fade_out_video_tail_ms()
+    visual_in_ms = _load_intro_fade_in_video_head_ms()
+    n = len(still_insert_flags)
+    out: list[bool] = []
+    for i in range(n):
+        out.append(bool(still_insert_flags[i]))
+        if i < n - 1 and pair_fades[i] > 0:
+            _, _, black_ms = allocate_pair_fade_budget(
+                pair_fades[i],
+                visual_out_ms=visual_out_ms,
+                visual_in_ms=visual_in_ms,
+            )
+            if black_ms > 0:
+                out.append(False)
+    return out
+
+
+def _still_insert_exit_at_join(
+    index: int,
+    clip_paths: list[Path],
+    still_insert_flags: list[bool] | None,
+) -> bool:
+    """True when outgoing clip at join is still-insert (beat metadata wins over path)."""
+    if still_insert_flags is not None and index < len(still_insert_flags):
+        return bool(still_insert_flags[index])
+    return _kling_export_clip_path_is_still_insert(clip_paths[index])
+
+
+def _ffmpeg_concat_kling_clips_reencode(
+    clip_paths: list[Path],
+    dest: Path,
+    *,
+    still_insert_flags: list[bool] | None = None,
+) -> None:
     """Concat Kling clips with re-encode — ``-c copy`` causes A/V desync across mixed encodes."""
     import shutil
 
@@ -14254,17 +14438,33 @@ def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> N
         silent_lavfi_indices[i] = lavfi_input_idx
         lavfi_input_idx += 1
 
-    v_parts = [
-        (
+    still_exit_s = KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS / 1000.0
+    v_parts: list[str] = []
+    for i in range(n):
+        v_chain = (
             f"[{i}:v:0]scale=1920:1080:force_original_aspect_ratio=decrease,"
             f"pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=24,"
-            f"trim=duration={durations[i]:.6f},setpts=PTS-STARTPTS[v{i}]"
+            f"trim=duration={durations[i]:.6f},setpts=PTS-STARTPTS"
         )
-        for i in range(n)
-    ]
+        if (
+            i < n - 1
+            and still_exit_s > 0
+            and durations[i] > still_exit_s * 2
+            and _still_insert_exit_at_join(i, clip_paths, still_insert_flags)
+        ):
+            v_chain += (
+                f",fade=t=out:st={durations[i] - still_exit_s:.6f}:"
+                f"d={still_exit_s:.6f}"
+            )
+        v_parts.append(f"{v_chain}[v{i}]")
     a_parts: list[str] = []
     for i in range(n):
         src = silent_lavfi_indices.get(i, i)
+        exit_ms = (
+            KLING_EXPORT_STILL_INSERT_EXIT_FADE_MS
+            if _still_insert_exit_at_join(i, clip_paths, still_insert_flags) and i < n - 1
+            else KLING_EXPORT_AUDIO_JOIN_FADE_MS
+        )
         a_parts.append(
             _kling_export_audio_lane_filter(
                 f"[{src}:a:0]",
@@ -14272,6 +14472,7 @@ def _ffmpeg_concat_kling_clips_reencode(clip_paths: list[Path], dest: Path) -> N
                 durations[i],
                 is_first=(i == 0),
                 is_last=(i == n - 1),
+                fade_out_ms=exit_ms,
             )
         )
     concat_in = "".join(f"[v{i}][a{i}]" for i in range(n))
@@ -14326,6 +14527,8 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
     dest: Path,
     pair_fades: list[int],
     scratch_dir: Path,
+    *,
+    still_insert_flags: list[bool] | None = None,
 ) -> None:
     """Concat with fade-through-black at selected boundaries (no A/V overlap).
 
@@ -14346,8 +14549,11 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
     if len(clip_paths) == 1:
         shutil.copy2(clip_paths[0], dest)
         return
+    flags = still_insert_flags
+    if flags is None:
+        flags = [False] * len(clip_paths)
     if not pair_fades or all(f <= 0 for f in pair_fades):
-        _ffmpeg_concat_kling_clips_reencode(clip_paths, dest)
+        _ffmpeg_concat_kling_clips_reencode(clip_paths, dest, still_insert_flags=flags)
         return
 
     body_dir = scratch_dir / "fade_black"
@@ -14362,8 +14568,12 @@ def _ffmpeg_concat_kling_clips_with_pair_fades(
         visual_in_ms=visual_in_ms,
         fade_audio=False,
     )
+    expanded_flags = _expand_still_insert_flags_for_pair_fades(flags, pair_fades)
+    if len(expanded_flags) != len(parts):
+        expanded_flags = flags[: len(parts)] + [False] * max(0, len(parts) - len(flags))
+        expanded_flags = expanded_flags[: len(parts)]
 
-    _ffmpeg_concat_kling_clips_reencode(parts, dest)
+    _ffmpeg_concat_kling_clips_reencode(parts, dest, still_insert_flags=expanded_flags)
 
 
 def _boundaries_for_pair_fade_concat(
@@ -14405,7 +14615,7 @@ def resolve_segment_stitch_export_clip_paths(
     event_name: str | None = None,
     event_id: str | None = None,
     progress_cb=None,
-) -> tuple[list[Path], Path]:
+) -> tuple[list[Path], list[bool], Path]:
     """Clip paths in beat order — must match ``concat_kling_o3_approved_beats`` inputs."""
     if not beats:
         raise ValueError("no beats to resolve")
@@ -14437,6 +14647,7 @@ def resolve_segment_stitch_export_clip_paths(
             canonical_tail = None
 
     clip_paths: list[Path] = []
+    still_insert_flags: list[bool] = []
     beat_total = len(beats)
     for i, beat in enumerate(beats):
         if progress_cb:
@@ -14444,6 +14655,7 @@ def resolve_segment_stitch_export_clip_paths(
         is_last = i == len(beats) - 1
         if is_last and canonical_tail is not None:
             clip_paths.append(canonical_tail.resolve())
+            still_insert_flags.append(False)
         else:
             raw_clip = materialize_beat_export_clip_with_retry(
                 beat,
@@ -14451,21 +14663,15 @@ def resolve_segment_stitch_export_clip_paths(
                 scratch_dir,
                 event_id=event_id,
             )
-            from server_handlers.speech_loudnorm import apply_speech_loudnorm_export_beat_clip  # noqa: PLC0415
-
-            loudnorm_clip = apply_speech_loudnorm_export_beat_clip(
-                raw_clip,
-                beat_id=str(beat.get("beat_id") or f"beat_{i}"),
-                scratch_dir=scratch_dir,
-            )
             from o3_gallery_option_identity import assert_beat_export_audio_contract  # noqa: PLC0415
 
-            assert_beat_export_audio_contract(beat, loudnorm_clip)
-            fs = _ffmpeg_stitch_module()
-            norm_out = scratch_dir / f"{beat.get('beat_id') or i}_norm_concat.mp4"
-            fs.normalize_for_concat(loudnorm_clip, norm_out)
-            clip_paths.append(norm_out)
-    return clip_paths, scratch_dir
+            assert_beat_export_audio_contract(beat, raw_clip)
+            # FF-042 / KLING_O3_EXPORT_BG_PASSTHROUGH_V1 — Send to Stitcher concat uses the
+            # same per-beat MP4 authority as Beat Gen preview (approved delivery or trim
+            # bake). No per-beat loudnorm, normalize, or ambient — those run at Bake Final.
+            clip_paths.append(raw_clip.resolve())
+            still_insert_flags.append(beat_is_still_insert(beat))
+    return clip_paths, still_insert_flags, scratch_dir
 
 
 def concat_kling_o3_approved_beats(
@@ -14498,7 +14704,7 @@ def concat_kling_o3_approved_beats(
         raise ValueError("; ".join(trim_errors))
     out_dir = Path(event_dir) / "assembled"
     out_dir.mkdir(parents=True, exist_ok=True)
-    clip_paths, scratch_dir = resolve_segment_stitch_export_clip_paths(
+    clip_paths, still_insert_flags, scratch_dir = resolve_segment_stitch_export_clip_paths(
         beats,
         event_dir,
         phase=phase,
@@ -14507,7 +14713,11 @@ def concat_kling_o3_approved_beats(
         progress_cb=progress_cb,
     )
     fs = _ffmpeg_stitch_module()
-    fs.assert_stitch_export_clips_av_aligned(clip_paths)
+    # FF-042 passthrough — BG-approved clips may carry ~33ms Kling A/V offset; concat aligns.
+    fs.assert_stitch_export_clips_av_aligned(
+        clip_paths,
+        max_drift_s=fs.STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S,
+    )
     fs.assert_stitch_export_cumulative_av_aligned(clip_paths)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_path = out_dir / f"{slot_key}_kling_o3_{ts}.mp4"
@@ -14522,14 +14732,20 @@ def concat_kling_o3_approved_beats(
     if pair_fades and any(f > 0 for f in pair_fades):
         try:
             _ffmpeg_concat_kling_clips_with_pair_fades(
-                clip_paths, out_path, pair_fades, scratch_dir,
+                clip_paths,
+                out_path,
+                pair_fades,
+                scratch_dir,
+                still_insert_flags=still_insert_flags,
             )
         except ImportError as exc:
             raise RuntimeError(
                 f"intro xfade concat requires ffmpeg_stitch: {exc}",
             ) from exc
     else:
-        _ffmpeg_concat_kling_clips_reencode(clip_paths, out_path)
+        _ffmpeg_concat_kling_clips_reencode(
+            clip_paths, out_path, still_insert_flags=still_insert_flags,
+        )
     if not _ffprobe_ok(out_path):
         raise RuntimeError(f"assembled clip failed ffprobe: {out_path}")
 

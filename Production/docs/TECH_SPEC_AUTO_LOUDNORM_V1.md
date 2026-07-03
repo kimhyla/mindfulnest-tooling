@@ -17,14 +17,18 @@
 
 ### 1.1 Beat Gen → Send to Stitcher (intro / resolution slot)
 
+**Authority:** `TECH_SPEC_STITCH_DRY_AUTHORITY_CLIENT_MIX_V1.md` (FF-042) — **supersedes Layer A at export.**
+
 ```
-approved beat MP4s
-  → resolve_segment_stitch_export_clip_paths (per-beat trims)
+approved beat MP4s (same paths Beat Gen preview uses)
+  → resolve_segment_stitch_export_clip_paths (trim/cut materialize only when metadata active)
   → _ffmpeg_concat_kling_clips_reencode | _ffmpeg_concat_kling_clips_with_pair_fades
-  → assembled/{slot}_kling_o3_{ts}.mp4   # speech baked in video audio; no ambient/SFX
+  → assembled/{slot}_kling_o3_{ts}.mp4   # speech baked in; NO loudnorm; NO normalize; NO ambient
 ```
 
-Concat audio lane: mono resample + micro join fades only (`_kling_export_audio_lane_filter`). **No loudnorm.**
+Concat audio lane: mono resample + micro join fades only. **No loudnorm at Send to Stitcher.**
+
+Layer A (per-beat loudnorm before concat) is **deferred to Bake Final** for FF-042 dry-authority slots so Stitcher hears the same clips as Beat Gen.
 
 ### 1.2 Stitcher slot → Bake final MP4
 

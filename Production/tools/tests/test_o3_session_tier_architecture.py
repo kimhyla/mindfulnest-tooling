@@ -35,8 +35,10 @@ def test_read_only_get_no_lifecycle_heal_chain():
 
 def test_session_get_runs_terminal_disk_reconcile():
     block = _handler_block("handle_bg_session_state")
-    assert "_apply_o3_session_terminal_reconcile" in block
+    assert "_compose_o3_session_terminal_view" in block
     assert "o3_terminal_outcomes" in block
+    src = (TOOLS / "o3_session_terminal_reconcile.py").read_text(encoding="utf-8")
+    assert "resolve_beat_o3_truth_for_session_compose" in src
 
 
 def test_session_get_enriches_job_busy():

@@ -2240,6 +2240,13 @@ def _enrich_beats_job_busy(
             continue
         beat_event_dirs = _o3_job_event_dir_candidates(h, beat_id)
         beat_event = beat_event_dirs[0]
+        if session_read_only:
+            from o3_job_status_contract import resolve_o3_current_job_id
+
+            busy = _resolve_beat_job_busy_for_session(beat, beat_event_dirs)
+            beat["job_busy"] = busy
+            beat["o3_current_job_id"] = resolve_o3_current_job_id(beat) if busy else None
+            continue
         if not bg.beat_is_still_insert(beat):
             for ev in beat_event_dirs:
                 if clear_o3_pointer_if_terminal(beat, ev):
@@ -5045,30 +5052,40 @@ def _enriched_beat_snapshot_for_o3_poll(
     if not beat:
         return None
     try:
-        from o3_session_terminal_reconcile import reconcile_beat_terminal_disk
+        from o3_job_truth import resolve_beat_o3_truth
 
-        beat_work = dict(beat)
-        if reconcile_beat_terminal_disk(
-            beat_work,
-            sidecar,
+        truth = resolve_beat_o3_truth(
+            str(beat_id),
             event_dir,
+            dict(beat),
+            sidecar=sidecar,
             orphan_recovery=_try_orphan_o3_delivery_recovery,
-        ):
+        )
+        beat_work = truth.get("reconciled_beat") or dict(beat)
+        _truth_keys = (
+            "status",
+            "kling_o3_status",
+            "kling_o3_voice_fix_status",
+            "kling_o3_video_path",
+            "kling_o3_generation",
+            "kling_o3_options",
+        )
+        if any(beat.get(k) != beat_work.get(k) for k in _truth_keys):
             def _commit(sc: dict) -> None:
                 bg.ensure_sidecar_schema_defaults(sc)
                 _, live = bg.find_beat(sc, str(beat_id))
                 if live:
-                    live.update({k: v for k, v in beat_work.items() if k in beat_work})
+                    live.update({k: beat_work[k] for k in _truth_keys if k in beat_work})
 
             try:
                 bg.mutate_sidecar_locked(_commit, timeout_s=5)
                 sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5.0)
                 _, beat = bg.find_beat(sidecar, str(beat_id))
             except Exception as exc:
-                print(f"[bg_o3_poll] terminal reconcile persist skipped for {beat_id}: {exc}", flush=True)
+                print(f"[bg_o3_poll] truth persist skipped for {beat_id}: {exc}", flush=True)
                 beat = beat_work
     except Exception as exc:
-        print(f"[bg_o3_poll] terminal reconcile failed for {beat_id}: {exc}", flush=True)
+        print(f"[bg_o3_poll] truth reconcile failed for {beat_id}: {exc}", flush=True)
     snap = bg.enrich_beat_kling_o3_pinned(dict(beat), event_dir)
     from o3_job_status_contract import clear_o3_pointer_if_terminal
 
@@ -6572,6 +6589,80 @@ def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = No
         print(f"[bg_o3_job] clear metadata failed for {job_id}: {exc}", flush=True)
 
 
+def _bg_o3_trim_audit(h, audit_event: str, *, beat_id: str | None = None, **fields: object) -> None:
+    """Read-only Beat Gen O3 trim audit — stdout + event-dir JSONL (no sidecar writes)."""
+    row: dict[str, object] = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event": audit_event,
+    }
+    if beat_id:
+        row["beat_id"] = beat_id
+    for key, val in fields.items():
+        if val is not None and val != "":
+            row[key] = val
+    line = json.dumps(row, default=str)
+    print(f"[bg_o3_trim_audit] {line}", flush=True)
+    try:
+        event_dir = Path(h.app.event_dir)
+        if not event_dir.is_absolute():
+            event_dir = _data_root(h) / event_dir
+        log_path = event_dir / "_bg_o3_trim_audit.jsonl"
+        with open(log_path, "a", encoding="utf-8") as audit_f:
+            audit_f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _bg_o3_trim_slot_context(
+    bg,
+    beat: dict | None,
+    *,
+    slot_index: object,
+    req_video_path: str | None,
+) -> dict[str, object]:
+    """Snapshot slot/path alignment for trim forensics (read-only)."""
+    if not isinstance(beat, dict):
+        return {}
+    ctx: dict[str, object] = {
+        "active_video": Path(str(beat.get("kling_o3_video_path") or "")).name or None,
+        "kling_o3_status": beat.get("kling_o3_status"),
+    }
+    if slot_index is None:
+        return ctx
+    try:
+        si = int(slot_index)
+        slots = bg.build_fixed_o3_ui_slots(beat)
+        slot_opt = slots[si] if 0 <= si <= 2 else None
+        slot_vp = str((slot_opt or {}).get("video_path") or "").strip()
+        req_vp = str(req_video_path or "").strip()
+        ctx["slot_index"] = si
+        ctx["slot_video"] = Path(slot_vp).name if slot_vp else None
+        ctx["req_video"] = Path(req_vp).name if req_vp else None
+        if req_vp and slot_vp:
+            ctx["path_match"] = slot_vp == req_vp
+            if slot_vp != req_vp:
+                direct = bg.find_o3_option_by_video_path(beat, req_vp)
+                ctx["direct_lookup"] = "ok" if direct else "missing"
+        registered = [
+            Path(str(o.get("video_path") or "")).name
+            for o in (beat.get("kling_o3_options") or [])
+            if isinstance(o, dict) and o.get("video_path")
+        ]
+        ctx["registered_count"] = len(registered)
+        if req_vp and req_vp not in {
+            str(o.get("video_path") or "").strip()
+            for o in (beat.get("kling_o3_options") or [])
+            if isinstance(o, dict)
+        }:
+            alias = bg.find_o3_option_by_video_path(beat, req_vp)
+            ctx["req_in_options"] = bool(alias)
+        else:
+            ctx["req_in_options"] = bool(req_vp)
+    except (TypeError, ValueError) as exc:
+        ctx["slot_context_error"] = str(exc)
+    return ctx
+
+
 def handle_bg_kling_o3_trim(h, body: dict) -> None:
     """POST /api/bg/kling-o3-trim — set/clear cut-out or legacy front/back trim on O3 clip."""
     import copy
@@ -6604,6 +6695,44 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
     )
 
     bg = _bg_module()
+    trim_mode = (
+        "option_trim" if use_option_trim else ("cut" if use_cut else "beat_trim")
+    )
+    event_label = Path(str(getattr(h.app, "event_dir", "") or "")).name or "unknown"
+    _bg_o3_trim_audit(
+        h,
+        "REQUEST",
+        beat_id=str(beat_id),
+        scope_event=event_label,
+        preview_only=preview_only,
+        clear=bool(body.get("clear")),
+        mode=trim_mode,
+        slot_index=slot_index,
+        req_video=Path(req_video_path).name if req_video_path else None,
+        trim_start=raw_trim_start,
+        trim_back=raw_trim_back,
+        cut_start_s=raw_cut_start,
+        cut_end_s=raw_cut_end,
+    )
+    try:
+        sidecar_snap = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=2)
+        sidecar_snap = bg._migrate_sidecar(sidecar_snap)
+        _, beat_snap = bg.find_beat(sidecar_snap, beat_id)
+        slot_ctx = _bg_o3_trim_slot_context(
+            bg,
+            beat_snap,
+            slot_index=slot_index,
+            req_video_path=req_video_path,
+        )
+        if slot_ctx:
+            _bg_o3_trim_audit(h, "SLOT_CONTEXT", beat_id=str(beat_id), **slot_ctx)
+    except Exception as exc:
+        _bg_o3_trim_audit(
+            h,
+            "SLOT_CONTEXT_SKIP",
+            beat_id=str(beat_id),
+            reason=str(exc),
+        )
 
     def _files_url_for_disk_path(abs_path: Path, event_dir: Path) -> str | None:
         if not abs_path.is_file():
@@ -6730,6 +6859,16 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 video_path=req_video_path,
             )
         except ValueError as exc:
+            _bg_o3_trim_audit(
+                h,
+                "FAIL",
+                beat_id=str(beat_id),
+                preview_only=preview_only,
+                error_code="CUT_VALIDATION",
+                error_message=str(exc),
+                slot_index=slot_index,
+                req_video=Path(req_video_path).name if req_video_path else None,
+            )
             return h._send_error_v59(
                 400,
                 error_code="CUT_VALIDATION",
@@ -6765,6 +6904,16 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     video_path=req_video_path,
                 )
             except ValueError as exc:
+                _bg_o3_trim_audit(
+                    h,
+                    "FAIL",
+                    beat_id=str(beat_id),
+                    preview_only=preview_only,
+                    error_code="TRIM_RESTORE_FAILED",
+                    error_message=str(exc),
+                    slot_index=slot_index,
+                    req_video=Path(req_video_path).name if req_video_path else None,
+                )
                 return h._send_error_v59(
                     400,
                     error_code="TRIM_RESTORE_FAILED",
@@ -6803,6 +6952,18 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 video_path=req_video_path,
             )
         except ValueError as exc:
+            _bg_o3_trim_audit(
+                h,
+                "FAIL",
+                beat_id=str(beat_id),
+                preview_only=preview_only,
+                error_code="TRIM_VALIDATION",
+                error_message=str(exc),
+                slot_index=slot_index,
+                req_video=Path(req_video_path).name if req_video_path else None,
+                trim_start=trim_start,
+                trim_back=trim_back,
+            )
             return h._send_error_v59(
                 400,
                 error_code="TRIM_VALIDATION",
@@ -6870,6 +7031,16 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     trim_back=trim_back,
                 )
             except ValueError as exc:
+                _bg_o3_trim_audit(
+                    h,
+                    "FAIL",
+                    beat_id=str(beat_id),
+                    preview_only=True,
+                    error_code="TRIM_VALIDATION",
+                    error_message=str(exc),
+                    trim_start=trim_start,
+                    trim_back=trim_back,
+                )
                 return h._send_error_v59(
                     400,
                     error_code="TRIM_VALIDATION",
@@ -6892,12 +7063,38 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 tb_val = None if tb is None else float(tb)
                 _reject_unchanged_trim_preview(ts, tb_val, result)
         except ValueError as exc:
+            _bg_o3_trim_audit(
+                h,
+                "FAIL",
+                beat_id=str(beat_id),
+                preview_only=True,
+                error_code="TRIM_PREVIEW_UNCHANGED",
+                error_message=str(exc),
+                slot_index=slot_index,
+                trim_start=raw_trim_start,
+                trim_back=raw_trim_back,
+                raw_duration_s=result.get("raw_duration_s"),
+                effective_duration_s=result.get("effective_duration_s"),
+            )
             return h._send_error_v59(
                 400,
                 error_code="TRIM_PREVIEW_UNCHANGED",
                 error_message=str(exc),
                 retry_safe=False,
             )
+        _bg_o3_trim_audit(
+            h,
+            "PREVIEW_OK",
+            beat_id=str(beat_id),
+            preview_only=True,
+            mode=trim_mode,
+            slot_index=slot_index,
+            trim_start=result.get("trim_start"),
+            trim_back=result.get("trim_back"),
+            raw_duration_s=result.get("raw_duration_s"),
+            effective_duration_s=result.get("effective_duration_s"),
+            has_preview_url=bool(result.get("preview_video_url")),
+        )
         return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
 
     from server_handlers.milestone_scope import production_bg_scope_lock, rebind_bg_paths_from_app
@@ -6977,6 +7174,16 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                         video_path=req_video_path,
                     )
                 except ValueError as exc:
+                    _bg_o3_trim_audit(
+                        h,
+                        "FAIL",
+                        beat_id=str(beat_id),
+                        preview_only=preview_only,
+                        error_code="CUT_VALIDATION",
+                        error_message=str(exc),
+                        slot_index=slot_index,
+                        req_video=Path(req_video_path).name if req_video_path else None,
+                    )
                     return h._send_error_v59(
                         400,
                         error_code="CUT_VALIDATION",
@@ -7054,13 +7261,46 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                         else:
                             opt.pop("trim_back_s", None)
                         bg.clear_o3_cut_fields(opt)
-                    bg.hydrate_beat_trim_from_active_option(beat)
+                    # Mirror trim from the slot being edited — not hydrate from active,
+                    # which can resolve to a different row via o3_untrimmed_video_path.
+                    if isinstance(opt, dict) and bg.option_has_o3_trim(opt):
+                        bg.mirror_beat_trim_from_option(beat, opt)
+                    else:
+                        bg.hydrate_beat_trim_from_active_option(beat)
                     bg.prune_stale_kling_o3_trim_scratch(
                         beat_id,
                         Path(h.app.event_dir),
                         beat,
                     )
                     if not body.get("clear"):
+                        if (
+                            bg.beat_is_still_insert(beat)
+                            and isinstance(opt, dict)
+                            and bg.option_has_o3_trim(opt)
+                        ):
+                            try:
+                                slot_vp = str(opt.get("video_path") or "").strip()
+                                bake_si = bg.bake_still_insert_trim_into_clip(
+                                    beat,
+                                    source_path=slot_vp or None,
+                                )
+                                result["trim_baked"] = bool(bake_si.get("baked"))
+                                if bake_si.get("video_path"):
+                                    result["video_path"] = bake_si["video_path"]
+                                    result["trim_start"] = 0.0
+                                    result["trim_back"] = None
+                                    if bake_si.get("baked"):
+                                        raw_dur = bg._ffprobe_duration(Path(bake_si["video_path"]))
+                                        if raw_dur > 0:
+                                            result["raw_duration_s"] = round(raw_dur, 3)
+                                            result["effective_duration_s"] = round(raw_dur, 3)
+                            except Exception as exc:
+                                return h._send_error_v59(
+                                    500,
+                                    error_code="STILL_TRIM_BAKE_FAILED",
+                                    error_message=str(exc),
+                                    retry_safe=True,
+                                )
                         try:
                             bake = bg.bake_o3_active_export_clip(
                                 beat,
@@ -7129,6 +7369,16 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     trim_back=trim_back,
                 )
             except ValueError as exc:
+                _bg_o3_trim_audit(
+                    h,
+                    "FAIL",
+                    beat_id=str(beat_id),
+                    preview_only=preview_only,
+                    error_code="TRIM_VALIDATION",
+                    error_message=str(exc),
+                    trim_start=trim_start,
+                    trim_back=trim_back,
+                )
                 return h._send_error_v59(
                     400,
                     error_code="TRIM_VALIDATION",
@@ -7154,6 +7404,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 and not use_cut
                 and bg.beat_is_still_insert(beat)
                 and bg.still_insert_trim_pending(beat)
+                and not result.get("trim_baked")
             ):
                 try:
                     bake = bg.bake_still_insert_trim_into_clip(beat)
@@ -7201,6 +7452,14 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
             ):
                 print(f"[bg_o3_stitch_invalidate] {line}", flush=True)
     except TimeoutError as exc:
+        _bg_o3_trim_audit(
+            h,
+            "FAIL",
+            beat_id=str(beat_id),
+            preview_only=preview_only,
+            error_code="SIDECAR_LOCK_TIMEOUT",
+            error_message=str(exc) or "sidecar lock busy",
+        )
         return h._send_error_v59(
             503,
             error_code="SIDECAR_LOCK_TIMEOUT",
@@ -7242,6 +7501,21 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
             retry_safe=True,
             extra={"beat_id": beat_id},
         )
+    _bg_o3_trim_audit(
+        h,
+        "APPLY_OK" if not preview_only else "PREVIEW_OK",
+        beat_id=str(beat_id),
+        preview_only=preview_only,
+        mode=trim_mode,
+        slot_index=slot_index,
+        trim_start=result.get("trim_start"),
+        trim_back=result.get("trim_back"),
+        raw_duration_s=result.get("raw_duration_s"),
+        effective_duration_s=result.get("effective_duration_s"),
+        trim_baked=result.get("trim_baked"),
+        export_baked=result.get("export_baked"),
+        has_preview_url=bool(result.get("preview_video_url")),
+    )
     return h._send_json(200, {"ok": True, "beat_id": beat_id, **result})
 
 

@@ -14,10 +14,21 @@ grep -q 'STITCH_EXPORT_TIMELINE_AUTHORITY_V1' "$FS" || fail "missing marker"
 grep -q 'def export_clip_timeline_duration_s' "$FS" || fail "missing export_clip_timeline_duration_s"
 grep -q 'def assert_stitch_export_cumulative_av_aligned' "$FS" || fail "missing cumulative gate"
 
-echo "[stitch-export-timeline] pass 2/3 — BG export concat wires normalize + cumulative gate"
-grep -q 'normalize_for_concat' "$BG" || fail "BG export must normalize before concat"
-grep -q 'assert_stitch_export_cumulative_av_aligned' "$BG" || fail "BG export must run cumulative A/V gate"
-grep -q 'export_clip_timeline_duration_s' "$BG" || fail "boundaries must use timeline authority"
+echo "[stitch-export-timeline] pass 2/3 — BG export concat wires A/V gates (FF-042 passthrough)"
+grep -q 'KLING_O3_EXPORT_BG_PASSTHROUGH_V1' "$BG" \
+  || fail "missing FF-042 passthrough marker in beat export"
+grep -q 'assert_stitch_export_clips_av_aligned' "$BG" \
+  || fail "BG export must run per-clip A/V gate"
+grep -q 'assert_stitch_export_cumulative_av_aligned' "$BG" \
+  || fail "BG export must run cumulative A/V gate"
+grep -q 'export_clip_timeline_duration_s' "$BG" \
+  || fail "boundaries must use timeline authority"
+python3 - <<PY || fail "BG export must not normalize before concat (FF-042)"
+from pathlib import Path
+src = Path("$BG").read_text(encoding="utf-8")
+block = src.split("def concat_kling_o3_approved_beats", 1)[1].split("\ndef ", 1)[0]
+assert "normalize_for_concat" not in block
+PY
 
 echo "[stitch-export-timeline] pass 3/3 — pytest"
 export PYTHONPATH="${ROOT}/Production/tools:${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"

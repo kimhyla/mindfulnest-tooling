@@ -59,6 +59,13 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **kling_o3_export_trim** — trim window materialized on export | disk | `prepare_beats_for_stitch_export` | `set_o3_option_trim` | shipped | `beat_generator.py` |
 | **magic_render_visible** — magic sparkle contract | disk | `magic_render_contract` compositor kwargs + durability tests | `write_magic_delivery` | shipped | `HOW_TO_MAKE_VISIBLE_MAGIC.md` |
 | **bg_export_stitcher_job** — async BG→Stitcher job truth | disk | `readBgExportBusyLatch` + poll terminal | export job API | shipped | inline `BG_EXPORT_TO_STITCHER_ASYNC_V1` |
+| **o3_job_truth_stack** — terminal/disk/sidecar read parity | derived | `resolve_beat_o3_truth` | `close_o3_attempt` | shipped | `TECH_SPEC_CROSS_PIPELINE_G1_G8_CLOSURE_v1.md` |
+| **o3_failed_redo_heal** — restore prior clip after failed regen | disk | `restore_last_good_o3_delivery_after_failed_attempt` | same | shipped | same |
+| **o3_subprocess_lifecycle** — shutdown finalize live jobs | explicit_approve | `load_intent_terminal` | `finalize_live_o3_jobs_before_shutdown` | shipped | same |
+| **cr_library_milestone_scope** — library CR event_dir on milestone | derived | `_resolve_cr_library_scope` | `assert_production_scope` | shipped | same |
+| **directus_has_crop_disk_fallback** — has_crop when Directus slow | disk | `_enrich_has_crop_from_disk` | same | shipped | same |
+| **library_client_cache_coherence** — bust sessionStorage after mutations | derived | `invalidateLibrarySessionCache` | crop/upload/delete handlers | shipped | same |
+| **bg_o3_stitch_export_lineage** — invalidate stitch preview on export change | derived | `compute_bg_segment_o3_export_lineage_sig` | `invalidate_stitch_slots_for_o3_export_change` | shipped | same |
 
 ### Stitcher
 
@@ -67,7 +74,10 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_slot_timeline_dur** — rail/SFX geometry duration | derived | `stitchSlotTimelineDurMs` / `export_clip_timeline_duration_s` | ffprobe on load_job; persist `video_dur_ms` | shipped | `TECH_SPEC_OPERATOR_EXPORT_TRUTH_CLOSURE_V1.md` |
 | **stitch_export_timeline_duration** — BG export concat duration | derived | `export_clip_timeline_duration_s` | `normalize_for_concat` | shipped | same |
 | **stitch_mux_preview_lineage** — post-export playback artifact | disk | `stitch_slot_needs_playback_artifact_bake` | `ensure_stitch_slot_playback_artifacts_on_export` | partial | same |
+| **stitch_slot_playback_mp4** — dry speech authority per slot (FF-042) | disk | `resolve_slot_playback_path` | `persist_dry_authority_slot_export` | partial | `TECH_SPEC_STITCH_DRY_AUTHORITY_CLIENT_MIX_V1.md` |
 | **stitch_ambient_loop_seam_budget** — ambient loop seams | derived | `build_ambient_bed_filter_lane` | `STITCH_AMBIENT_FULL_PERIOD_TILE_V2` | shipped | same |
+| **stitch_export_truth** — concat join fade + speech waveform + playback remux | disk | `_kling_export_audio_lane_filter` / `resolveSlotWaveformVideoPath` | `concat_kling_o3_approved_beats` / `bake_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V1.md` |
+| **stitch_export_truth_v2** — still-insert video fade + ambient tile concat + peaks invalidate | disk | `_still_insert_exit_at_join` / `build_ambient_explicit_tile_concat_loop` | `concat_kling_o3_approved_beats` / `bake_and_persist_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V2.md` |
 | **stitch_playback_url** — composer video when SFX exist | derived | `resolveSlotPlaybackPreviewUrl` | mux artifact bake | shipped | `TECH_SPEC_STITCH_SFX_PLAYBACK_TRUTH_V1.md` |
 | **stitch_single_owner** — who mutates slot video post-export | disk | `STITCH_SINGLE_OWNER_V1` load_job read-only | export path owns ingest | shipped | `TECH_SPEC_STITCH_SINGLE_OWNER_V1.md` |
 

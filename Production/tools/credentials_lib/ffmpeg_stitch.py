@@ -773,19 +773,44 @@ def _normalize_to_encoder_spec(
     fuse_ss_args: list[str] = []
     if video_start_s > 0.005:
         fuse_ss_args = ["-ss", f"{video_start_s:.3f}"]
-    ffmpeg_args = ("-vf", NORMALIZATION_VF_EXPR, *encoder_args)
     try:
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            *fuse_ss_args,
-            "-i", str(src.resolve()),
-        ]
         if not has_audio:
-            cmd += ["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
-                    "-shortest",
-                    "-map", "0:v:0", "-map", "1:a:0"]
-        cmd += [*ffmpeg_args, str(tmp)]
-        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                *fuse_ss_args,
+                "-i", str(src.resolve()),
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+                "-shortest",
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-vf", NORMALIZATION_VF_EXPR,
+                *encoder_args,
+                str(tmp),
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
+        else:
+            video_s = ffprobe_stream_duration_s(src, "v")
+            target_s = max(0.04, video_s - video_start_s) if video_start_s > 0.005 else video_s
+            if target_s <= 0.0:
+                target_s = ffprobe_stream_duration_s(src, "a") or ffprobe_duration(src)
+            target_s = max(0.04, float(target_s))
+            # FF-040 — lock audio lane to video timeline before mux.
+            audio_fc = (
+                f"[0:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,"
+                f"atrim=end={target_s:.6f},asetpts=PTS-STARTPTS,"
+                f"apad=whole_dur={target_s:.6f}[aout]"
+            )
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                *fuse_ss_args,
+                "-i", str(src.resolve()),
+                "-filter_complex", audio_fc,
+                "-map", "0:v:0", "-vf", NORMALIZATION_VF_EXPR,
+                "-map", "[aout]",
+                "-t", f"{target_s:.6f}",
+                *encoder_args,
+                str(tmp),
+            ]
+            subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
         os.replace(tmp, dst)
     finally:
         if tmp.exists():
@@ -1564,8 +1589,6 @@ def concat_with_xfade_clips(parts: list[Path], output_path: Path,
 # ---------------------------------------------------------------------------
 # ffprobe duration (small wrapper)
 # ---------------------------------------------------------------------------
-STITCH_EXPORT_AV_MAX_DRIFT_S = 0.25
-
 
 def stitch_preview_decode_timeout_s(duration_s: float) -> int:
     """ffmpeg null-decode budget scaled to clip length (module previews exceed 45s)."""
@@ -1600,6 +1623,8 @@ def ffprobe_stream_duration_s(path: Path, stream: str) -> float:
 
 STITCH_EXPORT_AV_MAX_DRIFT_S = 0.25
 STITCH_EXPORT_TIMELINE_AUTHORITY_V1 = "STITCH_EXPORT_TIMELINE_AUTHORITY_V1"
+STITCH_EXPORT_LIPSYNC_VIDEO_AUTHORITY_V1 = "STITCH_EXPORT_LIPSYNC_VIDEO_AUTHORITY_V1"
+STITCH_EXPORT_NORM_AV_MAX_DRIFT_S = 0.025  # one AAC frame @ 44.1kHz (~23ms)
 STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S = 0.05
 
 
@@ -1607,8 +1632,9 @@ def export_clip_timeline_duration_s(path: Path) -> float:
     """Single authority for concat boundaries and stitch slot geometry."""
     video_s = ffprobe_stream_duration_s(path, "v")
     audio_s = ffprobe_stream_duration_s(path, "a")
-    if video_s > 0.0 and audio_s > 0.0:
-        return min(video_s, audio_s)
+    # FF-040 — lipsync follows video; audio is trimmed/padded at normalize to match.
+    if video_s > 0.0:
+        return video_s
     fmt = ffprobe_duration(path)
     return fmt if fmt > 0.0 else max(video_s, audio_s)
 
@@ -1667,7 +1693,7 @@ def av_duration_drift_s(path: Path) -> float:
 def assert_stitch_export_clips_av_aligned(
     clip_paths: list[Path],
     *,
-    max_drift_s: float = STITCH_EXPORT_AV_MAX_DRIFT_S,
+    max_drift_s: float = STITCH_EXPORT_NORM_AV_MAX_DRIFT_S,
 ) -> None:
     """Raise ValueError when any export clip has misaligned A/V streams."""
     bad: list[str] = []

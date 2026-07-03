@@ -11,6 +11,7 @@ export const STITCH_AMBIENT_BAKE_ON_SAVE_V1 = 'STITCH_AMBIENT_BAKE_ON_SAVE_V1';
 
 export interface StitchSlotMuxSigInput {
   video_path?: string;
+  playback_recipe_version?: string;
   mix_sig?: string;
   ambient_mix_sig?: string;
   ambient_mix_hash?: string;
@@ -79,11 +80,69 @@ export function stitchSlotMuxAudioSig(
   return stitchSlotLiveGeometrySig(slot);
 }
 
+/** STITCH_FOUR_FILES_V1 — legacy baked video_path (FF-036). */
+export const STITCH_FOUR_FILES_V1 = 'STITCH_FOUR_FILES_V1';
+
+/** FF-042 — dry video_path + client Web Audio preview mix. */
+export const STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 = 'STITCH_DRY_AUTHORITY_CLIENT_MIX_V1';
+
+export function stitchSlotUsesFourFilesPlayback(
+  slot: { playback_recipe_version?: string } | null | undefined,
+): boolean {
+  return (slot?.playback_recipe_version ?? '').trim() === STITCH_FOUR_FILES_V1;
+}
+
+export function stitchSlotUsesDryAuthorityClientMix(
+  slot: { playback_recipe_version?: string } | null | undefined,
+): boolean {
+  return (slot?.playback_recipe_version ?? '').trim() === STITCH_DRY_AUTHORITY_CLIENT_MIX_V1;
+}
+
+export function stitchSlotRequiresClientPreviewMix(
+  slot: StitchSlotMuxSigInput | null | undefined,
+): boolean {
+  if (!slot || !stitchSlotUsesDryAuthorityClientMix(slot)) return false;
+  const hasAmbient = Boolean((slot.ambient_bed_path || slot.ambient_bed || '').trim());
+  const hasSfx = (slot.sfx_cues ?? []).some((c) => Boolean(c && typeof c === 'object'));
+  return hasAmbient || hasSfx;
+}
+
+/** STITCH_FOUR_FILES_LEGACY_PURGE_V1 — client mirror of server load_job purge. */
+export const STITCH_FOUR_FILES_LEGACY_PURGE_V1 = 'STITCH_FOUR_FILES_LEGACY_PURGE_V1';
+
+const FOUR_FILES_LEGACY_ARTIFACT_FIELDS = [
+  'ambient_mix_hash',
+  'ambient_mix_sig',
+  'ambient_mix_duration_ms',
+  'ambient_mix_video_path',
+  'ambient_mix_video_mtime_ms',
+  'mux_preview_hash',
+  'mux_preview_duration_ms',
+  'mux_video_path',
+  'mux_video_mtime_ms',
+  'mix_sig',
+  '_ambient_mix_url',
+  '_mux_preview_url',
+] as const;
+
+export function reconcileFourFilesSlotArtifacts<
+  T extends { playback_recipe_version?: string },
+>(slot: T | null | undefined): T | null | undefined {
+  if (!slot || !stitchSlotUsesFourFilesPlayback(slot)) return slot;
+  const next = { ...slot } as T & Record<string, unknown>;
+  for (const key of FOUR_FILES_LEGACY_ARTIFACT_FIELDS) {
+    delete next[key];
+  }
+  return next as T;
+}
+
 /** True when slot has SFX cues requiring mux preview (speech + ambient + SFX). */
 export function stitchSlotRequiresMuxedPreview(
   slot: StitchSlotMuxSigInput | null | undefined,
 ): boolean {
-  if (!slot) return false;
+  if (!slot || stitchSlotUsesFourFilesPlayback(slot) || stitchSlotUsesDryAuthorityClientMix(slot)) {
+    return false;
+  }
   return (slot.sfx_cues ?? []).some((c) => Boolean(c && typeof c === 'object'));
 }
 
@@ -91,7 +150,9 @@ export function stitchSlotRequiresMuxedPreview(
 export function stitchSlotRequiresAmbientMix(
   slot: StitchSlotMuxSigInput | null | undefined,
 ): boolean {
-  if (!slot) return false;
+  if (!slot || stitchSlotUsesFourFilesPlayback(slot) || stitchSlotUsesDryAuthorityClientMix(slot)) {
+    return false;
+  }
   const hasAmbient = Boolean((slot.ambient_bed_path || slot.ambient_bed || '').trim());
   return hasAmbient && !stitchSlotRequiresMuxedPreview(slot);
 }

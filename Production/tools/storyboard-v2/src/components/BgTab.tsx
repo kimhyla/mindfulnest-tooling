@@ -39,7 +39,9 @@ import {
   isValidO3CutWindow,
   normalizeO3KeepWindow,
   resolveO3ExportDurationS,
+  resolveO3OverlayDurationS,
   resolveO3PlaybackDurationS,
+  resolveO3TrimAuthorityDurationS,
 } from './bg/BgO3CutOverlay';
 import { resolveClipPlaybackTruth } from '../utils/playbackCache';
 import {
@@ -57,6 +59,7 @@ import { useBgO3TrimNumericDraft } from '../hooks/useBgO3TrimNumericDraft';
 import { useBgO3CutSession } from '../hooks/useBgO3CutSession';
 import { writePersistedTrackSlot, isStitchUiSlotKey } from '../utils/stitchTrackFocus';
 import { stitchJobSessionKey } from '../state/producerSessionKeys';
+import { ensureStitchJobSession } from '../state/stitchJobSessionStore';
 import { stitcherRefreshTick } from '../state/refreshSignals';
 import {
   BeatMagicButtons,
@@ -329,6 +332,7 @@ function inferO3OptionPipelineMode(opt?: GptOption | null): BeatGenerationMode |
     return 'element_native';
   }
   if (source.includes('still_insert') || path.includes('still_insert')) return 'still_insert';
+  if (path.includes('_delivery')) return 'still_insert';
   if (path.includes('_avatar_pro') || source === 'kling_o3_avatar_pro') return 'avatar_pro';
   if (path.includes('_voice_lipsync')) return 'voice_first';
   if (path.includes('_element_o3') || (path.includes('_element_') && !path.includes('_voice_lipsync'))) {
@@ -460,6 +464,7 @@ type BgModalState =
       referenceImage: BgBeat['reference_image'];
       bgRefImage: BgBeat['bg_ref_image'];
       message: string;
+      submitting?: boolean;
     };
 
 /** Option key for **Approve still for stitch** — works even when sidecar row lacks ``key``. */
@@ -828,6 +833,7 @@ export function BgTab() {
   const pollResults = bgPollResults.value;
 
   const o3SubmitPendingTimersRef = useRef<Record<string, number>>({});
+  const voiceDriftSubmitInFlightRef = useRef<string | null>(null);
   const markO3SubmitPending = useCallback((beatId: string) => {
     bgO3SubmitPending.value = { ...bgO3SubmitPending.value, [beatId]: true };
     const existingTimer = o3SubmitPendingTimersRef.current[beatId];
@@ -1935,7 +1941,7 @@ export function BgTab() {
           [beatId]: result.data!.submitted!,
         };
       }
-      void refreshState();
+      await refreshState();
       const slot = result.data.generation_slot ?? result.data.submitted?.generation_slot;
       const mode = result.data.o3_generate_mode;
       const modeLabel = mode === 'avatar_pro'
@@ -2028,10 +2034,29 @@ export function BgTab() {
   const confirmVoiceDriftSubmit = async () => {
     if (modalState.kind !== 'voice-drift-confirm') return;
     const { beatId, promptToSave, replaceSlotIndex, referenceImage, bgRefImage } = modalState;
-    closeModal();
+    if (modalState.submitting || voiceDriftSubmitInFlightRef.current === beatId) return;
     const beat = beatsRef.current.find((b) => b.beat_id === beatId)
       ?? beats.find((b) => b.beat_id === beatId);
     if (!beat) return;
+    const serverFlightCtx = {
+      activeO3Jobs: bgActiveO3Jobs.value,
+      submitPollLatch: submitPollLatchRef.current,
+    };
+    if (beatO3ServerJobInFlight(beatId, beat, serverFlightCtx)) {
+      closeModal();
+      pushToast({
+        kind: 'info',
+        message: 'This beat is already generating.',
+        source: 'bg-voice-drift-already-busy',
+      });
+      return;
+    }
+    voiceDriftSubmitInFlightRef.current = beatId;
+    setModalState((prev) => (
+      prev.kind === 'voice-drift-confirm' && prev.beatId === beatId
+        ? { ...prev, submitting: true }
+        : prev
+    ));
     const workBeat: BgBeat = {
       ...beat,
       kling_o3_prompt: promptToSave,
@@ -2039,7 +2064,19 @@ export function BgTab() {
       reference_image: referenceImage ?? beat.reference_image ?? null,
       bg_ref_image: bgRefImage ?? beat.bg_ref_image ?? null,
     };
-    await submitO3Voice(beatId, workBeat, promptToSave, true);
+    try {
+      const submitted = await submitO3Voice(beatId, workBeat, promptToSave, true);
+      if (submitted) closeModal();
+    } finally {
+      if (voiceDriftSubmitInFlightRef.current === beatId) {
+        voiceDriftSubmitInFlightRef.current = null;
+      }
+      setModalState((prev) => (
+        prev.kind === 'voice-drift-confirm' && prev.beatId === beatId && prev.submitting
+          ? { ...prev, submitting: false }
+          : prev
+      ));
+    }
   };
 
   const onGenerateBatch = async (
@@ -2384,7 +2421,13 @@ export function BgTab() {
     trimStartS: number,
     trimBackS: number | null,
     opts?: { clear?: boolean; previewOnly?: boolean; silent?: boolean; videoPath?: string },
-  ) => {
+  ): Promise<{
+    previewUrl?: string;
+    rawDurationS?: number;
+    effectiveDurationS?: number | null;
+    trimBaked?: boolean;
+    videoPath?: string;
+  } | undefined> => {
     const result = await pathappPatch<{
       trim_start?: number;
       trim_back?: number | null;
@@ -2395,6 +2438,7 @@ export function BgTab() {
       preview_video_url?: string;
       video_path?: string;
       trim_baked?: boolean;
+      export_baked?: boolean;
     }>(activeScope.value, 'bg_kling_o3_trim', {
       beat_id: beatId,
       slot_index: slotIndex,
@@ -2410,8 +2454,10 @@ export function BgTab() {
       const shorteningRequested = !opts?.clear && (
         trimStartS > 0.05 || (trimBackS != null && trimBackS > 0.05)
       );
+      const trimBaked = !!result.data?.trim_baked;
       if (
         shorteningRequested
+        && !trimBaked
         && rawDurationGate != null
         && effectiveGate != null
         && effectiveGate >= rawDurationGate - 0.05
@@ -2431,8 +2477,18 @@ export function BgTab() {
           const slots = buildFixedO3OptionSlots(b);
           const slotOpt = slots[slotIndex];
           const targetPath = opts?.videoPath ?? slotOpt?.video_path ?? '';
+          const bakedPath = result.data?.video_path;
+          const trimBaked = !!result.data?.trim_baked;
+          const optionMatchesTarget = (o: GptOption | undefined): boolean => {
+            if (!o?.video_path) return false;
+            if (targetPath && o.video_path === targetPath) return true;
+            if (bakedPath && o.video_path === bakedPath) return true;
+            if (typeof o.slot_index === 'number' && o.slot_index === slotIndex) return true;
+            const slotPath = slotOpt?.video_path;
+            return !!slotPath && o.video_path === slotPath;
+          };
           const nextOptions = (b.kling_o3_options ?? []).map((o) => {
-            if (!o || !targetPath || o.video_path !== targetPath) return o;
+            if (!o || !optionMatchesTarget(o)) return o;
             if (opts?.clear) {
               const {
                 trim_start_s: _ts,
@@ -2442,6 +2498,18 @@ export function BgTab() {
                 ...rest
               } = o as GptOption & Record<string, unknown>;
               return rest as GptOption;
+            }
+            if (trimBaked && bakedPath) {
+              const {
+                trim_start_s: _ts,
+                trim_back_s: _tb,
+                cut_start_s: _cs,
+                cut_end_s: _ce,
+                kling_o3_baked_path: _obp,
+                kling_o3_baked_token: _obt,
+                ...rest
+              } = o as GptOption & Record<string, unknown>;
+              return { ...rest, video_path: bakedPath } as GptOption;
             }
             const next: GptOption & Record<string, unknown> = {
               ...o,
@@ -2458,7 +2526,9 @@ export function BgTab() {
             return next as GptOption;
           });
           const activePath = b.kling_o3_video_path ?? '';
-          const mirrorsActive = targetPath === activePath;
+          const mirrorsActive = targetPath === activePath
+            || bakedPath === activePath
+            || slotOpt?.video_path === activePath;
           if (mirrorsActive && opts?.clear) {
             const restoredPath = result.data?.video_path;
             const beatAny = b as BgBeat & Record<string, unknown>;
@@ -2499,12 +2569,24 @@ export function BgTab() {
             const nextBeat: BgBeat = {
               ...b,
               kling_o3_options: nextOptions,
-              kling_o3_trim_start: result.data?.trim_start ?? trimStartS,
-              kling_o3_trim_back: back != null && back > 0.009 ? back : null,
+              ...(trimBaked && bakedPath ? { kling_o3_video_path: bakedPath } : {}),
+              ...(trimBaked
+                ? {}
+                : {
+                  kling_o3_trim_start: result.data?.trim_start ?? trimStartS,
+                  kling_o3_trim_back: back != null && back > 0.009 ? back : null,
+                }),
             };
             delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_cut_start_s;
             delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_cut_end_s;
+            if (trimBaked) {
+              delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_trim_start;
+              delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_trim_back;
+            }
             return nextBeat;
+          }
+          if (trimBaked && bakedPath) {
+            return { ...b, kling_o3_options: nextOptions };
           }
           return { ...b, kling_o3_options: nextOptions };
         }));
@@ -2541,11 +2623,17 @@ export function BgTab() {
       }
       const rawDurationS = result.data?.raw_duration_s;
       const effectiveDurationS = result.data?.effective_duration_s;
+      const bakedVideoPath = result.data?.video_path;
       return {
         ...(previewUrl !== undefined ? { previewUrl } : {}),
         ...(rawDurationS !== undefined ? { rawDurationS } : {}),
         ...(effectiveDurationS !== undefined ? { effectiveDurationS } : {}),
+        ...(trimBaked ? { trimBaked: true as const } : {}),
+        ...(bakedVideoPath ? { videoPath: bakedVideoPath } : {}),
       };
+    }
+    if (opts?.silent && opts?.previewOnly) {
+      return undefined;
     }
     await guardBeatPatchResult(
       beatId,
@@ -2751,21 +2839,28 @@ export function BgTab() {
         return;
       }
       const slot = slotKey ?? stitchSlotForSegment;
-      if (isStitchUiSlotKey(slot)) {
-        const stitchSessionKey = stitchJobSessionKey(
-          scopeEventId,
-          activeProjectType.value,
-          activeMilestoneId.value,
-        );
-        writePersistedTrackSlot(stitchSessionKey, slot);
-        notifyStitchSlotExportApplied(scopeEventId, slot);
-      }
-      stitcherRefreshTick.value += 1;
-      pushToast({
-        kind: 'success',
-        message: `Sent to Stitcher → ${slot} slot (canonical tail + intro fades when applicable)`,
-        source: 'bg-kling-export',
-      });
+      void (async () => {
+        await ensureStitchJobSession(scopeEventId, {
+          force: true,
+          projectType: activeProjectType.value,
+          milestoneId: activeMilestoneId.value,
+        });
+        if (isStitchUiSlotKey(slot)) {
+          const stitchSessionKey = stitchJobSessionKey(
+            scopeEventId,
+            activeProjectType.value,
+            activeMilestoneId.value,
+          );
+          writePersistedTrackSlot(stitchSessionKey, slot);
+          notifyStitchSlotExportApplied(scopeEventId, slot);
+        }
+        stitcherRefreshTick.value += 1;
+        pushToast({
+          kind: 'success',
+          message: `Sent to Stitcher → ${slot} slot (canonical tail + intro fades when applicable)`,
+          source: 'bg-kling-export',
+        });
+      })();
       return;
     }
 
@@ -2847,9 +2942,13 @@ export function BgTab() {
         },
       );
       if (!result.ok) {
+        const hint = result.hint?.trim();
+        const detail = result.error_message ?? result.error ?? 'unknown error';
         pushToast({
           kind: 'error',
-          message: `Send to Stitcher failed: ${result.error ?? 'unknown error'}`,
+          message: hint
+            ? `Send to Stitcher failed: ${hint}`
+            : `Send to Stitcher failed: ${detail}`,
           source: 'bg-kling-export-error',
         });
         setStitcherExportStatus('idle');
@@ -2860,7 +2959,9 @@ export function BgTab() {
       if (!jobId) {
         pushToast({
           kind: 'error',
-          message: 'Send to Stitcher failed: server returned no job_id',
+          message:
+            'Send to Stitcher failed: server returned no job_id '
+            + '(export was not queued — server may have been restarting)',
           source: 'bg-kling-export-error',
         });
         setStitcherExportStatus('idle');
@@ -3330,16 +3431,27 @@ export function BgTab() {
         onClose={closeModal}
         footer={(
           <>
-            <button type="button" class="mn-btn" data-testid="bg-voice-drift-cancel" onClick={closeModal}>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="bg-voice-drift-cancel"
+              disabled={modalState.kind === 'voice-drift-confirm' && !!modalState.submitting}
+              onClick={closeModal}
+            >
               Cancel
             </button>
             <button
               type="button"
               class="mn-btn mn-btn-primary"
               data-testid="bg-voice-drift-confirm"
+              disabled={modalState.kind === 'voice-drift-confirm' && !!modalState.submitting}
               onClick={() => { void confirmVoiceDriftSubmit(); }}
             >
-              Generate with current registry voice
+              {modalState.kind === 'voice-drift-confirm' && modalState.submitting ? (
+                <><Spinner size="sm" inline /> Submitting…</>
+              ) : (
+                'Generate with current registry voice'
+              )}
             </button>
           </>
         )}
@@ -3625,6 +3737,8 @@ interface BeatGenCardProps {
     previewUrl?: string;
     rawDurationS?: number;
     effectiveDurationS?: number | null;
+    trimBaked?: boolean;
+    videoPath?: string;
   } | undefined>;
   onApplyO3Trim: (
     trimStart: number,
@@ -4536,6 +4650,8 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
     previewUrl?: string;
     rawDurationS?: number;
     effectiveDurationS?: number | null;
+    trimBaked?: boolean;
+    videoPath?: string;
   } | undefined>;
   trimStart: number;
   trimBack: number | null;
@@ -4718,19 +4834,25 @@ function BgOptionTile({
   const MIN_O3_CUT_S = 0.25;
   const isCutPreviewActive = !!previewUrl;
   const playbackDurationS = resolveO3PlaybackDurationS(sourceDurationS, loadedDuration);
+  const overlayTimelineDurationS = resolveO3OverlayDurationS(sourceDurationS, loadedDuration);
   const exportDurationS = resolveO3ExportDurationS(sourceDurationS, playbackDurationS);
-  const trimTruthReady = exportDurationS > 0 || playbackDurationS > 0;
+  const trimAuthorityDurationS = resolveO3TrimAuthorityDurationS(
+    overlayTimelineDurationS,
+    exportDurationS,
+    playbackDurationS,
+  );
+  const trimTruthReady = trimAuthorityDurationS > 0;
   const savedKeepStartS = trimStartS > 0.009 ? trimStartS : 0;
-  const savedKeepEndRaw = playbackDurationS > 0
-    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, playbackDurationS - (trimBackS > 0.009 ? trimBackS : 0))
+  const savedKeepEndRaw = overlayTimelineDurationS > 0
+    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, overlayTimelineDurationS - (trimBackS > 0.009 ? trimBackS : 0))
     : 0;
   const savedKeep = normalizeO3KeepWindow(
-    playbackDurationS,
+    overlayTimelineDurationS,
     savedKeepStartS,
     savedKeepEndRaw,
   );
-  const pendingKeep = pendingCut && playbackDurationS > 0
-    ? normalizeO3KeepWindow(playbackDurationS, pendingCut.startS, pendingCut.endS)
+  const pendingKeep = pendingCut && overlayTimelineDurationS > 0
+    ? normalizeO3KeepWindow(overlayTimelineDurationS, pendingCut.startS, pendingCut.endS)
     : null;
   const effectiveKeepStartS = pendingKeep?.startS ?? savedKeep.startS;
   const effectiveKeepEndS = pendingKeep?.endS ?? savedKeep.endS;
@@ -4738,20 +4860,39 @@ function BgOptionTile({
     Math.abs((pendingKeep?.startS ?? pendingCut.startS) - savedKeep.startS) > 0.009
     || Math.abs((pendingKeep?.endS ?? pendingCut.endS) - savedKeep.endS) > 0.009
   );
-  const hasActiveCut = effectiveKeepEndS > effectiveKeepStartS + MIN_O3_CUT_S - 0.01;
+  const hasActiveCut = (
+    savedKeepStartS > 0.009
+    || trimBackS > 0.05
+    || (pendingCut !== null && cutDraftDirty)
+  );
   const hasSavedCut = savedKeepStartS > 0.009 || trimBackS > 0.05;
   const cutPreviewTrimBackS = () => {
-    const dur = exportDurationS || playbackDurationS;
+    const dur = trimAuthorityDurationS;
     if (dur <= 0) return 0;
     return Math.max(0, dur - effectiveKeepEndS);
   };
   // Magic-on-video override must win over cached Kling playback — same clip the beat exports.
   const activeVideoUrl = previewUrl ?? overrideVideoUrl ?? playbackUrl ?? canonicalVideoUrl;
-  // Overlay timeline = video element truth (never stale short server-only duration).
-  const trimTimelineDurationS = playbackDurationS;
-  const overlayDurationS = isCutPreviewActive || loadedDuration == null || loadedDuration <= 0
+  // Overlay timeline = loaded video element duration (not max(ffprobe, loaded)).
+  const trimTimelineDurationS = overlayTimelineDurationS;
+  const overlayDurationS = isCutPreviewActive || overlayTimelineDurationS <= 0
     ? 0
     : trimTimelineDurationS;
+
+  useEffect(() => {
+    if (!pendingCut || overlayTimelineDurationS <= 0) return;
+    const clamped = normalizeO3KeepWindow(
+      overlayTimelineDurationS,
+      pendingCut.startS,
+      pendingCut.endS,
+    );
+    if (
+      Math.abs(clamped.startS - pendingCut.startS) > 0.009
+      || Math.abs(clamped.endS - pendingCut.endS) > 0.009
+    ) {
+      setPendingCut(clamped);
+    }
+  }, [overlayTimelineDurationS]);
 
   useEffect(() => {
     if (!selected || !option.video_path || previewUrl) {
@@ -4904,9 +5045,11 @@ function BgOptionTile({
     previewUrl?: string;
     trimBackS?: number;
     keepStartS?: number;
+    trimBaked?: boolean;
+    videoPath?: string;
   }> => {
     if (!selected) return { ok: false };
-    const validateDuration = exportDurationS || playbackDurationS;
+    const validateDuration = trimAuthorityDurationS;
     if (validateDuration <= 0) {
       pushToast({
         kind: 'info',
@@ -4923,6 +5066,22 @@ function BgOptionTile({
           ? `Clip is only ${validateDuration.toFixed(1)}s — too short to trim`
           : 'Trim window too small — drag handles farther apart (need ≥0.25s kept)',
         source: 'bg-o3-cut-rejected',
+      });
+      console.info('[bg_o3_trim_audit_client]', {
+        phase: 'persist_reject',
+        beatId,
+        optionIndex,
+        validateDuration,
+        exportDurationS,
+        overlayTimelineDurationS,
+        trimAuthorityDurationS,
+        playbackDurationS,
+        keepStartS,
+        keepEndS,
+        keptS: endS - startS,
+        trimStartS,
+        trimBackS,
+        pendingCut,
       });
       return { ok: false };
     }
@@ -4943,12 +5102,14 @@ function BgOptionTile({
       const raw = applied.rawDurationS ?? validateDuration;
       const eff = applied.effectiveDurationS;
       const shortening = startS > 0.05 || trimBack > 0.05;
-      if (shortening && eff != null && eff >= raw - 0.05) {
+      if (shortening && eff != null && eff >= raw - 0.05 && !applied.trimBaked) {
         return { ok: false };
       }
       return {
         ok: true,
         ...(applied.previewUrl !== undefined ? { previewUrl: applied.previewUrl } : {}),
+        ...(applied.trimBaked ? { trimBaked: true as const } : {}),
+        ...(applied.videoPath ? { videoPath: applied.videoPath } : {}),
         trimBackS: trimBack,
         keepStartS: startS,
       };
@@ -5003,7 +5164,7 @@ function BgOptionTile({
     }
     setCutBusy(true);
     try {
-      const validateDuration = exportDurationS || playbackDurationS;
+      const validateDuration = trimAuthorityDurationS;
       const { startS, endS } = normalizeO3KeepWindow(validateDuration, effectiveKeepStartS, effectiveKeepEndS);
       const trimBack = Math.max(0, validateDuration - endS);
       const applied = await onApplyO3Cut(
@@ -5048,6 +5209,17 @@ function BgOptionTile({
     const saved = await persistCut(effectiveKeepStartS, effectiveKeepEndS);
     if (!saved.ok) return;
     clearPendingCut();
+    if (saved.trimBaked && saved.videoPath) {
+      setPreviewUrl(null);
+      lastAutoPreviewRef.current = null;
+      forgetCutPreviewsForBeat(beatId);
+      const video = videoRef.current;
+      if (video && canonicalVideoUrl) {
+        video.src = canonicalVideoUrl;
+        video.load();
+      }
+      return;
+    }
     const trimBack = saved.trimBackS ?? cutPreviewTrimBackS();
     const startS = saved.keepStartS ?? effectiveKeepStartS;
     await refreshSavedCutPreview(startS, trimBack, saved.previewUrl);
@@ -5078,7 +5250,7 @@ function BgOptionTile({
   };
 
   const initCutFromDuration = () => {
-    const clipDur = exportDurationS || playbackDurationS;
+    const clipDur = overlayTimelineDurationS || exportDurationS || playbackDurationS;
     if (clipDur <= MIN_O3_CUT_S * 2) {
       pushToast({
         kind: 'info',
@@ -5334,6 +5506,25 @@ function BgOptionTile({
                   setPendingCut({ startS, endS });
                 }}
                 onKeepRejected={(message) => {
+                  console.info('[bg_o3_trim_audit_client]', {
+                    phase: 'overlay_reject',
+                    beatId,
+                    optionIndex,
+                    message,
+                    overlayDurationS,
+                    overlayTimelineDurationS,
+                    playbackDurationS,
+                    exportDurationS,
+                    sourceDurationS,
+                    loadedDuration,
+                    effectiveKeepStartS,
+                    effectiveKeepEndS,
+                    keptS: effectiveKeepEndS - effectiveKeepStartS,
+                    trimStartS,
+                    trimBackS,
+                    pendingCut,
+                    isCutPreviewActive,
+                  });
                   pushToast({ kind: 'info', message, source: 'bg-o3-cut-rejected' });
                 }}
               />

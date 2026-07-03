@@ -2045,16 +2045,42 @@ def stitch_upsert_event_slot(
         kept_ms = int(peek_slot.get("video_dur_ms") or 0) if isinstance(peek_slot, dict) else 0
         return job_name, kept_ms, [
             f"{slot_key}: kept existing export (incoming video not newer than stored)",
-        ]
+        ], {"skipped": "kept_existing"}
 
+    dry_video_rel = new_video_path
     probed_ms, export_warnings = stitch_slot_export_media_preflight(
         h,
-        new_video_path,
+        dry_video_rel,
         slot_key,
         beat_boundaries=beat_boundaries,
     )
     patched = dict(slot_patch)
     patched["video_dur_ms"] = probed_ms
+
+    # FF-036 — event slots: passthrough dry concat → normalize/loudnorm → playback bake.
+    if not is_milestone_stitch_job_name(job_name):
+        from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+            STITCH_FOUR_FILES_V1,
+            bake_and_persist_slot_playback_mp4,
+        )
+
+        def _migrate(state: dict) -> None:
+            stitch_migrate_legacy_to_canonical(state, event_id)
+
+        stitch_store.mutate_state(_migrate)
+        playback_rel, probed_ms, export_artifacts = bake_and_persist_slot_playback_mp4(
+            h,
+            job_name,
+            slot_key,
+            dry_video_rel=dry_video_rel,
+            slot_patch={k: v for k, v in patched.items() if k != "video_dur_ms"},
+            beat_boundaries=beat_boundaries,
+            stitch_store=stitch_store,
+            peek_slot=peek_slot if isinstance(peek_slot, dict) else None,
+        )
+        export_warnings = list(export_warnings or [])
+        export_warnings.append(f"{slot_key}: four-files playback bake ({STITCH_FOUR_FILES_V1})")
+        return job_name, probed_ms, export_warnings, export_artifacts
 
     now_iso = datetime.now(timezone.utc).isoformat()
 
@@ -2526,9 +2552,25 @@ def handle_stitch_load_job(h, name: str)-> None:
 
         mux_cleared_on_load = False
         pre_validate_slots = copy.deepcopy(live_slots)
+        four_files_purged_on_load = False
+        dry_authority_migrated_on_load = False
         for slot_key, slot in live_slots.items():
             if not isinstance(slot, dict):
                 continue
+            from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+                migrate_stale_split_authority_slot_to_dry_authority,
+                reconcile_dry_authority_slot_artifacts,
+                reconcile_four_files_slot_authority,
+            )
+
+            # Milestone standalone slots use artifact-orchestrator mux — not FF-042 dry authority.
+            if not milestone_job:
+                if migrate_stale_split_authority_slot_to_dry_authority(h, slot, str(slot_key)):
+                    dry_authority_migrated_on_load = True
+                if reconcile_four_files_slot_authority(slot):
+                    four_files_purged_on_load = True
+                if reconcile_dry_authority_slot_artifacts(slot):
+                    four_files_purged_on_load = True
             before_mux = (slot.get("mux_preview_hash") or "").strip()
             slot_artifact_warnings = validate_stitch_slot_media_artifacts(h, slot, fast=True)
             if slot_artifact_warnings:
@@ -2538,12 +2580,14 @@ def handle_stitch_load_job(h, name: str)-> None:
                 artifacts_healed = True
                 mux_cleared_on_load = True
             attach_stitch_slot_derived_media_urls(h, slot)
-        if mux_cleared_on_load and job_persisted:
+        if (mux_cleared_on_load or four_files_purged_on_load or dry_authority_migrated_on_load) and job_persisted:
 
             def persist_mux_clears(state: dict) -> None:
                 _persist_stitch_job_healed_slots(state, name, live_slots)
 
             stitch_store.mutate_state(persist_mux_clears)
+        if four_files_purged_on_load or dry_authority_migrated_on_load:
+            artifacts_healed = True
 
     response_job = copy.deepcopy(job) if isinstance(job, dict) else job
     if isinstance(response_job, dict) and isinstance(live_slots, dict):
@@ -2944,6 +2988,11 @@ def rebuild_stitch_ambient_mixes_for_job(
         persist_stitch_slot_ambient_mix_artifacts,
     )
     from server_handlers.stitch_media_sig import compute_stitch_ambient_mix_sig_from_slot  # noqa: PLC0415
+    from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+        STITCH_FOUR_FILES_LEGACY_PURGE_V1,
+        reconcile_four_files_slot_authority,
+        slot_skips_legacy_playback_artifact_tiers,
+    )
 
     stitch_store = stitch_state_store_for_job(h, job_name)
     orig_stitch_state = None
@@ -2971,6 +3020,24 @@ def rebuild_stitch_ambient_mixes_for_job(
             if not isinstance(slot, dict):
                 continue
             if not (slot.get("video_path") or "").strip():
+                continue
+            if slot_skips_legacy_playback_artifact_tiers(slot):
+                purged = reconcile_four_files_slot_authority(slot)
+                if purged:
+                    def persist_four_files_purge(state: dict) -> None:
+                        j = (state.get("jobs") or {}).get(job_name)
+                        if not isinstance(j, dict):
+                            return
+                        s = (j.get("slots") or {}).get(slot_key)
+                        if isinstance(s, dict):
+                            reconcile_four_files_slot_authority(s)
+
+                    stitch_store.mutate_state(persist_four_files_purge)
+                built[slot_key] = {
+                    "ok": True,
+                    "skipped": True,
+                    "code": STITCH_FOUR_FILES_LEGACY_PURGE_V1,
+                }
                 continue
             ambient_bed = (slot.get("ambient_bed") or "").strip()
             if not ambient_bed:
@@ -3329,6 +3396,22 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                    retry_safe=False,
                )
 
+    peaks_video_path_str = video_path_str
+    from server_handlers.stitch_media_artifacts import find_stitch_job_slot_for_video  # noqa: PLC0415
+    from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+        STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1,
+        resolve_four_files_waveform_video_path,
+    )
+
+    job_slot_early = find_stitch_job_slot_for_video(h, video_path_str)
+    if job_slot_early:
+        _job_name, _slot_key = job_slot_early
+        _state = h.app.stitch_state.read_state() or {}
+        _slot = ((_state.get("jobs") or {}).get(_job_name) or {}).get("slots") or {}
+        _slot = _slot.get(_slot_key) if isinstance(_slot, dict) else None
+        if isinstance(_slot, dict):
+            peaks_video_path_str = resolve_four_files_waveform_video_path(_slot)
+
     try:
         abs_path = h._stitch_resolve_path(video_path_str)
     except ValueError:
@@ -3358,9 +3441,14 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                )
 
     # Cache key: md5(path) + mtime — Producer/Consumer drift rule (source identity)
-    mtime_ms = int(os.path.getmtime(abs_path) * 1000)
+    try:
+        peaks_abs_path = h._stitch_resolve_path(peaks_video_path_str)
+    except ValueError:
+        peaks_abs_path = abs_path
+    peaks_mtime_ms = int(os.path.getmtime(peaks_abs_path) * 1000)
     cache_key = _hl.md5(
-        f"{abs_path}:{mtime_ms}".encode(), usedforsecurity=False
+        f"{STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1}:{peaks_abs_path}:{peaks_mtime_ms}".encode(),
+        usedforsecurity=False,
     ).hexdigest()[:16]
 
     cache_dir = h._stitch_cache_dir()
@@ -3967,6 +4055,52 @@ def _preview_module_timing_from_hydrated(h, hydrated: dict) -> tuple[list[int], 
     return slot_durations, slot_start_offsets_ms
 
 
+def build_stitch_slot_ambient_loop_response(h, job_name: str, slot_key: str) -> None:
+    """GET /api/stitch_editor/slot_ambient_loop — FF-039 ambient graph for client preview."""
+    from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+        STITCH_DRY_AUTHORITY_CLIENT_MIX_V1,
+        build_slot_ambient_loop_audio_file,
+    )
+
+    stitch_store = stitch_state_store_for_job(h, job_name)
+    state = stitch_store.read_state() or {}
+    job = (state.get("jobs") or {}).get(job_name) or {}
+    slots = job.get("slots") or {}
+    slot = slots.get(slot_key) if isinstance(slots, dict) else None
+    if not isinstance(slot, dict):
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"Slot {slot_key!r} not found on job {job_name!r}",
+            retry_safe=False,
+        )
+    ensure_slot_ambient_bed_path_hydrated(h, slot)
+    ambient_path = (slot.get("ambient_bed_path") or "").strip()
+    if not ambient_path:
+        return h._send_error_v59(
+            400,
+            error_code="GENERIC_ERROR",
+            error_message="Slot has no ambient bed configured",
+            retry_safe=False,
+        )
+    try:
+        loop_path = build_slot_ambient_loop_audio_file(h, slot, h._stitch_cache_dir())
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+        return h._send_error_v59(
+            500,
+            error_code="GENERIC_ERROR",
+            error_message=f"Ambient loop render failed ({STITCH_DRY_AUTHORITY_CLIENT_MIX_V1}): {exc}",
+            retry_safe=True,
+        )
+    h.send_response(200)
+    h.send_header("Content-Type", "audio/mp4")
+    h.send_header("Cache-Control", "private, max-age=3600")
+    h.send_header("X-Stitch-Ambient-Loop", STITCH_DRY_AUTHORITY_CLIENT_MIX_V1)
+    h.end_headers()
+    with open(loop_path, "rb") as f:
+        shutil.copyfileobj(f, h.wfile)
+
+
 def handle_stitch_preview(h, body: dict)-> None:
 
     """POST /api/stitch_editor/preview — mux playback via artifact orchestrator (RC16).
@@ -4022,6 +4156,58 @@ def handle_stitch_preview(h, body: dict)-> None:
                 error_message=f"Slot {slot_key!r} not found on job {job_name!r}",
                 retry_safe=False,
             )
+
+        from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+            STITCH_DRY_AUTHORITY_CLIENT_MIX_V1,
+            STITCH_FOUR_FILES_V1,
+            clear_legacy_playback_artifact_fields,
+            playback_recipe_is_dry_authority_client_mix,
+            playback_recipe_is_four_files,
+            reconcile_dry_authority_slot_artifacts,
+            resolve_slot_playback_path,
+        )
+
+        if playback_recipe_is_dry_authority_client_mix(slot) or playback_recipe_is_four_files(slot):
+            from urllib.parse import quote  # noqa: PLC0415
+
+            playback_rel = resolve_slot_playback_path(slot)
+            recipe_code = (
+                STITCH_DRY_AUTHORITY_CLIENT_MIX_V1
+                if playback_recipe_is_dry_authority_client_mix(slot)
+                else STITCH_FOUR_FILES_V1
+            )
+
+            def _clear_preview_legacy(state: dict) -> None:
+                job = (state.get("jobs") or {}).get(job_name)
+                if not isinstance(job, dict):
+                    return
+                slots_map = job.get("slots")
+                if not isinstance(slots_map, dict):
+                    return
+                persisted = slots_map.get(slot_key)
+                if isinstance(persisted, dict):
+                    clear_legacy_playback_artifact_fields(persisted)
+                    if playback_recipe_is_dry_authority_client_mix(persisted):
+                        reconcile_dry_authority_slot_artifacts(persisted)
+
+            stitch_store.mutate_state(_clear_preview_legacy)
+            dur_ms = int(slot.get("video_dur_ms") or 0)
+            preview_url = f"/files?path={quote(playback_rel)}"
+            payload = {
+                "preview_url": _stitch_media_public_url(h, preview_url),
+                "duration_ms": dur_ms,
+                "slot_durations": slot_durations,
+                "slot_start_offsets_ms": slot_start_offsets_ms,
+                "video_playable": True,
+                "code": recipe_code,
+                "orchestrator_code": STITCH_ARTIFACT_ORCHESTRATOR_V1,
+                "cache_hit": True,
+            }
+            if playback_recipe_is_dry_authority_client_mix(slot):
+                payload["dry_authority_passthrough"] = True
+            else:
+                payload["four_files_passthrough"] = True
+            return h._send_json(200, payload)
 
         hash_id = (slot.get("mux_preview_hash") or "").strip()
         preview_url = (slot.get("_mux_preview_url") or "").strip()

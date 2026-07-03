@@ -18,12 +18,15 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
+import { useStitchSlotClientMix } from '../hooks/useStitchSlotClientMix';
+import { StitchSlotAmbientBedAudio } from './StitchSlotAmbientBedAudio';
 import { effect } from '@preact/signals';
 import { activeScope, activeProjectType, activeMilestoneId, producerScopeChipLabel, activeTargetVideo } from '../state/scope';
 import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
 import { serverRehydrateTick, activeTab } from '../state/refreshSignals';
 import {
+  ensureStitchJobSession,
   stitchActiveKey,
   stitchCachedJob,
   stitchJobSessionHasCache,
@@ -85,6 +88,10 @@ import {
   stitchSlotRequiresMuxedPreview,
   stitchSlotRequiresAmbientMix,
   stitchSlotLiveAmbientSig,
+  stitchSlotUsesFourFilesPlayback,
+  stitchSlotUsesDryAuthorityClientMix,
+  stitchSlotRequiresClientPreviewMix,
+  STITCH_DRY_AUTHORITY_CLIENT_MIX_V1,
   STITCH_AMBIENT_BAKE_ON_SAVE_V1,
   stripStaleStitchSlotArtifacts,
 } from '../utils/stitchSlotMuxAudioSig';
@@ -103,6 +110,7 @@ import {
   resolveDrySlotSourceVideoUrl,
   resolvePersistedPlaybackFromArtifacts,
   resolveSlotPlaybackPreviewUrl,
+  resolveSlotWaveformVideoPath,
   selectSlotsForMuxRebuild,
   stitchSlotTimelineDurMs,
   STITCH_MUX_REBUILD_QUEUE_V1,
@@ -161,6 +169,7 @@ import {
   stitchSlotSessionExpectedSig,
   STITCH_PREVIEW_LS_HYDRATE_V1,
   writeCachedStitcherPreviewLs,
+  type CachedStitcherPreviewLs,
   type StitchSessionSlotKey,
 } from '../utils/stitchSlotSessionCache';
 
@@ -225,6 +234,8 @@ interface StitchSlot {
   _mux_preview_url?: string;
   _waveform_peaks_url?: string;
   _ambient_mix_url?: string;
+  playback_recipe_version?: string;
+  dry_export_path?: string;
 }
 
 interface StitchJob {
@@ -524,6 +535,15 @@ export function StitcherTab() {
     for (const sd of defs) {
       const slotData = job.slots[sd.key];
       if (!slotData?.video_path) continue;
+      // FF-042 — composer always tracks job.video_path for dry authority (never stale session URL).
+      if (
+        stitchSlotUsesDryAuthorityClientMix(slotData)
+        || stitchSlotUsesFourFilesPlayback(slotData)
+      ) {
+        const dryUrl = resolveDrySlotSourceVideoUrl(slotData.video_path);
+        if (dryUrl) out[sd.key] = dryUrl;
+        continue;
+      }
       const url = resolveSlotPlaybackPreviewUrl(
         stitchSessionKey,
         sd.key as StitchSessionSlotKey,
@@ -560,6 +580,7 @@ export function StitcherTab() {
   const [beatBoundaries, setBeatBoundaries] = useState<BeatBoundary[]>([]);
   const [beatBoundariesLoading, setBeatBoundariesLoading] = useState(false);
   const composerVideoRef = useRef<HTMLVideoElement | null>(null);
+  const [composerVideoNode, setComposerVideoNode] = useState<HTMLVideoElement | null>(null);
   const composerPoolRef = useRef<StitchComposerVideoPoolHandle | null>(null);
   const [composerVideoLoading, setComposerVideoLoading] = useState(false);
   const [composerVideoError, setComposerVideoError] = useState<string | null>(null);
@@ -605,6 +626,18 @@ export function StitcherTab() {
   }, []);
 
   // PSL stitch job cache updates (e.g. Beat Gen export) must apply while Stitcher is mounted.
+  useEffect(() => {
+    return effect(() => {
+      if (activeTab.value !== 'stitcher') return;
+      const eventId = activeScope.value.event_id;
+      void ensureStitchJobSession(eventId, {
+        force: true,
+        projectType: activeProjectType.value,
+        milestoneId: activeMilestoneId.value,
+      });
+    });
+  }, []);
+
   useEffect(() => {
     return effect(() => {
       const cached = stitchCachedJob.value;
@@ -684,10 +717,14 @@ export function StitcherTab() {
       const slotData = job.slots?.[sd.key];
       const path = slotData?.video_path;
       const audioSig = stitchSlotSessionExpectedSig(slotData);
-      const cached = readCachedStitcherPreviewLs(stitchSessionKey, sd.key);
+      const cached = readCachedStitcherPreviewLs(stitchSessionKey, sd.key, slotData);
       const cacheStale = cached && (
         cached.video_path !== path
         || (cached.audio_sig ?? '') !== audioSig
+        || (
+          (slotData?.playback_recipe_version ?? '').trim()
+          !== (cached.playback_recipe_version ?? '').trim()
+        )
       );
       if (cacheStale) {
         clearCachedStitcherPreviewLs(stitchSessionKey, sd.key);
@@ -1135,6 +1172,7 @@ export function StitcherTab() {
   });
   viewerSlotRef.current = viewerSlot;
   const viewerSlotData = job?.slots?.[viewerSlot];
+  const viewerWaveformVideoPath = resolveSlotWaveformVideoPath(viewerSlotData);
   const viewerSlotNeedsMux = stitchSlotRequiresMuxedPreview(viewerSlotData);
   const viewerSlotNeedsAmbientMix = stitchSlotRequiresAmbientMix(viewerSlotData);
   const composerVideoUrl = composerSlotUrls[viewerSlot];
@@ -1153,9 +1191,30 @@ export function StitcherTab() {
   const composerPreviewBuilding = previewLoadingSlot === viewerSlot && !resolvedComposerUrl;
   const composerAmbientBuilding = busySlot?.slot === viewerSlot && busySlot.action === 'ambient';
 
+  useEffect(() => {
+    const path = (viewerSlotData?.video_path ?? '').trim();
+    if (!path || lastViewerVideoPathRef.current === path) return;
+    lastViewerVideoPathRef.current = path;
+    const sessionSlot = viewerSlot as StitchSessionSlotKey;
+    invalidateStitchSlotPlaybackCaches(stitchSessionKey, [sessionSlot]);
+    setPreviewUrls((prev) => {
+      const next = { ...prev };
+      delete next[sessionSlot];
+      return next;
+    });
+  }, [viewerSlot, viewerSlotData?.video_path, stitchSessionKey]);
+
   useLayoutEffect(() => {
-    composerVideoRef.current = composerPoolRef.current?.getVideo(viewerSlot) ?? null;
+    const video = composerPoolRef.current?.getVideo(viewerSlot) ?? null;
+    composerVideoRef.current = video;
+    setComposerVideoNode(video);
   }, [viewerSlot, composerSlotUrls, previewUrls]);
+
+  useStitchSlotClientMix(
+    composerVideoNode,
+    viewerSlotData,
+    job?.name ? { jobName: job.name, slotKey: viewerSlot } : null,
+  );
 
   useEffect(() => {
     setComposerVideoError(null);
@@ -1500,6 +1559,26 @@ export function StitcherTab() {
       if (!opts?.quiet) setStatusMsg(`Slot ${slot} has no video assigned.`);
       return false;
     }
+    if (stitchSlotUsesFourFilesPlayback(slotData) || stitchSlotUsesDryAuthorityClientMix(slotData)) {
+      const flatUrl = resolveDrySlotSourceVideoUrl(slotData.video_path);
+      if (!flatUrl) return false;
+      const audioSig = stitchSlotSessionExpectedSig(slotData);
+      bindSlotPreviewUrl(slot, flatUrl, 'hydrate');
+      const cacheEntry: CachedStitcherPreviewLs = {
+        video_path: slotData.video_path,
+        preview_url: flatUrl,
+        audio_sig: audioSig,
+      };
+      const recipe = (slotData.playback_recipe_version ?? '').trim();
+      if (recipe) cacheEntry.playback_recipe_version = recipe;
+      writeCachedStitcherPreviewLs(stitchSessionKey, slot, cacheEntry);
+      commitMuxSession(stitchSessionKey, slot, {
+        previewUrl: flatUrl,
+        videoPath: slotData.video_path,
+        audioSig,
+      });
+      return true;
+    }
     const audioSig = stitchSlotSessionExpectedSig(slotData);
     const persistedArtifactUrl = resolvePersistedPlaybackFromArtifacts(slotData);
     if (persistedArtifactUrl && isMuxSessionFresh(stitchSessionKey, slot, slotData)) {
@@ -1546,7 +1625,7 @@ export function StitcherTab() {
       });
       return true;
     }
-    const cached = readCachedStitcherPreviewLs(stitchSessionKey, slot);
+    const cached = readCachedStitcherPreviewLs(stitchSessionKey, slot, slotData);
     if (
       !stitchSlotRequiresMuxedPreview(slotData)
       && cached?.video_path === slotData.video_path
@@ -2421,7 +2500,9 @@ export function StitcherTab() {
                     ? 'Updating SFX preview — video stays loaded'
                     : composerUsingMux
                     ? 'SFX preview (speech + ambient + SFX) · drag waveform to seek'
-                    : composerUsingAmbientMix
+                    : stitchSlotRequiresClientPreviewMix(viewerSlotData)
+                      ? 'Dry Beat Gen export + ambient bed preview · SFX on timeline'
+                      : composerUsingAmbientMix
                       ? 'Speech + ambient bed · use dropdown below to change ambient'
                       : composerAmbientBuilding
                         ? 'Saving ambient bed…'
@@ -2433,7 +2514,12 @@ export function StitcherTab() {
                 </span>
               </div>
               <div class="mn-stitcher-slot-composer-body">
-                <div class="mn-stitcher-composer-video-wrap">
+                <div
+                  class="mn-stitcher-composer-video-wrap"
+                  {...(stitchSlotRequiresClientPreviewMix(viewerSlotData)
+                    ? { 'data-stitch-client-mix': STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 }
+                    : {})}
+                >
                   {composerVideoUrl ? (
                     <StitchComposerVideoPool
                       activeSlot={viewerSlot as StitchSessionSlotKey}
@@ -2460,6 +2546,18 @@ export function StitcherTab() {
                       Loading video…
                     </div>
                   ) : null}
+                  {stitchSlotRequiresClientPreviewMix(viewerSlotData) && job?.name ? (
+                    <StitchSlotAmbientBedAudio
+                      video={composerVideoNode}
+                      jobName={job.name}
+                      slotKey={viewerSlot}
+                      ambientBed={
+                        (viewerSlotData?.ambient_bed ?? '').trim()
+                        || defaultAmbientBedForSlot(viewerSlot)
+                      }
+                      ambientVolume={viewerSlotData?.ambient_volume ?? STITCH_AMBIENT_BED_VOLUME}
+                    />
+                  ) : null}
                 </div>
                 {composerVideoError ? (
                   <p
@@ -2470,9 +2568,10 @@ export function StitcherTab() {
                     {composerVideoError}
                   </p>
                 ) : null}
+                {viewerWaveformVideoPath ? (
                 <StitcherSlotWaveform
                   slotKey={viewerSlot}
-                  {...(viewerSlotData?.video_path ? { videoPath: viewerSlotData.video_path } : {})}
+                  videoPath={viewerWaveformVideoPath}
                   {...(viewerSlotData?.ambient_bed ? { ambientBed: viewerSlotData.ambient_bed } : {})}
                   {...(viewerSlotData?.mix_sig ? { mixSig: viewerSlotData.mix_sig } : {})}
                   {...(viewerSlotData?._waveform_peaks_url ? { artifactPeaksUrl: viewerSlotData._waveform_peaks_url } : {})}
@@ -2491,6 +2590,7 @@ export function StitcherTab() {
                   onCueRangeChange={onSfxCueRangeChangeOnSlot(viewerSlot)}
                   onCueClick={onSfxClickOnSlot(viewerSlot)}
                 />
+                ) : null}
               </div>
               <div
                 class={`mn-beat-timeline${beatBoundariesLoading ? ' mn-beat-timeline-loading' : ''}`}
@@ -2533,6 +2633,7 @@ export function StitcherTab() {
               const busy = busySlot?.slot === sd.key;
               const slotDurMs = stitchSlotTimelineDurMs(slot, DEFAULT_SLOT_DUR_MS);
               const cues = slot?.sfx_cues ?? [];
+              const waveformVideoPath = resolveSlotWaveformVideoPath(slot);
               return (
                 <div
                   class="mn-stitcher-slot"
@@ -2557,10 +2658,10 @@ export function StitcherTab() {
                     <p class="mn-dim mn-stitcher-slot-composer-hint" data-testid={`stitcher-slot-hint-${sd.key}`}>
                       ↑ Synced playback in slot review above — drop SFX on that waveform
                     </p>
-                  ) : (
+                ) : slot?.video_path && waveformVideoPath ? (
                     <StitcherSlotWaveform
                       slotKey={sd.key}
-                      {...(slot?.video_path ? { videoPath: slot.video_path } : {})}
+                      videoPath={waveformVideoPath}
                       {...(slot?.ambient_bed ? { ambientBed: slot.ambient_bed } : {})}
                       {...(slot?.mix_sig ? { mixSig: slot.mix_sig } : {})}
                       {...(slot?._waveform_peaks_url ? { artifactPeaksUrl: slot._waveform_peaks_url } : {})}
@@ -2573,7 +2674,7 @@ export function StitcherTab() {
                       onCueRangeChange={onSfxCueRangeChangeOnSlot(sd.key)}
                       onCueClick={onSfxClickOnSlot(sd.key)}
                     />
-                  )}
+                  ) : null}
                   {/* Per-slot trim controls (G9-G10) — values in seconds for
                       UX; wire format = ms. trim_out blank/zero → null = full
                       clip end (audit doc §5 LOCKED). */}

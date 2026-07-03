@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import tempfile
 import unittest
 import unittest.mock as mock
 from pathlib import Path
@@ -34,6 +35,9 @@ class _MockStitchState:
 
 
 class _MockHandler:
+    class app:
+        event_dir = "Production/Event_test"
+
     def _stitch_project_root(self) -> Path:
         return Path(
             os.environ.get(
@@ -122,23 +126,69 @@ class StitchSlotAudioMixTests(unittest.TestCase):
 
     def test_default_ambient_applied_on_upsert_when_empty(self):
         h = _MockHandler()
-        h.app = type("A", (), {"stitch_state": _MockStitchState()})()
-        with mock.patch(
-            "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
-            return_value=(60_000, []),
-        ), mock.patch(
-            "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
-            return_value=False,
-        ):
-            stitch_upsert_event_slot(
-                h,
-                "Event_test",
-                "phase_b",
-                {"video_path": "Production/Event_test/phase_b.mp4"},
-            )
-        slot = h.app.stitch_state.state["jobs"]["Event_test_stitch"]["slots"]["phase_b"]
-        self.assertEqual(slot["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["phase_b"])
-        self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+        job_name = "Event_test_stitch"
+        h.app = type("A", (), {
+            "stitch_state": _MockStitchState({
+                "jobs": {
+                    job_name: {
+                        "slots": {},
+                        "created_at": "2026-01-01T00:00:00Z",
+                        "updated_at": "2026-01-01T00:00:00Z",
+                    },
+                },
+            }),
+            "event_dir": "Production/Event_test",
+        })()
+        dry_rel = "Production/Event_test/phase_b.mp4"
+
+        def _fake_bake(_h, _slot, *, dry_video_path, dest):
+            dest = Path(dest)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"fake-playback-mp4")
+            return 60.0
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            dry = root / dry_rel
+            dry.parent.mkdir(parents=True, exist_ok=True)
+            dry.write_bytes(b"dry")
+            h._stitch_project_root = lambda: root
+            h._stitch_resolve_path = lambda raw: str(root / raw)
+
+            def _fake_dest(_h, slot_key):
+                assembled = root / "Production/Event_test/assembled"
+                assembled.mkdir(parents=True, exist_ok=True)
+                name = f"{slot_key}_playback_test.mp4"
+                return assembled / name, f"Production/Event_test/assembled/{name}"
+
+            try:
+                with mock.patch(
+                    "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
+                    return_value=(60_000, []),
+                ), mock.patch(
+                    "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
+                    return_value=False,
+                ), mock.patch(
+                    "server_handlers.stitch_slot_playback._assembled_playback_dest",
+                    side_effect=_fake_dest,
+                ), mock.patch(
+                    "server_handlers.stitch_slot_playback.bake_slot_playback_mp4",
+                    side_effect=_fake_bake,
+                ), mock.patch(
+                    "credentials_lib.ffmpeg_stitch.mp4_decodes_cleanly",
+                    return_value=True,
+                ):
+                    stitch_upsert_event_slot(
+                        h,
+                        "Event_test",
+                        "phase_b",
+                        {"video_path": dry_rel},
+                    )
+                slot = h.app.stitch_state.state["jobs"][job_name]["slots"]["phase_b"]
+                self.assertEqual(slot["ambient_bed"], STITCH_DEFAULT_AMBIENT_BEDS["phase_b"])
+                self.assertEqual(slot["ambient_volume"], STITCH_AMBIENT_BED_VOLUME)
+            finally:
+                pass
 
     def test_default_ambient_preset_sets_volume_without_extra_normalize(self):
         slot = {"video_path": "Production/Event_1/resolution.mp4"}

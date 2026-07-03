@@ -350,33 +350,126 @@ def _clear_beat_intent_lock_fields(beat: dict) -> None:
     beat.pop("o3_active_intent_job_id", None)
 
 
-def heal_o3_beat_after_aborted_attempt(beat: dict) -> bool:
+def heal_o3_beat_after_aborted_attempt(beat: dict, event_dir: str | Path | None = None) -> bool:
     """Restore approved-clip state after cancelled/failed redo that never replaced delivery."""
     from pathlib import Path
 
     import beat_generator as bg
 
     beat_id = str(beat.get("beat_id") or "").strip()
-    event_dir = bg.event_dir_for_beat_id(beat_id) if beat_id else None
+    if event_dir is None:
+        event_dir = bg.event_dir_for_beat_id(beat_id) if beat_id else None
     from o3_job_status_contract import beat_o3_operator_busy
 
     if beat_o3_operator_busy(beat, event_dir):
         return False
+    if restore_last_good_o3_delivery_after_failed_attempt(beat, event_dir):
+        return True
     kling_status = str(beat.get("kling_o3_status") or "")
     video = str(beat.get("kling_o3_video_path") or "")
-    if kling_status != "approved" or not video or not Path(video).is_file():
+    if kling_status not in ("approved", "submitted", "completed") or not video or not Path(video).is_file():
         return False
-    beat["status"] = "approved"
-    beat["kling_o3_voice_fix_status"] = "approved"
-    beat.pop("kling_o3_voice_fix_error", None)
-    beat.pop("kling_o3_voice_fix_error_code", None)
-    beat.pop("kling_o3_task_id", None)
-    beat.pop("kling_o3_submit_response", None)
-    beat.pop("kling_o3_voice_fix_job_log_path", None)
-    beat.pop("kling_o3_voice_fix_job_pid", None)
-    beat.pop("kling_o3_voice_fix_job_started_at", None)
-    beat.pop("kling_o3_voice_fix_attempt_id", None)
-    beat.pop("kling_o3_voice_fix_phase", None)
+    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+    if not align_beat_active_delivery_clip(
+        beat,
+        video,
+        mark_voice_fix_approved=True,
+        clear_voice_fix_error=True,
+    ):
+        return False
+    for key in (
+        "kling_o3_task_id",
+        "kling_o3_submit_response",
+        "kling_o3_voice_fix_job_log_path",
+        "kling_o3_voice_fix_job_pid",
+        "kling_o3_voice_fix_job_started_at",
+        "kling_o3_voice_fix_attempt_id",
+        "kling_o3_voice_fix_phase",
+    ):
+        beat.pop(key, None)
+    return True
+
+
+def restore_last_good_o3_delivery_after_failed_attempt(
+    beat: dict,
+    event_dir: str | Path | None,
+    *,
+    failed_generation: int | None = None,
+) -> bool:
+    """O3_FAILED_REDO_HEAL_V1 — revert to last on-disk delivery when attempt N failed.
+
+    After failed regen (g4+), if delivery for N is missing but g{N-1} (or any prior)
+    exists on disk, promote the highest surviving generation to active approved state.
+    """
+    from pathlib import Path
+
+    import beat_generator as bg
+
+    beat_id = str(beat.get("beat_id") or "").strip()
+    if not beat_id or event_dir is None:
+        return False
+    event_dir = Path(event_dir)
+    from o3_job_status_contract import beat_o3_operator_busy
+
+    if beat_o3_operator_busy(beat, event_dir, in_memory_jobs=None):
+        return False
+
+    bg.reconcile_o3_disk_deliveries_for_beat(beat, event_dir)
+
+    if failed_generation is None:
+        failed_generation = int(beat.get("kling_o3_generation") or 0) or None
+
+    candidates: list[tuple[int, str]] = []
+    for opt in beat.get("kling_o3_options") or []:
+        if not isinstance(opt, dict):
+            continue
+        path = str(opt.get("video_path") or "").strip()
+        if not path or not Path(path).is_file():
+            continue
+        gen = opt.get("generation")
+        if gen is None:
+            gen = bg._kling_o3_gen_from_video_path(path)
+        gen_i = int(gen) if gen is not None else 0
+        if failed_generation is not None and gen_i >= failed_generation:
+            continue
+        candidates.append((gen_i, path))
+
+    if not candidates:
+        for path in bg.list_o3_element_delivery_paths_on_disk(beat_id, event_dir):
+            gen_i = bg._kling_o3_gen_from_video_path(str(path)) or 0
+            if failed_generation is not None and gen_i >= failed_generation:
+                continue
+            candidates.append((gen_i, str(path.resolve())))
+
+    if not candidates:
+        return False
+
+    gen_i, best_path = max(candidates, key=lambda row: row[0])
+    from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415
+
+    if not align_beat_active_delivery_clip(
+        beat,
+        best_path,
+        mark_voice_fix_approved=True,
+        clear_voice_fix_error=True,
+    ):
+        return False
+
+    beat["kling_o3_generation"] = gen_i
+    for key in (
+        "kling_o3_voice_fix_job_log_path",
+        "kling_o3_voice_fix_job_pid",
+        "kling_o3_voice_fix_job_started_at",
+        "kling_o3_voice_fix_attempt_id",
+        "kling_o3_voice_fix_phase",
+        "kling_o3_task_id",
+        "kling_o3_submit_response",
+        "o3_current_job_id",
+        "o3_active_intent_job_id",
+    ):
+        beat.pop(key, None)
+    bg.refresh_o3_ui_slot_layout(beat)
     return True
 
 
@@ -578,9 +671,22 @@ def close_o3_attempt(
         if resolve_o3_current_job_id(beat) not in ("", job_id):
             return
         clear_o3_job_cache_fields(beat)
-        heal_o3_beat_after_aborted_attempt(beat)
+        intent_gen = None
+        intent_dict = intent if isinstance(intent, dict) else {}
+        slot = intent_dict.get("generation_slot") or intent_dict.get("generation")
+        if slot and str(slot).startswith("g"):
+            try:
+                intent_gen = int(str(slot)[1:])
+            except ValueError:
+                intent_gen = None
         if terminal_status == "failed":
+            restore_last_good_o3_delivery_after_failed_attempt(
+                beat,
+                event_dir,
+                failed_generation=intent_gen,
+            )
             beat["kling_o3_voice_fix_error"] = msg or O3_JOB_LOST_FAILURE_MESSAGE
+        heal_o3_beat_after_aborted_attempt(beat, event_dir)
         if str(beat.get("status") or "").startswith(("o3_voice_job_", "o3_element_")):
             if str(beat.get("kling_o3_status") or "") == "approved":
                 beat["status"] = "approved"
@@ -674,10 +780,97 @@ def observe_and_close_stale_o3_attempt(
                     b["kling_o3_voice_fix_error"] = str(
                         fail.get("message") or O3_JOB_LOST_FAILURE_MESSAGE,
                     )
+                    intent_gen = None
+                    intent_path = intent_path_for_job(job_id, event_dir)
+                    if intent_path.is_file():
+                        try:
+                            intent_row = load_generation_intent(intent_path)
+                            slot = intent_row.get("generation_slot") or intent_row.get("generation")
+                            if slot and str(slot).startswith("g"):
+                                intent_gen = int(str(slot)[1:])
+                        except (OSError, json.JSONDecodeError, ValueError):
+                            intent_gen = None
+                    restore_last_good_o3_delivery_after_failed_attempt(
+                        b,
+                        event_dir,
+                        failed_generation=intent_gen,
+                    )
+                    heal_o3_beat_after_aborted_attempt(b, event_dir)
 
             bg.update_beat_locked(beat_id, _clear_ptr)
             return True
     return False
+
+
+def finalize_live_o3_jobs_before_shutdown(
+    event_dir: Path,
+    *,
+    in_memory_jobs: dict | None = None,
+    reason: str | None = None,
+) -> int:
+    """O3_SUBPROCESS_LIFECYCLE_V1 — terminal-stamp live O3 jobs before server shutdown."""
+    event_dir = Path(event_dir)
+    msg = reason or (
+        "O3 job interrupted by server restart — prior clip preserved when on disk"
+    )
+    closed = 0
+    jobs_dir = _jobs_dir(event_dir)
+    if not jobs_dir.is_dir():
+        return 0
+    seen: set[str] = set()
+    if in_memory_jobs:
+        for job_id, row in in_memory_jobs.items():
+            if not isinstance(row, dict):
+                continue
+            beat_id = str(row.get("beat_id") or "").strip()
+            proc = row.get("process")
+            if proc is not None and hasattr(proc, "poll") and proc.poll() is None:
+                jid = str(job_id).strip()
+                if jid and beat_id and jid not in seen:
+                    close_o3_attempt(
+                        jid,
+                        beat_id,
+                        event_dir,
+                        "cancelled",
+                        reason=msg,
+                        phase_last="shutdown_interrupt",
+                        persist_beat=True,
+                    )
+                    seen.add(jid)
+                    closed += 1
+    for term_path in jobs_dir.glob("*_terminal.json"):
+        try:
+            terminal = load_intent_terminal(term_path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if str((terminal or {}).get("status") or "").strip() != INTENT_RUNNING_STATUS:
+            continue
+        job_id = term_path.name.replace("_terminal.json", "")
+        if job_id in seen:
+            continue
+        beat_id = str((terminal or {}).get("beat_id") or "").strip()
+        if not beat_id:
+            intent_path = intent_path_for_job(job_id, event_dir)
+            if intent_path.is_file():
+                try:
+                    beat_id = str(load_generation_intent(intent_path).get("beat_id") or "").strip()
+                except (OSError, json.JSONDecodeError, ValueError):
+                    beat_id = ""
+        if not beat_id:
+            continue
+        if o3_subprocess_is_live(job_id, beat_id, event_dir, in_memory_jobs=in_memory_jobs):
+            close_o3_attempt(
+                job_id,
+                beat_id,
+                event_dir,
+                "cancelled",
+                reason=msg,
+                phase_last="shutdown_interrupt",
+                persist_beat=True,
+            )
+            closed += 1
+            seen.add(job_id)
+    return closed
 
 
 def run_blocking_o3_startup_reconcile(prod_root: Path, scope_event_id: str | None = None) -> dict:

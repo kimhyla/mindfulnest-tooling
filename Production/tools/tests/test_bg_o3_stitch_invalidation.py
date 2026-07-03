@@ -40,9 +40,34 @@ def test_o3_export_authority_changed_detects_path_and_key() -> None:
     after_path["kling_o3_video_path"] = "/a/audible.mp4"
     after_key = dict(before)
     after_key["kling_o3_selected_option_key"] = "key_b"
+    after_trim = dict(before)
+    after_trim["kling_o3_trim_back"] = 1.5
     assert o3_export_authority_changed(before, after_path)
     assert o3_export_authority_changed(before, after_key)
+    assert o3_export_authority_changed(before, after_trim)
     assert not o3_export_authority_changed(before, dict(before))
+
+
+def test_compute_lineage_sig_changes_when_trim_changes() -> None:
+    beats_a = [
+        {
+            "beat_id": "bg_test_beat_01",
+            "kling_o3_video_path": "/x/a.mp4",
+            "kling_o3_selected_option_key": "k1",
+            "kling_o3_trim_start": 0.0,
+            "kling_o3_trim_back": 0.0,
+        },
+    ]
+    beats_b = [
+        {
+            "beat_id": "bg_test_beat_01",
+            "kling_o3_video_path": "/x/a.mp4",
+            "kling_o3_selected_option_key": "k1",
+            "kling_o3_trim_start": 0.0,
+            "kling_o3_trim_back": 1.2,
+        },
+    ]
+    assert compute_bg_segment_o3_export_lineage_sig(beats_a) != compute_bg_segment_o3_export_lineage_sig(beats_b)
 
 
 def test_compute_lineage_sig_changes_when_selection_changes() -> None:

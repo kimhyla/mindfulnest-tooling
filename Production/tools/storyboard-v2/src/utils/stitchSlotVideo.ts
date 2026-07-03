@@ -27,5 +27,7 @@ export function resolveStitchSlotSourceVideoUrl(
   if (!videoPath) return undefined;
   const rel = normalizeProductionRelativePath(videoPath);
   if (!rel) return undefined;
-  return `${SERVER_BASE}/files?path=${encodeURIComponent(rel)}`;
+  // Cache-bust /files playback when slot video_path changes (same-origin MP4 cache).
+  const leaf = rel.split('/').pop() ?? rel;
+  return `${SERVER_BASE}/files?path=${encodeURIComponent(rel)}&v=${encodeURIComponent(leaf)}`;
 }

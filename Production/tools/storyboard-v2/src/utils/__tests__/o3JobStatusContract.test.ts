@@ -88,7 +88,7 @@ describe('o3JobStatusContract — submit latch vs stale session', () => {
     assert.equal(activeO3PollJobsFromBeats([beat], latch).bg_arc1_event3_pre_beat_09, '7ab3dc40');
   });
 
-  it('prunes latch once gallery option row is populated', () => {
+  it('keeps latch on approved beat redo until server handoff or poll terminal', () => {
     const beat = {
       beat_id: 'bg_arc1_event3_pre_beat_09',
       kling_o3_status: 'approved',
@@ -97,6 +97,21 @@ describe('o3JobStatusContract — submit latch vs stale session', () => {
       job_busy: false,
     };
     assert.equal(o3BeatTerminallyIdleForSubmitLatch(beat), true);
+    const latch = { bg_arc1_event3_pre_beat_09: '7ab3dc40' };
+    assert.equal(activeO3PollJobsFromBeats([beat], latch).bg_arc1_event3_pre_beat_09, '7ab3dc40');
+    const pruned = pruneSubmitPollLatch([beat], latch);
+    assert.equal(pruned.bg_arc1_event3_pre_beat_09, '7ab3dc40');
+  });
+
+  it('prunes latch once server job_busy catches up', () => {
+    const beat = {
+      beat_id: 'bg_arc1_event3_pre_beat_09',
+      kling_o3_status: 'approved',
+      kling_o3_video_path: '/Event_3/kling_o3_clips/beat_delivery.mp4',
+      kling_o3_options: [{ video_path: '/Event_3/kling_o3_clips/beat_delivery.mp4', source: 'kling_o3_checkpoint' }],
+      job_busy: true,
+      o3_current_job_id: '7ab3dc40',
+    };
     const pruned = pruneSubmitPollLatch([beat], { bg_arc1_event3_pre_beat_09: '7ab3dc40' });
     assert.equal(pruned.bg_arc1_event3_pre_beat_09, undefined);
   });

@@ -174,9 +174,34 @@ export function BgPollCoordinator() {
             failedBeatIds.push(beatId);
             const beatPatch = beatPatchFromO3PollTerminal(beatId, res.data);
             if (beatPatch) beatPatches.push(beatPatch);
+            const recovered =
+              o3PollResultHasVideo(res.data)
+              && /approved/i.test(
+                String(
+                  beatPatch?.['kling_o3_status']
+                  ?? res.data.beat?.['kling_o3_status']
+                  ?? '',
+                ),
+              );
+            if (recovered) {
+              pushToast({
+                kind: 'success',
+                message: `${beatId}: prior clip restored after failed regen`,
+                source: 'bg-o3-recovered',
+              });
+              return;
+            }
+            if (o3PollResultHasVideo(res.data)) {
+              pushToast({
+                kind: 'success',
+                message: `${beatId}: O3 failed but prior clip still available — verify slot`,
+                source: 'bg-o3-recoverable',
+              });
+              return;
+            }
             pushToast({
               kind: 'error',
-              message: `${beatId}: O3 voice job failed: ${formatO3JobFailure(res.data.error)}`,
+              message: `${beatId}: O3 voice job failed — regenerate required: ${formatO3JobFailure(res.data.error)}`,
               source: 'bg-o3-error',
             });
             return;

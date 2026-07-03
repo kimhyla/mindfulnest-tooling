@@ -37,10 +37,14 @@ def test_enrich_beats_job_busy_session_read_only_skips_stale_close() -> None:
 
 
 def test_kling_o3_trim_persist_uses_sidecar_lock() -> None:
-    block = _handler_block("handle_bg_kling_o3_trim")
-    assert "update_beat_locked(beat_id, _commit_trim" in block
-    assert "mutate_sidecar_locked(_flush_trim_sidecar" not in block
-    assert "bg.write_sidecar(sidecar)" not in block
+    text = BACKGROUND.read_text(encoding="utf-8")
+    start = text.index("def handle_bg_kling_o3_trim")
+    end = text.index("\ndef handle_", start + 1)
+    chunk = text[start:end]
+    assert "update_beat_locked(" in chunk
+    assert "_commit_trim" in chunk
+    assert "mutate_sidecar_locked(_flush_trim_sidecar" not in chunk
+    assert "bg.write_sidecar(sidecar)" not in chunk
 
 
 def test_session_state_skips_milestone_sidecar_repair_on_get() -> None:

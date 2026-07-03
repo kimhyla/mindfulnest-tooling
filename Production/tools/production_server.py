@@ -4353,6 +4353,11 @@ _last_api_restart_at: float = 0.0
 _API_RESTART_MIN_INTERVAL_S = 30.0
 
 
+def restart_in_progress() -> bool:
+    """True while a server restart thread holds the restart lock."""
+    return _restart_lock.locked()
+
+
 def perform_server_restart(server, app, reason: str = "api") -> None:
     """Cleanly shut down the HTTP server and re-exec or exit for launchd respawn.
 
@@ -4402,6 +4407,19 @@ def _perform_server_restart_locked(server, app, reason: str = "api") -> None:
     print(f"[restart] reason={reason} — shutting down HTTP server...")
     app.accept_new_jobs = False
     _wait_sync_inflight_drain(app)
+    try:
+        from o3_generation_intent import finalize_live_o3_jobs_before_shutdown
+
+        event_dir = Path(getattr(app, "event_dir", "") or "")
+        if event_dir.is_dir():
+            n = finalize_live_o3_jobs_before_shutdown(
+                event_dir,
+                in_memory_jobs=getattr(app, "o3_in_memory_jobs", None),
+            )
+            if n:
+                print(f"[restart] finalized {n} live O3 job(s) before shutdown", flush=True)
+    except Exception as exc:
+        print(f"[restart] O3 shutdown finalize skipped: {exc}", flush=True)
     try:
         import beat_generator as _bg
 
@@ -6292,6 +6310,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return handle_stitch_serve_module_final(self)
             if path == "/api/stitch_editor/beat_boundaries":
                 return self._handle_stitch_beat_boundaries()
+            if path == "/api/stitch_editor/slot_ambient_loop":
+                return self._handle_stitch_slot_ambient_loop()
             if path == "/api/stitch_editor/bake/status":
                 return self._handle_stitch_bake_status()
             if path.startswith("/api/stitch_editor/audio_file/"):
@@ -11750,6 +11770,22 @@ body {{padding-top:44px!important;}}
                    retry_safe=False,
                )
 
+    def _handle_stitch_slot_ambient_loop(self) -> None:
+        """GET /api/stitch_editor/slot_ambient_loop?job_name=&slot_key= — client preview bed."""
+        from server_handlers.stitch_editor import build_stitch_slot_ambient_loop_response  # noqa: PLC0415
+
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        job_name = (qs.get("job_name") or [""])[0]
+        slot_key = (qs.get("slot_key") or [""])[0]
+        if not job_name or not slot_key:
+            return self._send_error_v59(
+                400,
+                error_code="GENERIC_ERROR",
+                error_message="job_name and slot_key query params required",
+                retry_safe=False,
+            )
+        return build_stitch_slot_ambient_loop_response(self, job_name, slot_key)
+
     def _handle_stitch_beat_boundaries(self) -> None:
         """GET /api/stitch_editor/beat_boundaries?scope_target_video=resolution
         Returns beat boundary timecodes for a storyboard video partition.
@@ -12744,7 +12780,8 @@ body {{padding-top:44px!important;}}
 
         n_mix = len(mix_inputs)
         filter_lanes.append(
-            f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=first:normalize=0[aout]"
+            f"{''.join(mix_inputs)}amix=inputs={n_mix}:duration=first:normalize=0,"
+            f"atrim=end={slot_dur_s:.6f},asetpts=PTS-STARTPTS[aout]"
         )
 
         filter_complex = ";".join(filter_lanes)
@@ -12757,6 +12794,8 @@ body {{padding-top:44px!important;}}
                 "-map", "[aout]",
                 "-c:v", "copy",
                 "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+                "-shortest",
+                "-movflags", "+faststart",
                 str(out_path),
             ]
         )
@@ -12859,6 +12898,30 @@ body {{padding-top:44px!important;}}
         slot_durations: list[int] = []
         for i, slot in enumerate(slots):
             vp = self._stitch_resolve_path(slot["video_path"])
+
+            from server_handlers.stitch_slot_playback import playback_recipe_is_four_files  # noqa: PLC0415
+
+            if playback_recipe_is_four_files(slot):
+                trim_in_ms = int(slot.get("trim_in_ms", 0) or 0)
+                trim_out_raw = slot.get("trim_out_ms", None)
+                trim_out_ms: int | None = (
+                    int(trim_out_raw)
+                    if trim_out_raw is not None and str(trim_out_raw) != ""
+                    else None
+                )
+                if trim_in_ms or trim_out_ms is not None:
+                    norm = self._stitch_normalize_slot(
+                        vp, cache_dir,
+                        trim_in_ms=trim_in_ms,
+                        trim_out_ms=trim_out_ms,
+                        preview_only=preview_only,
+                    )
+                else:
+                    norm = vp
+                slot_dur_ms = self._ffprobe_duration_ms(norm)
+                slot_durations.append(slot_dur_ms)
+                slot_finals.append(norm)
+                continue
 
             # Step 1: Normalize (LD-284) + S5.5g per-slot trim
             # (STITCHER_PER_SLOT_TRIMS_V1 per audit doc §5).

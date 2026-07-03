@@ -121,8 +121,10 @@ test.describe('§6A — read-only verification', () => {
     }
   });
 
-  test('§6A.10 — initial mount fires zero mutation requests', async ({ page }) => {
+  test('§6A.10 — initial mount fires zero operator-edit mutation requests', async ({ page }) => {
     const mutations: { method: string; url: string }[] = [];
+    /** Read-only POST probes + pre-mutation snapshot safety net — not operator edits. */
+    const mountAllowlist = ['/api/state/snapshot', '/api/media/playback_resolve'];
     page.on('request', (req) => {
       if (
         ['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method()) &&
@@ -133,7 +135,10 @@ test.describe('§6A — read-only verification', () => {
     });
     await gotoApp(page);
     await page.waitForTimeout(800);
-    expect(mutations, `mutations on mount: ${JSON.stringify(mutations)}`).toEqual([]);
+    const unexpected = mutations.filter(
+      (m) => !mountAllowlist.some((path) => m.url.includes(path)),
+    );
+    expect(unexpected, `operator mutations on mount: ${JSON.stringify(unexpected)}`).toEqual([]);
   });
 });
 
@@ -236,6 +241,9 @@ test.describe('§6B — production workflow contract', () => {
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
     await expect(page.locator('[data-testid="bg-toolbar"]')).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator('[data-testid="bg-beat-list"], [data-testid="bg-empty"]'),
+    ).toBeVisible({ timeout: 15000 });
     const beatList = page.locator('[data-testid="bg-beat-list"]');
     if (await beatList.count()) {
       await expect(page.locator('[data-testid^="bg-pipeline-still-"]').first()).toBeVisible();

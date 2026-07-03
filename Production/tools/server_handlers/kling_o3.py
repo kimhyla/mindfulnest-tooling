@@ -1173,9 +1173,44 @@ def _run_bg_export_to_stitcher_core(
             "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
             "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
         }
+    except (OSError, RuntimeError) as exc:
+        return {
+            "ok": False,
+            "error_code": "STITCH_PLAYBACK_BAKE_FAILED",
+            "error_message": str(exc),
+            "retry_safe": True,
+            "video_path": video_rel,
+            "code": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
+        }
     finally:
         if orig_stitch_state is not None:
             h.app.stitch_state = orig_stitch_state
+
+    from server_handlers.stitch_editor import (  # noqa: PLC0415
+        _event_stitch_state_store,
+        is_milestone_stitch_job_name,
+    )
+    from server_handlers.stitch_slot_playback import verify_event_slot_four_files_export_applied  # noqa: PLC0415
+
+    if not is_milestone_stitch_job_name(job_name):
+        try:
+            verify_event_slot_four_files_export_applied(
+                h,
+                job_name=job_name,
+                slot_key=slot_key,
+                dry_video_rel=video_rel,
+                playback_artifacts=playback_artifacts or {},
+                stitch_store=_event_stitch_state_store(h),
+            )
+        except RuntimeError as exc:
+            return {
+                "ok": False,
+                "error_code": "STITCH_EXPORT_SLOT_NOT_APPLIED",
+                "error_message": str(exc),
+                "retry_safe": True,
+                "video_path": video_rel,
+                "playback_artifacts": playback_artifacts,
+            }
 
     if any("kept existing export" in (w or "") for w in (export_warnings or [])):
         return {
@@ -1254,7 +1289,7 @@ def _run_bg_export_to_stitcher_core(
             h.app.event_dir,
             reason="send_to_stitcher",
         )
-        clip_paths, _scratch = bg.resolve_segment_stitch_export_clip_paths(
+        clip_paths, _, _scratch = bg.resolve_segment_stitch_export_clip_paths(
             beats,
             h.app.event_dir,
             phase=phase,
@@ -1420,6 +1455,24 @@ def handle_bg_export_to_stitcher(h, body: dict) -> None:
         new_job_id,
         reconcile_stale_running_jobs,
     )
+    from server_handlers.core import server_mutation_gate_reason  # noqa: PLC0415
+
+    gate_reason = server_mutation_gate_reason(h.app)
+    if gate_reason:
+        return h._send_error_v59(
+            503,
+            error_code="SERVER_NOT_READY",
+            error_message=gate_reason,
+            retry_safe=True,
+            extra={
+                "code": "SERVER_RESTART_OR_DRAIN_V1",
+                "handler": "_handle_bg_export_to_stitcher",
+                "hint": (
+                    "Server is restarting or draining — Send to Stitcher was not queued. "
+                    "Wait until the server is live, then retry."
+                ),
+            },
+        )
 
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return

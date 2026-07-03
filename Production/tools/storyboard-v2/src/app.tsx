@@ -223,7 +223,10 @@ export function App() {
               activeTab.value = 'bg';
             }
           }}
-          onSaved={(_result) => {
+          onSaved={(saved) => {
+            window.dispatchEvent(
+              new CustomEvent('mn:library-crop-saved', { detail: saved }),
+            );
             window.dispatchEvent(new CustomEvent('mn:library-refresh'));
           }}
         />
