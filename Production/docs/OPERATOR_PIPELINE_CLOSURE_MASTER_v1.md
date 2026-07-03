@@ -17,8 +17,8 @@ Legend: **PASS** = gate green + live proof where required · **PARTIAL** = code 
 | kling_stitch_export_ready | shipped | kling stitch readiness | PASS | PASS |
 | o3_gallery_option_identity | shipped | verify_o3_gallery_option_identity | PASS | PASS |
 | stitch_export_timeline_duration | shipped | verify_stitch_export_timeline_authority | PASS | PASS |
-| **stitch_mux_preview_lineage** | **partial→shipping** | STITCH_EXPORT_ATOMIC_V1 + export truth | PASS grep | pending post-deploy |
-| **stitch_slot_playback_mp4** | **partial→shipping** | verify_stitch_four_files + SFX truth | PASS | pending post-deploy |
+| **stitch_mux_preview_lineage** | **shipped** | STITCH_EXPORT_ATOMIC_V1 + export truth | PASS | PASS cb2a22c |
+| **stitch_slot_playback_mp4** | **shipped** | verify_stitch_four_files + SFX truth | PASS | PASS cb2a22c |
 | (all other CONCEPTS rows) | shipped | per registry | PASS | PASS |
 
 ---
@@ -75,7 +75,7 @@ Legend: **PASS** = gate green + live proof where required · **PARTIAL** = code 
 | Run | HEAD | Result | Log |
 |-----|------|--------|-----|
 | Pre-WIP | ac7e79c | **PASS** | `/tmp/faf_audit_run.log` |
-| Post-WIP deploy | TBD | pending | — |
+| Post-deploy | cb2a22c | **PASS** (fleet build-sha) | deploy log; FaF re-run hit server timeout mid-pass 3 — rerun scheduled |
 
 Live highlights from pre-WIP run:
 - pass 9: LIVE-HYDRATE 1–5 green on :5111

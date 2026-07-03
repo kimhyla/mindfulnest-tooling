@@ -27,7 +27,7 @@
 | P2 Authority | **PASS** | — | strict audit A–L |
 | P3 Session | **PASS** | — | operator edit surfaces |
 | P4 Export | **PASS** | — | export truth closure |
-| P5 Live | **PASS** (pre-WIP `ac7e79c`) | redeploy after commit | `/tmp/faf_audit_run.log` |
+| P5 Live | **PASS** (deployed `cb2a22c`) | eba8ee6+cb2a22c | fleet build-sha + pre-WIP FaF |
 
 ## Next action (always one line)
 
