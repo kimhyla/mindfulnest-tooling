@@ -14,9 +14,12 @@ def test_resolve_slot_playback_short_circuits_four_files() -> None:
     block = src[fn_idx:fn_idx + 2800]
     assert "reconcileFourFilesSlotArtifacts(slot)" in block
     assert "stitchSlotUsesFourFilesPlayback(reconciled)" in block
-    four_idx = block.index("if (stitchSlotUsesFourFilesPlayback(reconciled))")
+    assert "stitchSlotUsesDryAuthorityClientMix(reconciled)" in block
+    gate_idx = block.index(
+        "if (stitchSlotUsesFourFilesPlayback(reconciled) || stitchSlotUsesDryAuthorityClientMix(reconciled))"
+    )
     from_state = block.index("const fromState = previewUrls[slotKey]")
-    assert four_idx < from_state, "four-files gate must precede previewUrls cache"
+    assert gate_idx < from_state, "four-files/dry-authority gate must precede previewUrls cache"
 
 
 def test_build_slot_preview_skips_remux_for_four_files() -> None:

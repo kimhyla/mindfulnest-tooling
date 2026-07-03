@@ -14,9 +14,13 @@ grep -q "STITCH_SPEECH_LOUDNORM_V1" "$SPEC" || fail "spec missing recipe token"
 grep -q "apply_speech_loudnorm_to_mp4" "$TOOLS/server_handlers/speech_loudnorm.py" \
   || fail "missing speech_loudnorm module"
 
-echo "[speech-loudnorm] pass 2/3 — layer A/B hooks"
+echo "[speech-loudnorm] pass 2/3 — layer A/B hooks (FF-042 dry-authority)"
+grep -q "KLING_O3_EXPORT_BG_PASSTHROUGH_V1" "$TOOLS/beat_generator.py" \
+  || fail "missing FF-042 passthrough marker in beat export"
 grep -q "apply_speech_loudnorm_export_beat_clip" "$TOOLS/beat_generator.py" \
-  || fail "missing Layer A export hook"
+  && fail "Layer A must not run on Send to Stitcher export (FF-042)"
+grep -q "apply_speech_loudnorm_to_mp4" "$TOOLS/server_handlers/stitch_slot_playback.py" \
+  || fail "missing loudnorm in slot playback bake path"
 grep -q "apply_speech_loudnorm_to_mp4" "$TOOLS/production_server.py" \
   || fail "missing Layer B pipeline hook"
 
