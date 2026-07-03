@@ -101,12 +101,22 @@ export const activeVideoRole = activeTargetVideo;  // alias — same signal
 export const activeProjectType = signal<'event' | 'milestone'>('event');
 export const activeMilestoneId = signal<string | null>(null);
 
-/** Milestones are single-slot standalone — never send event partition roles. */
+const MUTATION_SCOPE_VIDEO_ROLES = new Set(['intro', 'resolution', 'standalone']);
+
+/**
+ * Milestones are single-slot standalone — never send event partition roles.
+ * Phase A/B tabs use ?video=phase_a|phase_b for navigation only; mutations must
+ * not send those as scope_video_role (LD-474 rejects them).
+ */
 export function effectiveScopeVideoRole(): string {
   if (activeProjectType.value === 'milestone' && activeMilestoneId.value) {
     return 'standalone';
   }
-  return activeTargetVideo.value;
+  const role = activeTargetVideo.value;
+  if (MUTATION_SCOPE_VIDEO_ROLES.has(role)) {
+    return role;
+  }
+  return 'intro';
 }
 
 /** Milestone id from ?milestone= deep link (before milestone_load completes). */

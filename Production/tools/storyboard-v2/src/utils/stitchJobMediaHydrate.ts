@@ -426,6 +426,8 @@ export function resolveSlotPlaybackPreviewUrl(
   const reconciled = reconcileFourFilesSlotArtifacts(slot) ?? slot;
 
   if (stitchSlotUsesFourFilesPlayback(reconciled) || stitchSlotUsesDryAuthorityClientMix(reconciled)) {
+    const dry = (reconciled.dry_export_path ?? '').trim();
+    if (dry) return resolveDrySlotSourceVideoUrl(dry);
     return resolveDrySlotSourceVideoUrl(reconciled.video_path);
   }
 

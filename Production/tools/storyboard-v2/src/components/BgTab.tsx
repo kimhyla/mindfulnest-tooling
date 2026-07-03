@@ -2852,7 +2852,7 @@ export function BgTab() {
             activeMilestoneId.value,
           );
           writePersistedTrackSlot(stitchSessionKey, slot);
-          notifyStitchSlotExportApplied(scopeEventId, slot);
+          notifyStitchSlotExportApplied(stitchSessionKey, slot);
         }
         stitcherRefreshTick.value += 1;
         pushToast({

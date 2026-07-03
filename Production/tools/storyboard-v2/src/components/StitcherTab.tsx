@@ -540,7 +540,8 @@ export function StitcherTab() {
         stitchSlotUsesDryAuthorityClientMix(slotData)
         || stitchSlotUsesFourFilesPlayback(slotData)
       ) {
-        const dryUrl = resolveDrySlotSourceVideoUrl(slotData.video_path);
+        const dryPath = resolveSlotWaveformVideoPath(slotData) ?? slotData.video_path;
+        const dryUrl = resolveDrySlotSourceVideoUrl(dryPath);
         if (dryUrl) out[sd.key] = dryUrl;
         continue;
       }
@@ -563,6 +564,11 @@ export function StitcherTab() {
     job?.slots?.['phase_b']?.video_path,
     job?.slots?.['resolution']?.video_path,
     job?.slots?.['standalone']?.video_path,
+    job?.slots?.['intro']?.dry_export_path,
+    job?.slots?.['phase_a']?.dry_export_path,
+    job?.slots?.['phase_b']?.dry_export_path,
+    job?.slots?.['resolution']?.dry_export_path,
+    job?.slots?.['standalone']?.dry_export_path,
     job?.slots?.['intro']?.mux_preview_hash,
     job?.slots?.['phase_a']?.mux_preview_hash,
     job?.slots?.['phase_b']?.mux_preview_hash,
@@ -593,7 +599,8 @@ export function StitcherTab() {
   const slotsNeedingAmbientBakeRef = useRef<StitchSessionSlotKey[]>([]);
   const [ambientBakeTick, setAmbientBakeTick] = useState(0);
   const viewerSlotRef = useRef<SlotKey>('intro');
-  const lastViewerVideoPathRef = useRef<string | null>(null);
+  /** Per-slot last seen video_path — phase switch must not invalidate other slots' caches. */
+  const lastViewerVideoPathBySlotRef = useRef<Partial<Record<StitchSessionSlotKey, string>>>({});
   const jobSlotsSnapshotRef = useRef<Record<string, StitchSlot>>({});
   /** Ignore stale stitch_save_job refresh merges when a newer save is in flight. */
   const stitchSaveSeqRef = useRef(0);
@@ -786,6 +793,11 @@ export function StitcherTab() {
     job?.slots?.['phase_b']?.video_path,
     job?.slots?.['resolution']?.video_path,
     job?.slots?.['standalone']?.video_path,
+    job?.slots?.['intro']?.dry_export_path,
+    job?.slots?.['phase_a']?.dry_export_path,
+    job?.slots?.['phase_b']?.dry_export_path,
+    job?.slots?.['resolution']?.dry_export_path,
+    job?.slots?.['standalone']?.dry_export_path,
     stitcherRefreshTick.value,
     stitchSessionKey,
     activeTargetVideo.value,
@@ -836,7 +848,7 @@ export function StitcherTab() {
     const softRefresh = jobLoadedForEventRef.current === sessionKey;
 
     if (jobLoadedForEventRef.current !== sessionKey) {
-      lastViewerVideoPathRef.current = null;
+      lastViewerVideoPathBySlotRef.current = {};
     }
 
     if (!softRefresh) {
@@ -1193,15 +1205,19 @@ export function StitcherTab() {
 
   useEffect(() => {
     const path = (viewerSlotData?.video_path ?? '').trim();
-    if (!path || lastViewerVideoPathRef.current === path) return;
-    lastViewerVideoPathRef.current = path;
     const sessionSlot = viewerSlot as StitchSessionSlotKey;
-    invalidateStitchSlotPlaybackCaches(stitchSessionKey, [sessionSlot]);
-    setPreviewUrls((prev) => {
-      const next = { ...prev };
-      delete next[sessionSlot];
-      return next;
-    });
+    if (!path) return;
+    const prevPath = lastViewerVideoPathBySlotRef.current[sessionSlot];
+    if (prevPath === path) return;
+    if (prevPath) {
+      invalidateStitchSlotPlaybackCaches(stitchSessionKey, [sessionSlot]);
+      setPreviewUrls((prev) => {
+        const next = { ...prev };
+        delete next[sessionSlot];
+        return next;
+      });
+    }
+    lastViewerVideoPathBySlotRef.current[sessionSlot] = path;
   }, [viewerSlot, viewerSlotData?.video_path, stitchSessionKey]);
 
   useLayoutEffect(() => {
@@ -1889,7 +1905,8 @@ export function StitcherTab() {
         return;
       }
     }
-    const dryUrl = resolveDrySlotSourceVideoUrl(viewerSlotData.video_path);
+    const dryPath = resolveSlotWaveformVideoPath(viewerSlotData) ?? viewerSlotData.video_path;
+    const dryUrl = resolveDrySlotSourceVideoUrl(dryPath);
     if (dryUrl) {
       bindSlotPreviewUrl(sessionSlot, dryUrl, 'hydrate');
     }

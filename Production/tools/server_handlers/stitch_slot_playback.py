@@ -70,7 +70,12 @@ def playback_recipe_is_dry_authority_client_mix(slot: dict | None) -> bool:
 
 def slot_requires_client_preview_mix(slot: dict | None) -> bool:
     """True when Stitcher should layer ambient and/or SFX via client Web Audio."""
-    if not isinstance(slot, dict) or not playback_recipe_is_dry_authority_client_mix(slot):
+    if not isinstance(slot, dict):
+        return False
+    if not (
+        playback_recipe_is_dry_authority_client_mix(slot)
+        or playback_recipe_is_four_files(slot)
+    ):
         return False
     return slot_has_playback_mix_layers(slot)
 

@@ -728,6 +728,8 @@ def find_stitch_job_slot_for_video(h, video_path: str) -> tuple[str, str] | None
             slot = slots.get(slot_key)
             if isinstance(slot, dict) and (slot.get("video_path") or "").strip() == vp:
                 return job_name, slot_key
+            if isinstance(slot, dict) and (slot.get("dry_export_path") or "").strip() == vp:
+                return job_name, slot_key
     return None
 
 

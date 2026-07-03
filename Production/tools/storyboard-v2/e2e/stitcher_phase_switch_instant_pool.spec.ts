@@ -44,6 +44,8 @@ test.describe('Stitch composer video pool — instant phase switch', () => {
         timeout: 2000,
       });
       await expect(page.getByText('Building muxed preview…')).toBeHidden({ timeout: 2000 });
+      await expect(page.getByText('Building speech waveform…')).toBeHidden({ timeout: 2000 });
+      await expect(page.getByText('Extracting slot speech for waveform…')).toBeHidden({ timeout: 2000 });
       const ready = await page.evaluate(() => {
         const v = document.querySelector('[data-testid="stitcher-composer-video"]') as HTMLVideoElement | null;
         return v ? v.readyState >= 1 : false;
