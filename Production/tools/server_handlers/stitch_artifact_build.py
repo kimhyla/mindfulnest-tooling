@@ -245,6 +245,89 @@ def wait_for_artifact_build(
     )
 
 
+def reconcile_stitch_preview_artifacts_from_build(
+    h,
+    *,
+    stitch_job_name: str,
+    slot_key: str,
+    build_id: str,
+    stitch_store=None,
+) -> bool:
+    """Reconcile mux pins on stitch_state from a completed artifact build record.
+
+    Returns True when stitch_state on disk now carries mux_preview_hash + mix_sig.
+    """
+    from server_handlers.stitch_media_artifacts import persist_stitch_slot_media_artifacts  # noqa: PLC0415
+    from server_handlers.stitch_media_sig import (  # noqa: PLC0415
+        _video_mtime_ms,
+        compute_stitch_mix_sig_from_slot,
+    )
+    from server_handlers.stitch_editor import stitch_state_store_for_job  # noqa: PLC0415
+
+    build = load_build(h.app.event_dir, build_id)
+    if not build or build.get("status") != "done":
+        return False
+    built = build.get("built_slots") or {}
+    slot_built = built.get(slot_key)
+    if not isinstance(slot_built, dict):
+        return False
+    mux_hash = (slot_built.get("mux_preview_hash") or "").strip()
+    if not mux_hash:
+        return True
+
+    store = stitch_store or stitch_state_store_for_job(h, stitch_job_name)
+    state = store.read_state() or {}
+    slot = (
+        ((state.get("jobs") or {}).get(stitch_job_name) or {})
+        .get("slots", {})
+        .get(slot_key)
+    )
+    if not isinstance(slot, dict):
+        return False
+    if (
+        (slot.get("mux_preview_hash") or "").strip() == mux_hash
+        and (slot.get("mix_sig") or "").strip()
+    ):
+        return True
+
+    mix_sig = compute_stitch_mix_sig_from_slot(h, slot)
+    video_path = (slot.get("video_path") or "").strip()
+    mux_mtime_ms: int | None = None
+    if video_path:
+        try:
+            mux_mtime_ms = _video_mtime_ms(str(h._stitch_resolve_path(video_path)))
+        except (ValueError, TypeError, OSError):
+            mux_mtime_ms = None
+    dur_ms = int(
+        slot_built.get("mux_preview_duration_ms")
+        or slot.get("mux_preview_duration_ms")
+        or slot.get("video_dur_ms")
+        or 0,
+    )
+    persist_stitch_slot_media_artifacts(
+        h,
+        stitch_job_name,
+        slot_key,
+        mix_sig=mix_sig,
+        mux_preview_hash=mux_hash,
+        mux_preview_duration_ms=dur_ms if dur_ms > 0 else None,
+        mux_video_path=video_path or None,
+        mux_video_mtime_ms=mux_mtime_ms,
+        stitch_store=store,
+    )
+    state = store.read_state() or {}
+    refreshed = (
+        ((state.get("jobs") or {}).get(stitch_job_name) or {})
+        .get("slots", {})
+        .get(slot_key)
+    )
+    return bool(
+        isinstance(refreshed, dict)
+        and (refreshed.get("mux_preview_hash") or "").strip() == mux_hash
+        and (refreshed.get("mix_sig") or "").strip()
+    )
+
+
 def _build_mux_for_slot(h, *, stitch_job_name: str, slot_key: str) -> dict[str, Any]:
     from server_handlers.stitch_editor import (  # noqa: PLC0415
         build_stitch_slot_mux_preview_file,
@@ -293,6 +376,7 @@ def _build_mux_for_slot(h, *, stitch_job_name: str, slot_key: str) -> dict[str, 
         mux_preview_duration_ms=dur_ms,
         mux_video_path=video_path or None,
         mux_video_mtime_ms=mux_video_mtime_ms,
+        stitch_store=stitch_store,
     )
     state = stitch_store.read_state() or {}
     refreshed = (

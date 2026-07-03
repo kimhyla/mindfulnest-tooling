@@ -280,7 +280,14 @@ def warm_mux(base: str, marker_path: Path, *, force: bool = False) -> str:
     else:
         raise RuntimeError(f"preview bootstrap failed: {last_err}")
 
-    mux_hash = _poll_mux_hash(base, timeout_s=DEFAULT_POLL_TIMEOUT_S)
+    preview_mux = ""
+    if isinstance(body, dict):
+        preview_mux = str(body.get("mux_preview_hash") or "").strip()
+    if len(preview_mux) >= 8:
+        mux_hash = preview_mux
+        print(f"[g4-pre] preview POST mux_preview_hash={mux_hash[:12]}...")
+    else:
+        mux_hash = _poll_mux_hash(base, timeout_s=DEFAULT_POLL_TIMEOUT_S)
     slot = _standalone_slot(base) or {}
     amb = str(slot.get("ambient_mix_hash") or "").strip()
     if len(amb) < 8:
