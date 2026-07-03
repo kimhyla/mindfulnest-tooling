@@ -1178,28 +1178,50 @@ def trim_body_with_fade(
 
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
+    target_s = new_dur
     try:
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-            "-ss", f"{new_start:.3f}",
-            "-i", str(src.resolve()),
-            "-t", f"{new_dur:.3f}",
-            "-vf", vf_chain,
-        ]
         if af_parts:
-            cmd += ["-af", ",".join(af_parts)]
-            cmd += [*NORMALIZATION_ENCODER_ARGS, str(tmp)]
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{new_start:.3f}",
+                "-i", str(src.resolve()),
+                "-t", f"{new_dur:.3f}",
+                "-vf", vf_chain,
+                "-af", ",".join(af_parts),
+                *NORMALIZATION_ENCODER_ARGS,
+                str(tmp),
+            ]
+        elif _has_audio_stream(src):
+            # FF-040 dissolve path: video fade re-encode + audio locked to timeline.
+            audio_fc = _audio_filter_to_video_timeline_authority(target_s)
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{new_start:.3f}",
+                "-i", str(src.resolve()),
+                "-t", f"{new_dur:.3f}",
+                "-filter_complex", audio_fc,
+                "-map", "0:v:0", "-vf", vf_chain,
+                "-map", "[aout]",
+                "-t", f"{target_s:.6f}",
+                *NORMALIZATION_ENCODER_ARGS,
+                str(tmp),
+            ]
         else:
-            cmd += [
-                "-map", "0:v:0", "-map", "0:a?",
-                "-c:v", "libx264", "-profile:v", "high", "-pix_fmt", "yuv420p",
-                "-preset", VIDEO_QUALITY_PRESET_BAKE, "-g", "48",
-                "-crf", VIDEO_QUALITY_CRF,
-                "-c:a", "copy",
-                "-movflags", "+faststart",
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-ss", f"{new_start:.3f}",
+                "-i", str(src.resolve()),
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+                "-t", f"{new_dur:.3f}",
+                "-map", "0:v:0", "-vf", vf_chain,
+                "-map", "1:a:0",
+                "-shortest",
+                *NORMALIZATION_ENCODER_ARGS,
                 str(tmp),
             ]
         subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
+        if not af_parts:
+            remux_mp4_video_timeline_authority(tmp, tmp, re_encode_video=False)
         os.replace(tmp, dst)
     finally:
         if tmp.exists():
@@ -1309,6 +1331,8 @@ def expand_clips_with_black_pause_boundaries(
     """
     if not clips:
         return []
+    clips = [c if isinstance(c, Path) else Path(c) for c in clips]
+    scratch_dir = scratch_dir if isinstance(scratch_dir, Path) else Path(scratch_dir)
     scratch_dir.mkdir(parents=True, exist_ok=True)
     n = len(clips)
     if len(pair_fades_ms) != max(0, n - 1):
@@ -1688,6 +1712,100 @@ def av_duration_drift_s(path: Path) -> float:
     if video_s <= 0.0 or audio_s <= 0.0:
         return 0.0
     return abs(video_s - audio_s)
+
+
+def _audio_filter_to_video_timeline_authority(
+    target_s: float,
+    *,
+    input_label: str = "0:a",
+    output_label: str = "aout",
+) -> str:
+    """Filter graph fragment: trim/pad mono audio to ``target_s`` (FF-040)."""
+    target_s = max(0.04, float(target_s))
+    return (
+        f"[{input_label}]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,"
+        f"atrim=end={target_s:.6f},asetpts=PTS-STARTPTS,"
+        f"apad=whole_dur={target_s:.6f}[{output_label}]"
+    )
+
+
+def remux_mp4_video_timeline_authority(
+    src: Path,
+    dst: Path,
+    *,
+    re_encode_video: bool = False,
+    timeout_s: int = DEFAULT_FFMPEG_TIMEOUT_S,
+) -> None:
+    """STITCH_EXPORT_TIMELINE_AUTHORITY_V1 — lock audio lane to video stream duration.
+
+    Used after asymmetric mux paths (video copy + fresh AAC) so export gates see
+    aligned streams. Optional ``re_encode_video`` runs the LD-284 vf pass.
+    """
+    video_s = ffprobe_stream_duration_s(src, "v")
+    if video_s <= 0.0:
+        if src.resolve() != dst.resolve():
+            import shutil
+            shutil.copy2(src, dst)
+        return
+    video_start_s = ffprobe_video_start_time(src)
+    fuse_ss_args: list[str] = []
+    if video_start_s > 0.005:
+        fuse_ss_args = ["-ss", f"{video_start_s:.3f}"]
+    target_s = max(0.04, float(video_s))
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dst.parent / f"{dst.stem}.timeline.{os.getpid()}{dst.suffix}"
+    has_audio = _has_audio_stream(src)
+    try:
+        if not has_audio:
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                *fuse_ss_args,
+                "-i", str(src.resolve()),
+                "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono",
+                "-map", "0:v:0", "-map", "1:a:0",
+                "-t", f"{target_s:.6f}",
+            ]
+            if re_encode_video:
+                cmd += ["-vf", NORMALIZATION_VF_EXPR, *NORMALIZATION_ENCODER_ARGS]
+            else:
+                cmd += [
+                    "-c:v", "copy",
+                    "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+                    "-movflags", "+faststart",
+                ]
+            cmd.append(str(tmp))
+        else:
+            audio_fc = _audio_filter_to_video_timeline_authority(target_s)
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                *fuse_ss_args,
+                "-i", str(src.resolve()),
+                "-filter_complex", audio_fc,
+            ]
+            if re_encode_video:
+                cmd += [
+                    "-map", "0:v:0", "-vf", NORMALIZATION_VF_EXPR,
+                    "-map", "[aout]",
+                    "-t", f"{target_s:.6f}",
+                    *NORMALIZATION_ENCODER_ARGS,
+                ]
+            else:
+                cmd += [
+                    "-map", "0:v:0", "-c:v", "copy",
+                    "-map", "[aout]",
+                    "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+                    "-t", f"{target_s:.6f}",
+                    "-movflags", "+faststart",
+                ]
+            cmd.append(str(tmp))
+        subprocess.run(cmd, check=True, capture_output=True, timeout=timeout_s)
+        os.replace(tmp, dst)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def assert_stitch_export_clips_av_aligned(

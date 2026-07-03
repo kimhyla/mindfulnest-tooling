@@ -4704,6 +4704,10 @@ function BgOptionTile({
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [cutBusy, setCutBusy] = useState(false);
   const lastAutoPreviewRef = useRef<string | null>(null);
+  /** STITCH_NO_AUTO_CUT_PREVIEW_V1 — Apply Cut only after operator commits both handles. */
+  const [cutHandlesAdjusted, setCutHandlesAdjusted] = useState({ start: false, end: false });
+  const resetCutHandleFlags = () => setCutHandlesAdjusted({ start: false, end: false });
+  const cutReadyForApply = cutHandlesAdjusted.start && cutHandlesAdjusted.end;
   const clipMissingOnDisk = option?.video_path_exists === false;
 
   const clearTrimPlaybackListener = useCallback((video?: HTMLVideoElement | null) => {
@@ -4841,7 +4845,6 @@ function BgOptionTile({
     exportDurationS,
     playbackDurationS,
   );
-  const trimTruthReady = trimAuthorityDurationS > 0;
   const savedKeepStartS = trimStartS > 0.009 ? trimStartS : 0;
   const savedKeepEndRaw = overlayTimelineDurationS > 0
     ? Math.max(savedKeepStartS + MIN_O3_CUT_S, overlayTimelineDurationS - (trimBackS > 0.009 ? trimBackS : 0))
@@ -4948,6 +4951,7 @@ function BgOptionTile({
     setPreviewUrl(null);
     lastAutoPreviewRef.current = null;
     setPendingCut(null);
+    resetCutHandleFlags();
     setLoadedDuration(null);
     setSourceDurationS(null);
   }, [sourceVideoPath]);
@@ -4995,47 +4999,6 @@ function BgOptionTile({
       }
     }
   };
-
-  useEffect(() => {
-    if (!selected || !option.video_path || cutBusy) return;
-    if (!hasActiveCut && !hasSavedCut) return;
-    const start = effectiveKeepStartS;
-    const back = cutPreviewTrimBackS();
-    if (start <= 0.009 && back <= 0.05) return;
-    const sig = `${option.video_path}|${start.toFixed(2)}|${back.toFixed(2)}`;
-    const cached = recallCutPreviewUrl(beatId, optionIndex, option.video_path, start, back);
-    if (cached) {
-      if (previewUrl !== cached) {
-        void swapVideoToPreview(cached, { autoplay: false });
-      }
-      lastAutoPreviewRef.current = sig;
-      return;
-    }
-    if (!trimTruthReady || (lastAutoPreviewRef.current === sig && previewUrl)) return;
-    let cancelled = false;
-    void (async () => {
-      const applied = await onApplyO3Cut(
-        optionIndex,
-        start,
-        back > 0.009 ? back : null,
-        { previewOnly: true, silent: true, ...cutTargetOpts },
-      );
-      if (cancelled || !applied?.previewUrl || !option.video_path) return;
-      rememberCutPreviewUrl(beatId, optionIndex, option.video_path, start, back, applied.previewUrl);
-      lastAutoPreviewRef.current = sig;
-      await swapVideoToPreview(applied.previewUrl, { autoplay: false });
-    })();
-    return () => { cancelled = true; };
-  }, [
-    selected,
-    option.video_path,
-    hasActiveCut,
-    hasSavedCut,
-    effectiveKeepStartS,
-    effectiveKeepEndS,
-    trimTruthReady,
-    cutBusy,
-  ]);
 
   const persistCut = async (
     keepStartS: number,
@@ -5152,63 +5115,20 @@ function BgOptionTile({
     }
   };
 
-  const applyCutPreview = async () => {
-    if (!selected || !hasActiveCut) return;
-    if (!trimTruthReady) {
+  const applyDraftCut = async () => {
+    if (cutDraftDirty && !cutReadyForApply) {
       pushToast({
         kind: 'info',
-        message: 'Loading clip duration — try Preview Cut again shortly',
-        source: 'bg-o3-cut-preview-loading',
+        message: 'Drag both start and end handles — then press Apply Cut',
+        source: 'bg-o3-cut-both-handles-required',
       });
       return;
     }
-    setCutBusy(true);
-    try {
-      const validateDuration = trimAuthorityDurationS;
-      const { startS, endS } = normalizeO3KeepWindow(validateDuration, effectiveKeepStartS, effectiveKeepEndS);
-      const trimBack = Math.max(0, validateDuration - endS);
-      const applied = await onApplyO3Cut(
-        optionIndex,
-        startS,
-        trimBack > 0.009 ? trimBack : null,
-        { previewOnly: true, ...cutTargetOpts },
-      );
-      if (!applied?.previewUrl) {
-        return;
-      }
-      const raw = applied.rawDurationS ?? validateDuration;
-      const eff = applied.effectiveDurationS;
-      const shortening = startS > 0.05 || trimBack > 0.05;
-      if (shortening && eff != null && eff >= raw - 0.05) {
-        pushToast({
-          kind: 'error',
-          message: 'Preview failed — trim would not shorten the clip. Apply Cut first.',
-          source: 'bg-o3-cut-preview-unchanged',
-        });
-        return;
-      }
-      if (option.video_path) {
-        rememberCutPreviewUrl(
-          beatId,
-          optionIndex,
-          option.video_path,
-          effectiveKeepStartS,
-          cutPreviewTrimBackS(),
-          applied.previewUrl,
-        );
-      }
-      lastAutoPreviewRef.current = `${effectiveKeepStartS.toFixed(2)}|${cutPreviewTrimBackS().toFixed(2)}`;
-      await swapVideoToPreview(applied.previewUrl, { autoplay: true });
-    } finally {
-      setCutBusy(false);
-    }
-  };
-
-  const applyDraftCut = async () => {
     if (!selected || !hasActiveCut) return;
     const saved = await persistCut(effectiveKeepStartS, effectiveKeepEndS);
     if (!saved.ok) return;
     clearPendingCut();
+    resetCutHandleFlags();
     if (saved.trimBaked && saved.videoPath) {
       setPreviewUrl(null);
       lastAutoPreviewRef.current = null;
@@ -5230,6 +5150,7 @@ function BgOptionTile({
     setCutBusy(true);
     try {
       clearPendingCut();
+      resetCutHandleFlags();
       setPreviewUrl(null);
       lastAutoPreviewRef.current = null;
       forgetCutPreviewsForBeat(beatId);
@@ -5260,6 +5181,7 @@ function BgOptionTile({
       return;
     }
     const margin = Math.max(MIN_O3_CUT_S, clipDur * 0.12);
+    resetCutHandleFlags();
     setPendingCut({ startS: margin, endS: clipDur - margin });
   };
 
@@ -5505,6 +5427,12 @@ function BgOptionTile({
                 onKeepDraftChange={(startS, endS) => {
                   setPendingCut({ startS, endS });
                 }}
+                onKeepStartCommitted={() => {
+                  setCutHandlesAdjusted((prev) => ({ ...prev, start: true }));
+                }}
+                onKeepEndCommitted={() => {
+                  setCutHandlesAdjusted((prev) => ({ ...prev, end: true }));
+                }}
                 onKeepRejected={(message) => {
                   console.info('[bg_o3_trim_audit_client]', {
                     phase: 'overlay_reject',
@@ -5552,7 +5480,9 @@ function BgOptionTile({
                 {isCutPreviewActive
                   ? 'playing cut preview'
                   : cutDraftDirty
-                    ? 'amber = head/tail remove — press Apply Cut'
+                    ? cutReadyForApply
+                      ? 'both handles set — press Apply Cut'
+                      : 'drag both start and end handles — then Apply Cut'
                     : hasSavedCut
                       ? 'trim applied (start + end crop)'
                       : 'amber = head/tail remove'}
@@ -5585,26 +5515,12 @@ function BgOptionTile({
                   Start cut
                 </button>
               ) : null}
-              {!isCutPreviewActive ? (
-                <button
-                  type="button"
-                  class="mn-btn mn-btn-small"
-                  data-testid={`bg-o3-preview-cut-${beatIndex}-${optionIndex}`}
-                  disabled={cutBusy || !hasActiveCut}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    void applyCutPreview();
-                  }}
-                >
-                  Preview cut
-                </button>
-              ) : null}
               {cutDraftDirty ? (
                 <button
                   type="button"
                   class="mn-btn mn-btn-small mn-btn-primary"
                   data-testid={`bg-o3-apply-cut-${beatIndex}-${optionIndex}`}
-                  disabled={cutBusy || !hasActiveCut}
+                  disabled={cutBusy || !hasActiveCut || !cutReadyForApply}
                   title="Save cut region for stitch export (Phase A/B Apply Cut parity)"
                   onClick={(e) => {
                     e.stopPropagation();

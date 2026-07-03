@@ -199,7 +199,7 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
     ),
     AuthorityConcept(
         id="stitch_mux_preview_lineage",
-        status="partial",
+        status="shipped",
         marker="STITCH_EXPORT_ATOMIC_V1",
         question="Which playback artifact hash is authoritative after BG export?",
         authority_shape="disk",
@@ -210,7 +210,7 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
     ),
     AuthorityConcept(
         id="stitch_slot_playback_mp4",
-        status="partial",
+        status="shipped",
         marker="STITCH_DRY_AUTHORITY_CLIENT_MIX_V1",
         question="Which MP4 is Stitcher dry speech authority per event slot?",
         authority_shape="disk",

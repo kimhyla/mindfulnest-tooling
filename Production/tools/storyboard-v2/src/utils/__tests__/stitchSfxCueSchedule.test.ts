@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 
 import {
@@ -37,5 +38,13 @@ describe('STITCH_SFX_CUE_SCHEDULE_V1', () => {
     const afterFalseResync = stitchSfxCuesToSchedule([whoosh, exitCue], 0.25);
     assert.equal(afterFalseResync.some((c) => c.cue.id === 'whoosh'), false);
     assert.ok(afterFalseResync.some((c) => c.cue.id === 'exit'));
+  });
+
+  it('STITCH_AMBIENT_NO_TIMEUPDATE_RESYNC_V1 — ambient bed must not seek on every timeupdate', () => {
+    const src = readFileSync(
+      new URL('../../components/StitchSlotAmbientBedAudio.tsx', import.meta.url),
+      'utf8',
+    );
+    assert.doesNotMatch(src, /addEventListener\('timeupdate'/);
   });
 });

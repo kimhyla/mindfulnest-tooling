@@ -6,6 +6,7 @@
 import { useEffect, useRef } from 'preact/hooks';
 
 import { resolveServerMediaUrl } from '../utils/stitchSlotVideo';
+import { stitchClientPreviewAudit } from '../utils/stitchClientPreviewAudit';
 
 export interface StitchSlotAmbientBedAudioProps {
   video: HTMLVideoElement | null;
@@ -49,8 +50,13 @@ export function StitchSlotAmbientBedAudio({
 
     const onPlay = () => {
       syncTime();
-      void a.play().catch(() => {
-        /* autoplay policy — user must interact with composer controls */
+      void a.play().catch((err) => {
+        stitchClientPreviewAudit('AMBIENT_PLAY_REJECTED', {
+          slot_key: slotKey,
+          job_name: jobName,
+          reason: err instanceof Error ? err.message : String(err),
+          ambient_bed: bed,
+        });
       });
     };
 
@@ -65,23 +71,15 @@ export function StitchSlotAmbientBedAudio({
       }
     };
 
-    const onTimeUpdate = () => {
-      if (v.paused) {
-        a.pause();
-        return;
-      }
-      syncTime();
-    };
-
+    // Do NOT sync on timeupdate — seeking the bed every ~250ms causes loop-seam clicks
+    // ("ss" stutter). Play + seeked are enough; HTML loop handles drift during playback.
     v.addEventListener('play', onPlay);
     v.addEventListener('pause', onPause);
     v.addEventListener('seeked', onSeeked);
-    v.addEventListener('timeupdate', onTimeUpdate);
     return () => {
       v.removeEventListener('play', onPlay);
       v.removeEventListener('pause', onPause);
       v.removeEventListener('seeked', onSeeked);
-      v.removeEventListener('timeupdate', onTimeUpdate);
       a.pause();
     };
   }, [video, bed]);

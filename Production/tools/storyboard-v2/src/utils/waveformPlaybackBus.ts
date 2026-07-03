@@ -1,4 +1,3 @@
-import { isStitchComposerPlaybackOwner } from './stitchConstants';
 import { stopAllStitchClientMix } from '../audio/StitchSlotAudioMixEngine';
 
 /** Coordinates Phase A/B waveform players (only one should play at a time).
@@ -39,6 +38,14 @@ export function stopAllPhasePlayback(): void {
   pauseAllWaveformPlayback();
   stopAllStitchClientMix();
   pauseAppMediaElements(true);
+  composerPoolRefPauseAll?.();
+}
+
+/** Optional hook — Stitcher registers pool pause on mount. */
+let composerPoolRefPauseAll: (() => void) | null = null;
+
+export function registerStitchComposerPoolPause(fn: (() => void) | null): void {
+  composerPoolRefPauseAll = fn;
 }
 
 function pauseAppMediaElements(resetTime: boolean): void {
@@ -47,11 +54,11 @@ function pauseAppMediaElements(resetTime: boolean): void {
     .querySelectorAll(
       '.mn-tab-pane-keepalive video, .mn-tab-pane-keepalive audio, ' +
         '.mn-stitcher-pane video, .mn-stitcher-pane audio, ' +
+        '.mn-stitcher-ambient-bed-audio, ' +
         '.mn-library-preview-audio',
     )
     .forEach((el) => {
       if (!(el instanceof HTMLMediaElement)) return;
-      if (!resetTime && isStitchComposerPlaybackOwner(el)) return;
       el.pause();
       if (!resetTime) return;
       try {

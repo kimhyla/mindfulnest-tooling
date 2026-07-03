@@ -83,6 +83,40 @@ def test_still_insert_key_preserved_through_normalize(tmp_path: Path) -> None:
     assert_beat_export_gallery_authority(beat)
 
 
+def test_still_insert_tts_trimmed_export_authority(tmp_path: Path) -> None:
+    """Trimmed still-insert keeps stable base key; selected follows active path."""
+    base = tmp_path / "bg_arc1_event3_pre_beat_06_still_insert_1782532197"
+    raw = base.with_suffix(".mp4")
+    trimmed = Path(str(base) + "_tts_trimmed.mp4")
+    _make_tone_mp4(raw)
+    _make_tone_mp4(trimmed)
+    beat_id = "bg_arc1_event3_pre_beat_06"
+    stable_key = "bg_arc1_event3_pre_beat_06_still_insert_1782532197"
+    beat = {
+        "beat_id": beat_id,
+        "kling_o3_video_path": str(trimmed),
+        "kling_o3_selected_option_key": stable_key,
+        "kling_o3_options": [
+            {
+                "key": stable_key,
+                "video_path": str(raw),
+                "label": "raw still",
+                "source": "still_insert_ken_burns",
+            },
+            {
+                "key": stable_key,
+                "video_path": str(trimmed),
+                "label": "trimmed still",
+                "source": "still_insert_ken_burns",
+                "active": True,
+            },
+        ],
+    }
+    normalize_o3_gallery_options(beat)
+    assert beat["kling_o3_selected_option_key"] == stable_key
+    assert_beat_export_gallery_authority(beat)
+
+
 def test_normalize_heals_key_path_mismatch(tmp_path: Path) -> None:
     silent = tmp_path / "still_insert_7536_kling_idle_tts.mp4"
     audible = tmp_path / "g1_delivery_trimmed.mp4"
@@ -102,8 +136,7 @@ def test_normalize_heals_key_path_mismatch(tmp_path: Path) -> None:
     logs = normalize_o3_gallery_options(beat)
     assert logs
     assert resolve_o3_gallery_option(beat, canonical_o3_option_key(beat_id, str(silent)))
-    with pytest.raises(O3GalleryExportAuthorityError):
-        assert_beat_export_gallery_authority(beat)
+    assert_beat_export_gallery_authority(beat)
 
 
 def test_resolve_fails_on_duplicate_keys_after_normalize(tmp_path: Path) -> None:

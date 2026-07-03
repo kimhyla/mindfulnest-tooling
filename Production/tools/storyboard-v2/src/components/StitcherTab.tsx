@@ -23,6 +23,10 @@ import {
   primeVideoSpeechChain,
   resumeVideoSpeechContext,
 } from '../audio/StitchSlotAudioMixEngine';
+import {
+  stitchClientPreviewAudit,
+  videoPlaybackSnapshot,
+} from '../utils/stitchClientPreviewAudit';
 import { StitchSlotAmbientBedAudio } from './StitchSlotAmbientBedAudio';
 import { effect } from '@preact/signals';
 import { activeScope, activeProjectType, activeMilestoneId, producerScopeChipLabel, activeTargetVideo } from '../state/scope';
@@ -78,7 +82,7 @@ import {
   STITCH_SLOT_CANONICAL_DEFAULTS_V1,
   defaultAmbientBedForSlot,
 } from '../utils/stitchConstants';
-import { stopAllPhasePlayback } from '../utils/waveformPlaybackBus';
+import { stopAllPhasePlayback, registerStitchComposerPoolPause } from '../utils/waveformPlaybackBus';
 import {
   defaultStitchTransitions,
   resolveStitchTransitions,
@@ -140,6 +144,7 @@ import {
   shouldToastStitchBakeRefreshFailure,
   stitchBakeStatusMessage,
   stitchBakeSuccessPaths,
+  stitchBakeTerminalErrorLine,
   STITCH_BAKE_POLL_INTERVAL_MS,
   writeStitchBakeBusyLatch,
   type StitchBakeJobSummary,
@@ -491,6 +496,8 @@ export function StitcherTab() {
   const [ambientPresets, setAmbientPresets] = useState<AmbientPreset[]>([]);
   const [activeBakeJobId, setActiveBakeJobId] = useState<string | null>(null);
   const bakeTerminalToastRef = useRef<string | null>(null);
+  /** Surfaces last terminal bake failure on reload (audit-friendly; no session latch required). */
+  const [terminalBakeHint, setTerminalBakeHint] = useState<string | null>(null);
   /** Bust module-final <video> src after each successful bake (cache-safe URL). */
   const [moduleFinalRevision, setModuleFinalRevision] = useState(0);
 
@@ -620,11 +627,17 @@ export function StitcherTab() {
 
   // Leaving Stitcher tab (keepalive hides pane): pause pool without unmounting.
   useEffect(() => {
+    registerStitchComposerPoolPause(() => {
+      composerPoolRef.current?.pauseAllExcept(null);
+    });
     const dispose = effect(() => {
       if (activeTab.value === 'stitcher') return;
       composerPoolRef.current?.pauseAllExcept(null);
     });
-    return dispose;
+    return () => {
+      registerStitchComposerPoolPause(null);
+      dispose();
+    };
   }, []);
 
   // Leaving Stitcher / fresh mount: never auto-play module preview or slot waveforms.
@@ -902,38 +915,54 @@ export function StitcherTab() {
           setActiveBakeJobId(reattachJobId);
           writeStitchBakeBusyLatch(eventName, canonicalName, reattachJobId);
           setStatusMsg(stitchBakeStatusMessage(bakeJob ?? { status: 'running' }));
-        } else if (bakeJob && isStitchBakeStatusTerminal(bakeJob.status) && hadBakeLatch) {
+        } else if (
+          bakeJob
+          && isStitchBakeStatusTerminal(bakeJob.status)
+          && (hadBakeLatch || bakeJob.latest_terminal)
+        ) {
           writeStitchBakeBusyLatch(eventName, canonicalName, null);
+          const failLine = stitchBakeTerminalErrorLine(bakeJob);
+          if (failLine) setTerminalBakeHint(failLine);
+          else setTerminalBakeHint(null);
           const toastKey = `${bakeJob.job_id}:${bakeJob.status}`;
           if (bakeTerminalToastRef.current !== toastKey) {
             bakeTerminalToastRef.current = toastKey;
             if (bakeJob.status === 'interrupted') {
-              pushToast({
-                kind: 'error',
-                message: `Bake interrupted: ${bakeJob.error ?? bakeJob.message ?? 'worker lost'}`,
-                source: 'stitch-bake-interrupted',
-              });
+              if (hadBakeLatch) {
+                pushToast({
+                  kind: 'error',
+                  message: `Bake interrupted: ${bakeJob.error ?? bakeJob.message ?? 'worker lost'}`,
+                  source: 'stitch-bake-interrupted',
+                });
+              }
               setStatusMsg(`✗ Bake interrupted: ${bakeJob.error ?? bakeJob.message ?? 'worker lost'}`);
             } else if (bakeJob.status === 'failed') {
-              pushToast({
-                kind: 'error',
-                message: `Bake failed: ${bakeJob.error ?? bakeJob.message ?? 'unknown'}`,
-                source: 'stitch-bake-error',
-              });
+              if (hadBakeLatch) {
+                pushToast({
+                  kind: 'error',
+                  message: `Bake failed: ${bakeJob.error ?? bakeJob.message ?? 'unknown'}`,
+                  source: 'stitch-bake-error',
+                });
+              }
               setStatusMsg(`✗ Bake: ${bakeJob.error ?? bakeJob.message ?? 'unknown'}`);
             } else if (bakeJob.status === 'done') {
+              setTerminalBakeHint(null);
               const { canonical, assetId } = stitchBakeSuccessPaths(bakeJob);
               const label = canonical?.split('/').pop() ?? canonicalName;
               setStatusMsg(`✓ Baked + pinned: ${label}`);
-              pushToast({
-                kind: 'success',
-                message: assetId && assetId > 0
-                  ? `Final MP4 → ${label} (Directus #${assetId})`
-                  : `Final MP4 → ${label}`,
-                source: 'stitch-bake-done',
-              });
+              if (hadBakeLatch) {
+                pushToast({
+                  kind: 'success',
+                  message: assetId && assetId > 0
+                    ? `Final MP4 → ${label} (Directus #${assetId})`
+                    : `Final MP4 → ${label}`,
+                  source: 'stitch-bake-done',
+                });
+              }
               setModuleFinalRevision((n) => n + 1);
             }
+          } else if (failLine && !job?.bake_path) {
+            setStatusMsg(`✗ ${failLine}`);
           }
         } else if (shouldToastStitchBakeRefreshFailure(
           hadBakeLatch,
@@ -1760,7 +1789,13 @@ export function StitcherTab() {
         if (stitchSlotRequiresClientPreviewMix(job?.slots?.[sessionSlot])) {
           resumeVideoSpeechContext(video);
         }
-        void video.play().catch(() => {});
+        void video.play().catch((err) => {
+          stitchClientPreviewAudit('PLAY_REJECTED', {
+            slot_key: sessionSlot,
+            reason: err instanceof Error ? err.message : String(err),
+            ...videoPlaybackSnapshot(video),
+          });
+        });
       } else if (shouldPause) {
         video.pause();
       }
@@ -2000,6 +2035,13 @@ export function StitcherTab() {
     const eventId = activeScope.value.event_id;
     setBusySlot({ slot: 'intro', action: 'bake' });
     setStatusMsg('Submitting bake…');
+    setTerminalBakeHint(null);
+    stopAllPhasePlayback();
+    console.info('[stitch_module_bake_audit_client]', {
+      event: 'BAKE_CLICK',
+      stitch_job_name: job.name,
+      event_id: eventId,
+    });
     const res = await pathappPatch<StitchBakePollResult>(activeScope.value, 'stitch_bake', {
       name: job.name,
     });
@@ -2043,6 +2085,7 @@ export function StitcherTab() {
     let timer: number | null = null;
 
     const finishTerminal = (data: StitchBakePollResult) => {
+      stopAllPhasePlayback();
       const eventId = activeScope.value.event_id;
       writeStitchBakeBusyLatch(eventId, job.name!, null);
       setActiveBakeJobId(null);
@@ -2053,6 +2096,7 @@ export function StitcherTab() {
       if (data.status === 'done') {
         const { canonical, assetId } = stitchBakeSuccessPaths(data);
         const label = canonical?.split('/').pop() ?? job.name ?? 'module';
+        setTerminalBakeHint(null);
         setStatusMsg(`✓ Baked + pinned: ${label}`);
         pushToast({
           kind: 'success',
@@ -2066,6 +2110,15 @@ export function StitcherTab() {
         return;
       }
       const err = data.error ?? data.message ?? data.result?.error_message ?? 'Bake failed';
+      const failLine = stitchBakeTerminalErrorLine(data) ?? `Bake failed: ${err}`;
+      setTerminalBakeHint(failLine);
+      console.info('[stitch_module_bake_audit_client]', {
+        event: 'BAKE_TERMINAL',
+        job_id: data.job_id ?? activeBakeJobId,
+        status: data.status,
+        error: err,
+        error_code: data.result?.error_code,
+      });
       setStatusMsg(`✗ Bake: ${err}`);
       pushToast({
         kind: 'error',
@@ -2862,7 +2915,14 @@ export function StitcherTab() {
             />
           ) : (
             <div class="mn-stitcher-bake-preview-empty mn-dim" data-testid="stitcher-bake-preview-empty">
-              Final module preview will appear here after Bake.
+              {terminalBakeHint ? (
+                <>
+                  <div data-testid="stitcher-bake-preview-failure">{terminalBakeHint}</div>
+                  <div>Check server log <code>_stitch_module_bake_audit.jsonl</code> for forensics.</div>
+                </>
+              ) : (
+                'Final module preview will appear here after Bake.'
+              )}
             </div>
           )}
         </div>

@@ -350,6 +350,7 @@ def http_import_delivery_clip(
     source: str | None = None,
     make_active: bool = True,
     generation: int | None = None,
+    scope_video_role: str | None = None,
     timeout_s: float = 120.0,
 ) -> dict[str, Any]:
     """Agent/CLI single-writer path — POST to dedicated event server."""
@@ -358,6 +359,14 @@ def http_import_delivery_clip(
         raise BeatGenScopeError(f"beat_id {beat_id!r} is not a production event beat")
     port = port_from_event_id(event_id)
     url = f"http://localhost:{port}/api/bg/import-delivery-clip"
+    video_role = (scope_video_role or "").strip()
+    if not video_role:
+        if "_pre_" in beat_id or beat_id.endswith("_pre"):
+            video_role = "intro"
+        elif "_post_" in beat_id or beat_id.endswith("_post"):
+            video_role = "resolution"
+        else:
+            video_role = "intro"
     body: dict[str, Any] = {
         "beat_id": beat_id,
         "delivery_mp4_path": str(Path(delivery_mp4).expanduser().resolve()),
@@ -365,6 +374,7 @@ def http_import_delivery_clip(
         "label": label,
         "make_active": make_active,
         "scope_event_id": event_id,
+        "scope_video_role": video_role,
     }
     if source:
         body["source"] = source

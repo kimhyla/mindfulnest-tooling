@@ -24,8 +24,10 @@ grep -q '"audio_xfade_ms": 0' "$STITCH" || \
   fail "default stitch transitions must use audio_xfade_ms=0"
 grep -q 'module_slot_start_offsets_ms' "$FFMPEG" || \
   fail "ffmpeg_stitch must export module_slot_start_offsets_ms"
-grep -q '\-c:a", "copy"' "$FFMPEG" || \
-  fail "trim_body_with_fade must support audio copy when fade_audio=False"
+grep -q 'STITCH_EXPORT_TIMELINE_AUTHORITY_V1' "$FFMPEG" || \
+  fail "ffmpeg_stitch must export STITCH_EXPORT_TIMELINE_AUTHORITY_V1"
+grep -q 'remux_mp4_video_timeline_authority' "$FFMPEG" || \
+  fail "trim_body_with_fade dissolve path must heal A/V via timeline authority"
 grep -q 'expand_clips_with_black_pause_boundaries' "$FFMPEG" || \
   fail "missing black-pause boundary helper"
 

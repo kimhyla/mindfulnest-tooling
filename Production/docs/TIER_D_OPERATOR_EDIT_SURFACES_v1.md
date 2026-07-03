@@ -1,7 +1,7 @@
 # Tier D — Operator Edit Surfaces (2026-06-29)
 
 **Marker:** `TIER_D_OPERATOR_EDIT_SURFACES_V1`  
-**Status:** In progress — Phase A/B P0+P1 surfaces **shipped**; P2/P3 tracked below  
+**Status:** Shipped — Phase A/B P0+P1 surfaces **shipped** (closure audit 2026-07-03)  
 **Canonical spec:** `Production/docs/TECH_SPEC_OPERATOR_EDIT_AUTHORITY_V1.md` (`OPERATOR_EDIT_AUTHORITY_V1`)  
 **Parent:** Tier C closed server/export authority; Tier D closes **client hydration vs optimistic edit** authority across **all tabs, all beats, all events**.
 
@@ -26,10 +26,10 @@ The Phase B watercolor vanish bug (Event_3, 2026-06-28) proved persistence could
 | **phase_script_draft** | Phase A/B script textarea | `phase_*_script` | `useProtectedPromptField` in PhaseProducer | **shipped** | refreshAll must not clobber draft |
 | **phase_stem_cut_geometry** | Phase A/B stem cut handles | `phase_*_voice_stem_cut_*_s` | `usePhaseStemCut` + mergeOperatorFieldOnHydrate | **shipped** | cut rectangle revert on refresh race |
 | **bg_beat_prompt_field** | BG beat prompt textarea | `_derived.display_prompt` + stored fields | `useProtectedPromptField` | shipped | cursor snap-back on poll |
-| **storyboard_dialogue_cell** | Storyboard beat dialogue | `beat_update_text` | contenteditable + pathappPatch | partial | rollback spec exists; no focus-refresh gate |
-| **stitch_ambient_bed_selection** | Stitcher ambient per slot | slot `ambient_bed` in job | `StitcherTab` local + save | partial | refresh may revert unsaved ambient pick |
-| **phase_ambient_preset** | Phase A/B ambient preset select | `phase_*_ambient_preset_id` | direct patch + refreshAll | debt | select revert if refresh before ack |
-| **phase_base_clip_picker** | Cedric/Arlo base clip | `phase_*_*_clip_id` | selectedBaseClip + refreshAll | debt | picker desync on failed hydrate |
+| **storyboard_dialogue_cell** | Storyboard beat dialogue | `beat_update_text` | `useStoryboardDialogueField` | **shipped** | SB-DIALOGUE-HYDRATE-1 |
+| **stitch_ambient_bed_selection** | Stitcher ambient per slot | slot `ambient_bed` in job | `mergeStitchAmbientBedOnHydrate` | **shipped** | STITCH-AMBIENT-HYDRATE-1 |
+| **phase_ambient_preset** | Phase A/B ambient preset select | `phase_*_ambient_preset_id` | `usePhaseAmbientPreset` | **shipped** | AMBIENT-HYDRATE-1 |
+| **phase_base_clip_picker** | Cedric/Arlo base clip | `phase_*_*_clip_id` | `usePhaseBaseClipPicker` | **shipped** | PHASE-CLIP-HYDRATE-1 |
 | **library_panel_selection** | CR library multi-select | n/a (stateless) | local only | OK | low |
 
 ---

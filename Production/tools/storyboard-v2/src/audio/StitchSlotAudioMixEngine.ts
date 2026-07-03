@@ -5,6 +5,10 @@
 
 import { resolveStitchSfxFetchUrl } from '../utils/stitchSlotVideo';
 import { stitchSfxCuesToSchedule } from '../utils/stitchSfxCueSchedule';
+import {
+  stitchClientPreviewAudit,
+  videoPlaybackSnapshot,
+} from '../utils/stitchClientPreviewAudit';
 import { STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 } from '../utils/stitchSlotMuxAudioSig';
 
 export interface StitchClientMixSfxCue {
@@ -77,6 +81,74 @@ export function primeVideoSpeechChain(video: HTMLVideoElement | null | undefined
   speechChainForVideo(video);
 }
 
+function speechContextState(video: HTMLVideoElement): string | undefined {
+  return videoSpeechChains.get(video)?.ctx.state;
+}
+
+/** Native controls + keyboard play must resume speech AudioContext inside user-gesture stack. */
+export function wireComposerVideoPlayGuard(
+  video: HTMLVideoElement,
+  ctx: { jobName?: string; slotKey?: string },
+): () => void {
+  const onGesture = () => {
+    resumeVideoSpeechContext(video);
+  };
+  const onPlay = () => {
+    resumeVideoSpeechContext(video);
+    stitchClientPreviewAudit('VIDEO_PLAY', {
+      job_name: ctx.jobName,
+      slot_key: ctx.slotKey,
+      speech_ctx_state: speechContextState(video),
+      ...videoPlaybackSnapshot(video),
+    });
+  };
+  const onPlaying = () => {
+    stitchClientPreviewAudit('VIDEO_PLAYING', {
+      job_name: ctx.jobName,
+      slot_key: ctx.slotKey,
+      speech_ctx_state: speechContextState(video),
+      ...videoPlaybackSnapshot(video),
+    });
+  };
+  const onPause = () => {
+    stitchClientPreviewAudit('VIDEO_PAUSE', {
+      job_name: ctx.jobName,
+      slot_key: ctx.slotKey,
+      ...videoPlaybackSnapshot(video),
+    });
+  };
+  const onError = () => {
+    stitchClientPreviewAudit('VIDEO_ERROR', {
+      job_name: ctx.jobName,
+      slot_key: ctx.slotKey,
+      ...videoPlaybackSnapshot(video),
+    });
+  };
+  const onWaiting = () => {
+    stitchClientPreviewAudit('VIDEO_WAITING', {
+      job_name: ctx.jobName,
+      slot_key: ctx.slotKey,
+      ...videoPlaybackSnapshot(video),
+    });
+  };
+  video.addEventListener('click', onGesture, { capture: true });
+  video.addEventListener('keydown', onGesture, { capture: true });
+  video.addEventListener('play', onPlay);
+  video.addEventListener('playing', onPlaying);
+  video.addEventListener('pause', onPause);
+  video.addEventListener('error', onError);
+  video.addEventListener('waiting', onWaiting);
+  return () => {
+    video.removeEventListener('click', onGesture, { capture: true });
+    video.removeEventListener('keydown', onGesture, { capture: true });
+    video.removeEventListener('play', onPlay);
+    video.removeEventListener('playing', onPlaying);
+    video.removeEventListener('pause', onPause);
+    video.removeEventListener('error', onError);
+    video.removeEventListener('waiting', onWaiting);
+  };
+}
+
 export class StitchSlotAudioMixEngine {
   private ctx: AudioContext | null = null;
 
@@ -91,6 +163,10 @@ export class StitchSlotAudioMixEngine {
   private playEpoch = 0;
 
   private bound = false;
+
+  private playGuardUnwire: (() => void) | null = null;
+
+  private jobCtx: StitchClientMixJobContext | null = null;
 
   private onPlay = () => {
     void this.handlePlay();
@@ -111,13 +187,27 @@ export class StitchSlotAudioMixEngine {
   async attach(
     video: HTMLVideoElement,
     slot: StitchClientMixSlotInput,
-    _jobCtx: StitchClientMixJobContext,
+    jobCtx: StitchClientMixJobContext,
   ): Promise<void> {
     this.detachLayers();
     this.video = video;
     this.slotInput = slot;
+    this.jobCtx = jobCtx;
+    this.playGuardUnwire?.();
+    this.playGuardUnwire = wireComposerVideoPlayGuard(video, {
+      jobName: jobCtx.jobName,
+      slotKey: jobCtx.slotKey,
+    });
     const chain = speechChainForVideo(video);
     this.ctx = chain.ctx;
+    stitchClientPreviewAudit('CLIENT_MIX_ATTACH', {
+      job_name: jobCtx.jobName,
+      slot_key: jobCtx.slotKey,
+      speech_ctx_state: chain.ctx.state,
+      sfx_cue_count: (slot.sfx_cues ?? []).length,
+      ambient_bed: slot.ambient_bed,
+      ...videoPlaybackSnapshot(video),
+    });
     if (this.ctx.state === 'suspended') {
       await this.ctx.resume();
     }
@@ -145,6 +235,9 @@ export class StitchSlotAudioMixEngine {
 
   detach(): void {
     activeMixEngines.delete(this);
+    this.playGuardUnwire?.();
+    this.playGuardUnwire = null;
+    this.jobCtx = null;
     this.detachLayers();
     this.video = null;
     this.slotInput = null;
@@ -187,6 +280,13 @@ export class StitchSlotAudioMixEngine {
     }
     this.playEpoch += 1;
     await this.resyncFromVideo();
+    stitchClientPreviewAudit('SFX_RESYNC', {
+      job_name: this.jobCtx?.jobName,
+      slot_key: this.jobCtx?.slotKey,
+      speech_ctx_state: this.ctx.state,
+      sfx_scheduled: this.sfxSources.length,
+      ...videoPlaybackSnapshot(this.video),
+    });
   }
 
   private async resyncFromVideo(): Promise<void> {

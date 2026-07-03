@@ -50,6 +50,8 @@ def is_still_insert_gallery_option(beat_id: str, option: dict, *, video_path: st
 def still_insert_gallery_option_key(beat_id: str, video_path: str) -> str:
     """Stable gallery key for still-insert clips (matches Approve still + select-o3)."""
     stem = Path(str(video_path).strip()).stem
+    if stem.endswith("_tts_trimmed"):
+        return stem[: -len("_tts_trimmed")]
     if stem.endswith("_tts"):
         return stem[:-4]
     return stem
@@ -185,8 +187,18 @@ def normalize_o3_gallery_options(beat: dict) -> list[str]:
     for key, rows in by_key.items():
         if len(rows) <= 1:
             continue
+        active_vp = str(beat.get("kling_o3_video_path") or "").strip()
+        active_rows = [
+            r for r in rows
+            if active_vp and str(r.get("video_path") or "").strip() == active_vp
+        ]
         canonical_rows = [r for r in rows if option_key_matches_path(beat_id, r)]
-        keep = canonical_rows[0] if canonical_rows else rows[0]
+        if active_rows:
+            keep = active_rows[0]
+        elif canonical_rows:
+            keep = canonical_rows[0]
+        else:
+            keep = rows[0]
         used_keys = {str(r.get("key") or "") for r in options if isinstance(r, dict)}
         for row in rows:
             if row is keep:
@@ -241,14 +253,7 @@ def _sync_selected_option_key_from_active_path(beat: dict) -> None:
     active_vp = str(beat.get("kling_o3_video_path") or "").strip()
     if not beat_id or not active_vp:
         return
-    selected = str(beat.get("kling_o3_selected_option_key") or "").strip()
     options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
-    if selected:
-        try:
-            resolve_o3_gallery_option(beat, selected)
-            return
-        except O3GalleryOptionAmbiguousError:
-            pass
     for opt in options:
         vp = str(opt.get("video_path") or "").strip()
         if vp != active_vp:
@@ -256,7 +261,16 @@ def _sync_selected_option_key_from_active_path(beat: dict) -> None:
         key = str(opt.get("key") or "").strip()
         if key:
             beat["kling_o3_selected_option_key"] = key
-            return
+        return
+    selected = str(beat.get("kling_o3_selected_option_key") or "").strip()
+    if selected:
+        try:
+            opt = resolve_o3_gallery_option(beat, selected)
+            if str(opt.get("video_path") or "").strip() == active_vp:
+                return
+        except O3GalleryOptionAmbiguousError:
+            pass
+        beat.pop("kling_o3_selected_option_key", None)
 
 
 def _duplicate_keys_after_normalize(beat: dict) -> list[str]:

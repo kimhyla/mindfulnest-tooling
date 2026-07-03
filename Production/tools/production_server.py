@@ -6634,6 +6634,9 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_stitch_preview(body)
             if path == "/api/stitch_editor/bake":
                 return self._handle_stitch_bake(body)
+            if path == "/api/stitch_editor/client_preview_audit":
+                from server_handlers.stitch_editor import handle_stitch_client_preview_audit  # noqa: PLC0415
+                return handle_stitch_client_preview_audit(self, body)
             # ── S5.5d (v3 architecture revision) POST routes ──
             if path == "/api/admin/drain_start":
                 return self._handle_admin_drain_start(body)
@@ -12354,18 +12357,48 @@ body {{padding-top:44px!important;}}
         if play_ms <= 0:
             return clip_path
 
+        from ffmpeg_stitch import (  # noqa: PLC0415
+            STITCH_EXPORT_NORM_AV_MAX_DRIFT_S,
+            STITCH_EXPORT_TIMELINE_AUTHORITY_V1,
+            av_duration_drift_s,
+            ffprobe_stream_duration_s,
+            ffprobe_video_start_time,
+            mp4_decodes_cleanly,
+            mp4_is_playable,
+            remux_mp4_video_timeline_authority,
+        )
+
+        def _boundary_sfx_cache_ok(path: Path) -> bool:
+            return (
+                path.is_file()
+                and mp4_is_playable(path)
+                and mp4_decodes_cleanly(path)
+                and av_duration_drift_s(path) <= STITCH_EXPORT_NORM_AV_MAX_DRIFT_S
+            )
+
+        video_start_s = ffprobe_video_start_time(clip_path)
+        fuse_ss_args: list[str] = []
+        if video_start_s > 0.005:
+            fuse_ss_args = ["-ss", f"{video_start_s:.3f}"]
+        video_dur_s = ffprobe_stream_duration_s(clip_path, "v")
+        if video_dur_s <= 0.0:
+            video_dur_s = clip_dur_ms / 1000.0
+        target_s = max(0.04, float(video_dur_s))
+
         sig = _hl.md5(
             (
+                f"v3_auth:{STITCH_EXPORT_TIMELINE_AUTHORITY_V1}:"
                 f"{clip_path.name}:{clip_path.stat().st_mtime_ns}:"
-                f"{sfx_path}:{offset_ms}:{play_ms}:{sfx_start_ms}:{volume:.3f}"
+                f"{sfx_path}:{offset_ms}:{play_ms}:{sfx_start_ms}:{volume:.3f}:"
+                f"vdur={target_s:.6f}:vstart={video_start_s:.6f}"
             ).encode(),
             usedforsecurity=False,
         ).hexdigest()[:12]
         out_path = cache_dir / f"se_boundary_sfx_{sig}.mp4"
+
+        if _boundary_sfx_cache_ok(out_path):
+            return out_path
         if out_path.is_file():
-            from ffmpeg_stitch import mp4_decodes_cleanly, mp4_is_playable  # noqa: PLC0415
-            if mp4_is_playable(out_path) and mp4_decodes_cleanly(out_path):
-                return out_path
             try:
                 out_path.unlink()
             except OSError:
@@ -12373,34 +12406,48 @@ body {{padding-top:44px!important;}}
 
         play_s = play_ms / 1000.0
         sfx_start_s = max(0.0, int(sfx_start_ms) / 1000.0)
-        offset_s = offset_ms / 1000.0
         filter_complex = (
-            f"[0:a]aresample=44100,aformat=channel_layouts=mono[base];"
-            f"[1:a]aresample=44100,aformat=channel_layouts=mono,"
+            f"[0:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono[base];"
+            f"[1:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,"
             f"atrim=start={sfx_start_s:.3f}:duration={play_s:.3f},"
             f"asetpts=PTS-STARTPTS,"
             f"adelay={offset_ms}:all=1,"
             f"volume={volume:.3f}[sfx];"
-            f"[base][sfx]amix=inputs=2:duration=first:normalize=0[aout]"
+            f"[base][sfx]amix=inputs=2:duration=first:normalize=0,"
+            f"atrim=end={target_s:.6f},asetpts=PTS-STARTPTS,"
+            f"apad=whole_dur={target_s:.6f}[aout]"
         )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            *fuse_ss_args,
             "-i", str(clip_path),
             "-i", sfx_path,
             "-filter_complex", filter_complex,
-            "-map", "0:v",
+            "-map", "0:v:0", "-c:v", "copy",
             "-map", "[aout]",
-            "-c:v", "copy",
             "-c:a", "aac", "-b:a", "128k", "-ac", "1", "-ar", "44100",
+            "-t", f"{target_s:.6f}",
+            "-movflags", "+faststart",
             str(out_path),
         ]
         try:
             subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+            remux_mp4_video_timeline_authority(out_path, out_path, re_encode_video=False)
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or b"")[:400].decode("utf-8", errors="replace")
             raise RuntimeError(
                 f"Boundary SFX overlay failed for {clip_path.name}: {stderr}",
             ) from exc
+        if not _boundary_sfx_cache_ok(out_path):
+            drift = av_duration_drift_s(out_path)
+            try:
+                out_path.unlink()
+            except OSError:
+                pass
+            raise RuntimeError(
+                f"Boundary SFX overlay A/V misaligned for {clip_path.name} "
+                f"(drift {drift:.3f}s > {STITCH_EXPORT_NORM_AV_MAX_DRIFT_S}s)",
+            )
         return out_path
 
     def _stitch_apply_canonical_boundary_sfx(

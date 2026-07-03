@@ -120,6 +120,10 @@ export interface BgO3CutOverlayProps {
   onDragStart?: () => void;
   onDragEnd?: () => void;
   onKeepDraftChange: (keepStartS: number, keepEndS: number) => void;
+  /** Fired when the operator commits the head (start) handle — not on tail-only drags. */
+  onKeepStartCommitted?: () => void;
+  /** Fired when the operator commits the tail (end) handle — not on head-only drags. */
+  onKeepEndCommitted?: () => void;
   onKeepRejected?: (reason: string) => void;
 }
 
@@ -140,6 +144,8 @@ export function BgO3CutOverlay({
   onDragStart,
   onDragEnd,
   onKeepDraftChange,
+  onKeepStartCommitted,
+  onKeepEndCommitted,
   onKeepRejected,
 }: BgO3CutOverlayProps) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -211,6 +217,7 @@ export function BgO3CutOverlay({
         Math.max(0, Math.min(endSAtCommit - MIN_KEEP_S, newStart)),
         endSAtCommit,
       );
+      onKeepStartCommitted?.();
       onDragEnd?.();
       handle.removeEventListener('pointermove', applyPreview);
       handle.removeEventListener('pointerup', onUp);
@@ -250,6 +257,7 @@ export function BgO3CutOverlay({
         startSAtCommit,
         Math.max(startSAtCommit + MIN_KEEP_S, Math.min(live.durationS, newEnd)),
       );
+      onKeepEndCommitted?.();
       onDragEnd?.();
       handle.removeEventListener('pointermove', applyPreview);
       handle.removeEventListener('pointerup', onUp);
