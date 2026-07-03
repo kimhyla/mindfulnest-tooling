@@ -65,13 +65,23 @@ export function StitchSlotAmbientBedAudio({
       }
     };
 
+    const onTimeUpdate = () => {
+      if (v.paused) {
+        a.pause();
+        return;
+      }
+      syncTime();
+    };
+
     v.addEventListener('play', onPlay);
     v.addEventListener('pause', onPause);
     v.addEventListener('seeked', onSeeked);
+    v.addEventListener('timeupdate', onTimeUpdate);
     return () => {
       v.removeEventListener('play', onPlay);
       v.removeEventListener('pause', onPause);
       v.removeEventListener('seeked', onSeeked);
+      v.removeEventListener('timeupdate', onTimeUpdate);
       a.pause();
     };
   }, [video, bed]);

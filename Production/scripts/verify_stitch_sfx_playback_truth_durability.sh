@@ -46,7 +46,8 @@ python3 -m pytest "${REPO_ROOT}/Production/tools/tests/test_stitch_ambient_previ
 (
   cd "$SB"
   node --experimental-strip-types --test \
-    src/utils/__tests__/stitchSlotTimelineAtomic.test.ts
+    src/utils/__tests__/stitchSlotTimelineAtomic.test.ts \
+    src/utils/__tests__/stitchSfxCueSchedule.test.ts
 ) || fail "node unit tests failed"
 
 python3 -m pytest "$TEST" "$TEST2" -q

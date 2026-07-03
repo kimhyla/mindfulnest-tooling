@@ -19,6 +19,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
 import { useStitchSlotClientMix } from '../hooks/useStitchSlotClientMix';
+import {
+  primeVideoSpeechChain,
+  resumeVideoSpeechContext,
+} from '../audio/StitchSlotAudioMixEngine';
 import { StitchSlotAmbientBedAudio } from './StitchSlotAmbientBedAudio';
 import { effect } from '@preact/signals';
 import { activeScope, activeProjectType, activeMilestoneId, producerScopeChipLabel, activeTargetVideo } from '../state/scope';
@@ -1232,6 +1236,20 @@ export function StitcherTab() {
     job?.name ? { jobName: job.name, slotKey: viewerSlot } : null,
   );
 
+  // FF-042 — resume speech AudioContext inside user-gesture stack before native play().
+  useEffect(() => {
+    const video = composerVideoNode;
+    if (!video || !stitchSlotRequiresClientPreviewMix(viewerSlotData)) return;
+    primeVideoSpeechChain(video);
+    const onPointerDown = () => {
+      resumeVideoSpeechContext(video);
+    };
+    video.addEventListener('pointerdown', onPointerDown, { capture: true });
+    return () => {
+      video.removeEventListener('pointerdown', onPointerDown, { capture: true });
+    };
+  }, [composerVideoNode, viewerSlotData, viewerSlot]);
+
   useEffect(() => {
     setComposerVideoError(null);
     const url = composerSlotUrls[viewerSlot];
@@ -1739,6 +1757,9 @@ export function StitcherTab() {
     const apply = () => {
       video.currentTime = Math.max(0, offsetMs / 1000);
       if (shouldPlay) {
+        if (stitchSlotRequiresClientPreviewMix(job?.slots?.[sessionSlot])) {
+          resumeVideoSpeechContext(video);
+        }
         void video.play().catch(() => {});
       } else if (shouldPause) {
         video.pause();

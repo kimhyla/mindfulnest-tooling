@@ -3,7 +3,8 @@
  * Speech bytes come from the dry MP4; ambient bed uses StitchSlotAmbientBedAudio.
  */
 
-import { resolveServerMediaUrl } from '../utils/stitchSlotVideo';
+import { resolveStitchSfxFetchUrl } from '../utils/stitchSlotVideo';
+import { stitchSfxCuesToSchedule } from '../utils/stitchSfxCueSchedule';
 import { STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 } from '../utils/stitchSlotMuxAudioSig';
 
 export interface StitchClientMixSfxCue {
@@ -28,8 +29,6 @@ export interface StitchClientMixJobContext {
   jobName: string;
   slotKey: string;
 }
-
-const DRIFT_RESYNC_MS = 80;
 
 /** One MediaElementSource per pooled <video> — browser forbids a second createMediaElementSource. */
 type VideoSpeechChain = {
@@ -63,6 +62,21 @@ function speechChainForVideo(video: HTMLVideoElement): VideoSpeechChain {
   return chain;
 }
 
+/** Synchronous user-gesture hook — resume speech AudioContext before video.play(). */
+export function resumeVideoSpeechContext(video: HTMLVideoElement | null | undefined): void {
+  if (!video) return;
+  const chain = videoSpeechChains.get(video);
+  if (chain?.ctx.state === 'suspended') {
+    void chain.ctx.resume();
+  }
+}
+
+/** Ensure pooled composer video has a speech chain before first play (four-files client mix). */
+export function primeVideoSpeechChain(video: HTMLVideoElement | null | undefined): void {
+  if (!video) return;
+  speechChainForVideo(video);
+}
+
 export class StitchSlotAudioMixEngine {
   private ctx: AudioContext | null = null;
 
@@ -89,16 +103,6 @@ export class StitchSlotAudioMixEngine {
   private onSeeked = () => {
     void this.resyncFromVideo();
   };
-
-  private onTimeUpdate = () => {
-    if (!this.video || this.video.paused) return;
-    const driftMs = Math.abs(this.video.currentTime - this.lastScheduledVideoT) * 1000;
-    if (driftMs > DRIFT_RESYNC_MS) {
-      void this.resyncFromVideo();
-    }
-  };
-
-  private lastScheduledVideoT = 0;
 
   get marker(): string {
     return STITCH_DRY_AUTHORITY_CLIENT_MIX_V1;
@@ -158,9 +162,6 @@ export class StitchSlotAudioMixEngine {
         /* ignore seek on unloaded media */
       }
     }
-    if (this.ctx?.state === 'running') {
-      void this.ctx.suspend();
-    }
   }
 
   private bindVideoEvents(): void {
@@ -168,7 +169,6 @@ export class StitchSlotAudioMixEngine {
     this.video.addEventListener('play', this.onPlay);
     this.video.addEventListener('pause', this.onPause);
     this.video.addEventListener('seeked', this.onSeeked);
-    this.video.addEventListener('timeupdate', this.onTimeUpdate);
     this.bound = true;
   }
 
@@ -177,7 +177,6 @@ export class StitchSlotAudioMixEngine {
     this.video.removeEventListener('play', this.onPlay);
     this.video.removeEventListener('pause', this.onPause);
     this.video.removeEventListener('seeked', this.onSeeked);
-    this.video.removeEventListener('timeupdate', this.onTimeUpdate);
     this.bound = false;
   }
 
@@ -193,22 +192,23 @@ export class StitchSlotAudioMixEngine {
   private async resyncFromVideo(): Promise<void> {
     if (!this.ctx || !this.video || this.video.paused) return;
     this.stopSfx();
-    this.lastScheduledVideoT = this.video.currentTime;
     await this.scheduleSfxFromCurrentTime();
   }
 
   private async scheduleSfxFromCurrentTime(): Promise<void> {
     if (!this.ctx || !this.video || !this.slotInput) return;
-    const cues = this.slotInput.sfx_cues ?? [];
     const videoT = this.video.currentTime;
     const epoch = this.playEpoch;
-    for (const cue of cues) {
-      const offsetS = (cue.offset_ms ?? 0) / 1000;
-      const delayS = offsetS - videoT;
-      if (delayS < -0.05) continue;
+    const toSchedule = stitchSfxCuesToSchedule(this.slotInput.sfx_cues ?? [], videoT);
+    for (const { cue, delayS } of toSchedule) {
       const srcPath = (cue.source_path ?? '').trim();
-      if (!srcPath) continue;
-      const buffer = await this.loadSfxBuffer(srcPath);
+      let buffer: AudioBuffer;
+      try {
+        buffer = await this.loadSfxBuffer(srcPath);
+      } catch (err) {
+        console.warn('[StitchSlotAudioMixEngine] SFX load failed:', srcPath, err);
+        continue;
+      }
       if (!this.ctx || epoch !== this.playEpoch || this.video.paused) return;
       const source = this.ctx.createBufferSource();
       source.buffer = buffer;
@@ -227,7 +227,7 @@ export class StitchSlotAudioMixEngine {
   private async loadSfxBuffer(sourcePath: string): Promise<AudioBuffer> {
     const cached = this.sfxBufferCache.get(sourcePath);
     if (cached) return cached;
-    const url = resolveServerMediaUrl(`/files?path=${encodeURIComponent(sourcePath)}`);
+    const url = resolveStitchSfxFetchUrl(sourcePath);
     const res = await fetch(url);
     if (!res.ok) throw new Error(`SFX fetch failed: ${sourcePath}`);
     const buf = await res.arrayBuffer();
