@@ -284,14 +284,30 @@ def handle_admin_inflight_count(h, body: dict | None = None) -> None:
 
 
 def handle_health(h) -> None:
-    from production_server import SERVER_VERSION
+    from production_server import SERVER_VERSION, restart_in_progress
 
     h._send_json(200, {
         "status": "ok",
         "uptime_seconds": int(time.time() - h.app.started_at),
         "event_id": h.app.event_id,
         "version": SERVER_VERSION,
+        "accept_new_jobs": getattr(h.app, "accept_new_jobs", True),
+        "restart_in_progress": restart_in_progress(),
     })
+
+
+def server_mutation_gate_reason(app) -> str | None:
+    """Return machine reason when new mutation work must be rejected; None if OK."""
+    if not getattr(app, "accept_new_jobs", True):
+        return "drain_in_progress"
+    try:
+        from production_server import restart_in_progress
+
+        if restart_in_progress():
+            return "server_restarting"
+    except ImportError:
+        pass
+    return None
 
 
 def serve_storyboard(h) -> None:

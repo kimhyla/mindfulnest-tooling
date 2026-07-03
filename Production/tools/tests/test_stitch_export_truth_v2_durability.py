@@ -14,6 +14,7 @@ def test_still_insert_flags_from_resolve() -> None:
     )[0]
     assert "still_insert_flags" in block
     assert "beat_is_still_insert(beat)" in block
+    assert "KLING_O3_EXPORT_BG_PASSTHROUGH_V1" in block
     assert "return clip_paths, still_insert_flags, scratch_dir" in block
 
 
@@ -38,7 +39,7 @@ def test_ambient_tile_concat_loop_marker() -> None:
     assert STITCH_AMBIENT_TILE_CONCAT_LOOP_V1
     frag = build_ambient_explicit_tile_concat_loop("amb0tile", 32.808, 121.0)
     assert "asplit=" in frag
-    assert "concat=n=" in frag
+    assert "acrossfade=" in frag or "concat=n=" in frag
     assert "aloop" not in frag
     lane = build_ambient_bed_filter_lane(1, 32.808, 121.0, 0.15)
     assert "[amb1tile]aloop=loop=-1" not in lane

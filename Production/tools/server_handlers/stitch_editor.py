@@ -2027,18 +2027,18 @@ def stitch_upsert_event_slot(
     patched = dict(slot_patch)
     patched["video_dur_ms"] = probed_ms
 
-    # FF-042 — event slots: dry concat IS video_path (client mix for preview).
+    # FF-036 — event slots: passthrough dry concat → normalize/loudnorm → playback bake.
     if not is_milestone_stitch_job_name(job_name):
         from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
-            STITCH_DRY_AUTHORITY_CLIENT_MIX_V1,
-            persist_dry_authority_slot_export,
+            STITCH_FOUR_FILES_V1,
+            bake_and_persist_slot_playback_mp4,
         )
 
         def _migrate(state: dict) -> None:
             stitch_migrate_legacy_to_canonical(state, event_id)
 
         stitch_store.mutate_state(_migrate)
-        dry_rel, probed_ms, export_artifacts = persist_dry_authority_slot_export(
+        playback_rel, probed_ms, export_artifacts = bake_and_persist_slot_playback_mp4(
             h,
             job_name,
             slot_key,
@@ -2049,7 +2049,7 @@ def stitch_upsert_event_slot(
             peek_slot=peek_slot if isinstance(peek_slot, dict) else None,
         )
         export_warnings = list(export_warnings or [])
-        export_warnings.append(f"{slot_key}: dry authority export ({STITCH_DRY_AUTHORITY_CLIENT_MIX_V1})")
+        export_warnings.append(f"{slot_key}: four-files playback bake ({STITCH_FOUR_FILES_V1})")
         return job_name, probed_ms, export_warnings, export_artifacts
 
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -2526,12 +2526,12 @@ def handle_stitch_load_job(h, name: str)-> None:
             if not isinstance(slot, dict):
                 continue
             from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
-                migrate_four_files_slot_to_dry_authority,
+                migrate_stale_split_authority_slot_to_dry_authority,
                 reconcile_dry_authority_slot_artifacts,
                 reconcile_four_files_slot_authority,
             )
 
-            if migrate_four_files_slot_to_dry_authority(h, slot, str(slot_key)):
+            if migrate_stale_split_authority_slot_to_dry_authority(h, slot, str(slot_key)):
                 dry_authority_migrated_on_load = True
             if reconcile_four_files_slot_authority(slot):
                 four_files_purged_on_load = True

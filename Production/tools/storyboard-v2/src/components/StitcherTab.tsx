@@ -19,12 +19,14 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useDropTargetCapture } from '../hooks/useDropTargetCapture';
 import { useStitchSlotClientMix } from '../hooks/useStitchSlotClientMix';
+import { StitchSlotAmbientBedAudio } from './StitchSlotAmbientBedAudio';
 import { effect } from '@preact/signals';
 import { activeScope, activeProjectType, activeMilestoneId, producerScopeChipLabel, activeTargetVideo } from '../state/scope';
 import { pushToast } from './ui/Toast';
 import { stitcherRefreshTick } from '../app';
 import { serverRehydrateTick, activeTab } from '../state/refreshSignals';
 import {
+  ensureStitchJobSession,
   stitchActiveKey,
   stitchCachedJob,
   stitchJobSessionHasCache,
@@ -533,6 +535,15 @@ export function StitcherTab() {
     for (const sd of defs) {
       const slotData = job.slots[sd.key];
       if (!slotData?.video_path) continue;
+      // FF-042 — composer always tracks job.video_path for dry authority (never stale session URL).
+      if (
+        stitchSlotUsesDryAuthorityClientMix(slotData)
+        || stitchSlotUsesFourFilesPlayback(slotData)
+      ) {
+        const dryUrl = resolveDrySlotSourceVideoUrl(slotData.video_path);
+        if (dryUrl) out[sd.key] = dryUrl;
+        continue;
+      }
       const url = resolveSlotPlaybackPreviewUrl(
         stitchSessionKey,
         sd.key as StitchSessionSlotKey,
@@ -615,6 +626,18 @@ export function StitcherTab() {
   }, []);
 
   // PSL stitch job cache updates (e.g. Beat Gen export) must apply while Stitcher is mounted.
+  useEffect(() => {
+    return effect(() => {
+      if (activeTab.value !== 'stitcher') return;
+      const eventId = activeScope.value.event_id;
+      void ensureStitchJobSession(eventId, {
+        force: true,
+        projectType: activeProjectType.value,
+        milestoneId: activeMilestoneId.value,
+      });
+    });
+  }, []);
+
   useEffect(() => {
     return effect(() => {
       const cached = stitchCachedJob.value;
@@ -1167,6 +1190,19 @@ export function StitcherTab() {
   const composerMuxRefreshing = previewLoadingSlot === viewerSlot && composerUsingMux;
   const composerPreviewBuilding = previewLoadingSlot === viewerSlot && !resolvedComposerUrl;
   const composerAmbientBuilding = busySlot?.slot === viewerSlot && busySlot.action === 'ambient';
+
+  useEffect(() => {
+    const path = (viewerSlotData?.video_path ?? '').trim();
+    if (!path || lastViewerVideoPathRef.current === path) return;
+    lastViewerVideoPathRef.current = path;
+    const sessionSlot = viewerSlot as StitchSessionSlotKey;
+    invalidateStitchSlotPlaybackCaches(stitchSessionKey, [sessionSlot]);
+    setPreviewUrls((prev) => {
+      const next = { ...prev };
+      delete next[sessionSlot];
+      return next;
+    });
+  }, [viewerSlot, viewerSlotData?.video_path, stitchSessionKey]);
 
   useLayoutEffect(() => {
     const video = composerPoolRef.current?.getVideo(viewerSlot) ?? null;
@@ -2464,7 +2500,9 @@ export function StitcherTab() {
                     ? 'Updating SFX preview — video stays loaded'
                     : composerUsingMux
                     ? 'SFX preview (speech + ambient + SFX) · drag waveform to seek'
-                    : composerUsingAmbientMix
+                    : stitchSlotRequiresClientPreviewMix(viewerSlotData)
+                      ? 'Dry Beat Gen export + ambient bed preview · SFX on timeline'
+                      : composerUsingAmbientMix
                       ? 'Speech + ambient bed · use dropdown below to change ambient'
                       : composerAmbientBuilding
                         ? 'Saving ambient bed…'
@@ -2507,6 +2545,18 @@ export function StitcherTab() {
                     >
                       Loading video…
                     </div>
+                  ) : null}
+                  {stitchSlotRequiresClientPreviewMix(viewerSlotData) && job?.name ? (
+                    <StitchSlotAmbientBedAudio
+                      video={composerVideoNode}
+                      jobName={job.name}
+                      slotKey={viewerSlot}
+                      ambientBed={
+                        (viewerSlotData?.ambient_bed ?? '').trim()
+                        || defaultAmbientBedForSlot(viewerSlot)
+                      }
+                      ambientVolume={viewerSlotData?.ambient_volume ?? STITCH_AMBIENT_BED_VOLUME}
+                    />
                   ) : null}
                 </div>
                 {composerVideoError ? (

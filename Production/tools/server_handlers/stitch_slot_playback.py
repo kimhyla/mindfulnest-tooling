@@ -1,9 +1,10 @@
-"""Stitch slot playback authority — dry concat (FF-042) and legacy baked playback (FF-036).
+"""Stitch slot playback authority — four-files bake (FF-036) and dry client-mix (FF-042).
 
-FF-042: TECH_SPEC_STITCH_DRY_AUTHORITY_CLIENT_MIX_V1.md — video_path IS dry concat;
-Stitcher preview mixes ambient/SFX in client Web Audio; module bake server-mixes.
+FF-036: TECH_SPEC_STITCH_FOUR_FILES_V1.md — dry passthrough concat → normalize +
+loudnorm once → ambient/SFX mix → baked *_playback_* on video_path.
 
-FF-036 (legacy): TECH_SPEC_STITCH_FOUR_FILES_V1.md — baked *_playback_* on video_path.
+FF-042 (legacy): TECH_SPEC_STITCH_DRY_AUTHORITY_CLIENT_MIX_V1.md — dry concat IS
+video_path; client Web Audio preview (superseded for event slots by FF-036).
 """
 from __future__ import annotations
 
@@ -31,6 +32,8 @@ STITCH_EXPORT_TRUTH_WAVEFORM_INVALIDATE_ON_EXPORT_V1 = (
 STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 = "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1"
 STITCH_DRY_AUTHORITY_PLAYBACK_RECIPE = STITCH_DRY_AUTHORITY_CLIENT_MIX_V1
 STITCH_FOUR_FILES_MIGRATE_V1 = "STITCH_FOUR_FILES_MIGRATE_V1"
+# FF-036 — Send to Stitcher must persist baked playback on slot JSON + disk (fail loud).
+STITCH_EXPORT_FOUR_FILES_SLOT_APPLY_V1 = "STITCH_EXPORT_FOUR_FILES_SLOT_APPLY_V1"
 
 _LEGACY_ARTIFACT_FIELDS = (
     "ambient_mix_hash",
@@ -191,10 +194,164 @@ def reconcile_dry_authority_slot_artifacts(slot: dict) -> bool:
     return had
 
 
+def migrate_stale_split_authority_slot_to_dry_authority(
+    h,
+    slot: dict,
+    slot_key: str,
+) -> bool:
+    """Move legacy split-authority / FF-042 slots onto four-files authority.
+
+    Symptom: Beat Gen lipsync is perfect but Stitcher drifts — slot still has
+    ambient_mix_hash / mux_preview_hash so the client plays rebaked split
+    artifacts. Clears legacy tiers; Re Send to Stitcher rebakes playback MP4.
+    """
+    del slot_key  # event slots only; slot_key reserved for logging
+    if not isinstance(slot, dict):
+        return False
+    if playback_recipe_is_four_files(slot):
+        return reconcile_four_files_slot_authority(slot)
+    video_rel = (slot.get("video_path") or "").strip()
+    if not video_rel:
+        return False
+    migrated = False
+    if playback_recipe_is_dry_authority_client_mix(slot):
+        slot["dry_export_path"] = video_rel
+        slot["playback_recipe_version"] = STITCH_FOUR_FILES_PLAYBACK_RECIPE
+        clear_legacy_playback_artifact_fields(slot)
+        slot.pop("waveform_peaks_hash", None)
+        slot.pop("_waveform_peaks_url", None)
+        migrated = True
+    elif _video_path_looks_like_playback_bake(video_rel):
+        return False
+    elif slot_had_legacy_playback_artifact_fields(slot):
+        slot["dry_export_path"] = video_rel
+        slot["playback_recipe_version"] = STITCH_FOUR_FILES_PLAYBACK_RECIPE
+        clear_legacy_playback_artifact_fields(slot)
+        slot.pop("waveform_peaks_hash", None)
+        slot.pop("_waveform_peaks_url", None)
+        migrated = True
+    if not migrated:
+        return False
+    from server_handlers.stitch_editor import sync_stitch_slot_video_dur_ms  # noqa: PLC0415
+
+    sync_stitch_slot_video_dur_ms(h, slot, force=True)
+    return True
+
+
 def playback_recipe_is_four_files(slot: dict | None) -> bool:
     if not isinstance(slot, dict):
         return False
     return (slot.get("playback_recipe_version") or "").strip() == STITCH_FOUR_FILES_PLAYBACK_RECIPE
+
+
+def assert_four_files_export_slot_applied(
+    h,
+    *,
+    stitch_store,
+    job_name: str,
+    slot_key: str,
+    dry_video_rel: str,
+    playback_artifacts: dict,
+) -> None:
+    """Fail loud when Send to Stitcher did not write baked playback to the stitch slot."""
+    from credentials_lib.ffmpeg_stitch import mp4_decodes_cleanly  # noqa: PLC0415
+
+    code = STITCH_EXPORT_FOUR_FILES_SLOT_APPLY_V1
+    if not isinstance(playback_artifacts, dict) or not playback_artifacts.get("ok"):
+        err = (playback_artifacts or {}).get("error") or "playback bake not ok"
+        raise RuntimeError(f"{slot_key}: {err} [{code}]")
+    if (playback_artifacts.get("code") or "").strip() != STITCH_FOUR_FILES_V1:
+        raise RuntimeError(
+            f"{slot_key}: expected {STITCH_FOUR_FILES_V1} bake, got "
+            f"{playback_artifacts.get('code')!r} [{code}]",
+        )
+
+    playback_rel = (playback_artifacts.get("video_path") or "").strip()
+    if not playback_rel or "_playback_" not in Path(playback_rel).name:
+        raise RuntimeError(
+            f"{slot_key}: playback path missing or not a *_playback_* mp4 [{code}]",
+        )
+
+    playback_abs = Path(h._stitch_resolve_path(playback_rel))
+    if not playback_abs.is_file() or playback_abs.stat().st_size <= 0:
+        raise RuntimeError(f"{slot_key}: playback file missing on disk: {playback_rel} [{code}]")
+    if not mp4_decodes_cleanly(playback_abs):
+        raise RuntimeError(f"{slot_key}: playback mp4 failed decode smoke [{code}]")
+
+    dry_rel = (dry_video_rel or "").strip()
+    if not dry_rel:
+        raise RuntimeError(f"{slot_key}: dry export path missing [{code}]")
+    dry_abs = Path(h._stitch_resolve_path(dry_rel))
+    if not dry_abs.is_file() or dry_abs.stat().st_size <= 0:
+        raise RuntimeError(f"{slot_key}: dry concat missing on disk: {dry_rel} [{code}]")
+
+    state = stitch_store.read_state() or {}
+    job = (state.get("jobs") or {}).get(job_name)
+    if not isinstance(job, dict):
+        raise RuntimeError(f"{slot_key}: stitch job missing after export: {job_name!r} [{code}]")
+    slot = (job.get("slots") or {}).get(slot_key)
+    if not isinstance(slot, dict):
+        raise RuntimeError(f"{slot_key}: stitch slot missing after export [{code}]")
+
+    if (slot.get("video_path") or "").strip() != playback_rel:
+        raise RuntimeError(
+            f"{slot_key}: slot.video_path did not update to playback "
+            f"(got {(slot.get('video_path') or '')!r}) [{code}]",
+        )
+    if (slot.get("dry_export_path") or "").strip() != dry_rel:
+        raise RuntimeError(
+            f"{slot_key}: slot.dry_export_path mismatch "
+            f"(got {(slot.get('dry_export_path') or '')!r}) [{code}]",
+        )
+    if not playback_recipe_is_four_files(slot):
+        raise RuntimeError(
+            f"{slot_key}: slot not on four-files recipe "
+            f"(got {(slot.get('playback_recipe_version') or '')!r}) [{code}]",
+        )
+
+
+def verify_event_slot_four_files_export_applied(
+    h,
+    *,
+    job_name: str,
+    slot_key: str,
+    dry_video_rel: str,
+    playback_artifacts: dict,
+    stitch_store=None,
+) -> None:
+    """Shared terminal gate for Beat Gen + Phase Send to Stitcher on event slots."""
+    from server_handlers.stitch_editor import (  # noqa: PLC0415
+        _event_stitch_state_store,
+        is_milestone_stitch_job_name,
+    )
+
+    if is_milestone_stitch_job_name(job_name):
+        return
+    store = stitch_store or _event_stitch_state_store(h)
+    assert_four_files_export_slot_applied(
+        h,
+        stitch_store=store,
+        job_name=job_name,
+        slot_key=slot_key,
+        dry_video_rel=dry_video_rel,
+        playback_artifacts=playback_artifacts or {},
+    )
+
+
+def _prepare_dry_concat_for_slot_bake(h, dry_video_path: Path, cache_dir: Path) -> Path:
+    """LD-284 normalize + speech loudnorm on the passthrough dry concat (once, not per-beat)."""
+    from server_handlers.speech_loudnorm import apply_speech_loudnorm_to_mp4  # noqa: PLC0415
+
+    dry_str = str(dry_video_path)
+    norm = h._stitch_normalize_slot(dry_str, cache_dir)
+    norm = h._stitch_ensure_audio(norm, cache_dir)
+    leveled, applied = apply_speech_loudnorm_to_mp4(norm, cache_dir=cache_dir, force=True)
+    if applied:
+        print(
+            f"[stitch] slot bake speech loudnorm ok ({dry_video_path.name})",
+            flush=True,
+        )
+    return leveled
 
 
 def bake_slot_playback_mp4(
@@ -216,10 +373,12 @@ def bake_slot_playback_mp4(
     if not dry_video_path.is_file():
         raise FileNotFoundError(f"dry export missing: {dry_video_path}")
 
+    cache_dir = h._stitch_cache_dir()
+    speech_src = _prepare_dry_concat_for_slot_bake(h, dry_video_path, cache_dir)
+
     if slot_has_playback_mix_layers(slot):
-        cache_dir = h._stitch_cache_dir()
         mixed = h._stitch_mix_slot_audio(
-            dry_video_path,
+            speech_src,
             slot,
             cache_dir,
             force_rebuild=True,
@@ -227,7 +386,10 @@ def bake_slot_playback_mp4(
         if mixed.resolve() != dest.resolve():
             shutil.copy2(mixed, dest)
     else:
-        shutil.copy2(dry_video_path, dest)
+        if speech_src.resolve() != dest.resolve():
+            shutil.copy2(speech_src, dest)
+        elif not dest.is_file():
+            shutil.copy2(speech_src, dest)
 
     # Timestamp heal is the final pass. Copy-remux after heal reintroduces ~23ms
     # video start_time vs audio@0 and lengthens audio past video (lipsync drift).
@@ -350,6 +512,15 @@ def bake_and_persist_slot_playback_mp4(
     result["video_path"] = playback_rel
     result["video_dur_ms"] = probed_ms
     result["export_full_media"] = STITCH_SLOT_EXPORT_FULL_MEDIA_V1
+    assert_four_files_export_slot_applied(
+        h,
+        stitch_store=stitch_store,
+        job_name=job_name,
+        slot_key=slot_key,
+        dry_video_rel=dry_video_rel,
+        playback_artifacts=result,
+    )
+    result["slot_apply"] = STITCH_EXPORT_FOUR_FILES_SLOT_APPLY_V1
     return playback_rel, probed_ms, result
 
 

@@ -1,6 +1,6 @@
 /**
- * FF-042 STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 — ambient + SFX layered on dry <video>.
- * Speech bytes come from the dry MP4 via MediaElementSource (not a rebaked mix).
+ * FF-042 STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 — SFX layered on dry <video>.
+ * Speech bytes come from the dry MP4; ambient bed uses StitchSlotAmbientBedAudio.
  */
 
 import { resolveServerMediaUrl } from '../utils/stitchSlotVideo';
@@ -17,6 +17,7 @@ export interface StitchClientMixSfxCue {
 }
 
 export interface StitchClientMixSlotInput {
+  ambient_bed?: string;
   ambient_bed_path?: string;
   ambient_volume?: number;
   video_dur_ms?: number;
@@ -39,6 +40,15 @@ type VideoSpeechChain = {
 
 const videoSpeechChains = new WeakMap<HTMLVideoElement, VideoSpeechChain>();
 
+const activeMixEngines = new Set<StitchSlotAudioMixEngine>();
+
+/** Stop every client preview SFX mix — used by Stop audio / tab change. */
+export function stopAllStitchClientMix(): void {
+  for (const engine of activeMixEngines) {
+    engine.emergencyStop();
+  }
+}
+
 function speechChainForVideo(video: HTMLVideoElement): VideoSpeechChain {
   const existing = videoSpeechChains.get(video);
   if (existing) return existing;
@@ -56,19 +66,11 @@ function speechChainForVideo(video: HTMLVideoElement): VideoSpeechChain {
 export class StitchSlotAudioMixEngine {
   private ctx: AudioContext | null = null;
 
-  private ambientSource: AudioBufferSourceNode | null = null;
-
-  private ambientGain: GainNode | null = null;
-
   private sfxSources: AudioBufferSourceNode[] = [];
 
   private video: HTMLVideoElement | null = null;
 
   private slotInput: StitchClientMixSlotInput | null = null;
-
-  private jobCtx: StitchClientMixJobContext | null = null;
-
-  private ambientBuffer: AudioBuffer | null = null;
 
   private sfxBufferCache = new Map<string, AudioBuffer>();
 
@@ -81,7 +83,6 @@ export class StitchSlotAudioMixEngine {
   };
 
   private onPause = () => {
-    this.stopAmbient();
     this.stopSfx();
   };
 
@@ -106,49 +107,60 @@ export class StitchSlotAudioMixEngine {
   async attach(
     video: HTMLVideoElement,
     slot: StitchClientMixSlotInput,
-    jobCtx: StitchClientMixJobContext,
+    _jobCtx: StitchClientMixJobContext,
   ): Promise<void> {
     this.detachLayers();
     this.video = video;
     this.slotInput = slot;
-    this.jobCtx = jobCtx;
     const chain = speechChainForVideo(video);
     this.ctx = chain.ctx;
     if (this.ctx.state === 'suspended') {
       await this.ctx.resume();
     }
-    await this.loadAmbient();
     this.bindVideoEvents();
+    activeMixEngines.add(this);
     if (!video.paused) {
       await this.handlePlay();
     }
   }
 
   async rebuildGeometry(slot: StitchClientMixSlotInput): Promise<void> {
-    if (!this.video || !this.ctx || !this.jobCtx) return;
+    if (!this.video || !this.ctx) return;
     this.slotInput = slot;
-    this.stopAmbient();
     this.stopSfx();
-    await this.loadAmbient();
     if (!this.video.paused) {
       await this.resyncFromVideo();
     }
   }
 
-  /** Stop ambient/SFX layers only — keep pooled video speech chain alive. */
+  /** Stop SFX layers only — keep pooled video speech chain alive. */
   detachLayers(): void {
     this.unbindVideoEvents();
-    this.stopAmbient();
     this.stopSfx();
-    this.ambientBuffer = null;
   }
 
   detach(): void {
+    activeMixEngines.delete(this);
     this.detachLayers();
     this.video = null;
     this.slotInput = null;
-    this.jobCtx = null;
     this.ctx = null;
+  }
+
+  /** Stop SFX + pause slot video without tearing down the speech chain. */
+  emergencyStop(): void {
+    this.stopSfx();
+    if (this.video) {
+      this.video.pause();
+      try {
+        this.video.currentTime = 0;
+      } catch {
+        /* ignore seek on unloaded media */
+      }
+    }
+    if (this.ctx?.state === 'running') {
+      void this.ctx.suspend();
+    }
   }
 
   private bindVideoEvents(): void {
@@ -180,56 +192,9 @@ export class StitchSlotAudioMixEngine {
 
   private async resyncFromVideo(): Promise<void> {
     if (!this.ctx || !this.video || this.video.paused) return;
-    this.stopAmbient();
     this.stopSfx();
     this.lastScheduledVideoT = this.video.currentTime;
-    this.startAmbientLoop();
     await this.scheduleSfxFromCurrentTime();
-  }
-
-  private async loadAmbient(): Promise<void> {
-    this.ambientBuffer = null;
-    if (!this.slotInput || !this.jobCtx) return;
-    const bed = (this.slotInput.ambient_bed_path ?? '').trim();
-    if (!bed) return;
-    const url = `/api/stitch_editor/slot_ambient_loop?job_name=${encodeURIComponent(
-      this.jobCtx.jobName,
-    )}&slot_key=${encodeURIComponent(this.jobCtx.slotKey)}`;
-    const res = await fetch(resolveServerMediaUrl(url));
-    if (!res.ok) return;
-    const buf = await res.arrayBuffer();
-    if (!this.ctx) return;
-    this.ambientBuffer = await this.ctx.decodeAudioData(buf.slice(0));
-  }
-
-  private startAmbientLoop(): void {
-    if (!this.ctx || !this.ambientBuffer || !this.video) return;
-    this.ambientGain = this.ctx.createGain();
-    this.ambientGain.gain.value = 1;
-    this.ambientSource = this.ctx.createBufferSource();
-    this.ambientSource.buffer = this.ambientBuffer;
-    this.ambientSource.loop = true;
-    const offsetInLoop = this.video.currentTime % this.ambientBuffer.duration;
-    this.ambientSource.connect(this.ambientGain);
-    this.ambientGain.connect(this.ctx.destination);
-    const when = this.ctx.currentTime;
-    this.ambientSource.start(when, offsetInLoop);
-  }
-
-  private stopAmbient(): void {
-    if (this.ambientSource) {
-      try {
-        this.ambientSource.stop();
-      } catch {
-        /* already stopped */
-      }
-      this.ambientSource.disconnect();
-      this.ambientSource = null;
-    }
-    if (this.ambientGain) {
-      this.ambientGain.disconnect();
-      this.ambientGain = null;
-    }
   }
 
   private async scheduleSfxFromCurrentTime(): Promise<void> {

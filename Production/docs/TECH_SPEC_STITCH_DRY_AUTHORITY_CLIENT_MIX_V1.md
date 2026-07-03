@@ -50,24 +50,22 @@
 
 ```
 [Beat Gen Send to Stitcher]
-  concat → dry MP4
+  per beat: resolve approved MP4 (same path as BG preview — delivery or trim bake)
+  concat → one dry slot MP4 (intro_kling_o3_*.mp4)
   upsert: video_path = dry, playback_recipe_version = STITCH_DRY_AUTHORITY_CLIENT_MIX_V1
-  NO bake_slot_playback_mp4
+  NO per-beat loudnorm · NO per-beat normalize · NO ambient · NO bake_slot_playback_mp4
 
 [Stitcher review]
   <video src="/files?path={video_path}">   ← dry bytes (video + speech)
-  StitchSlotAudioMixEngine:
-    MediaElementSource(video) → speech → destination
-    fetch W9 ambient loop → BufferSource(loop) → gain(ambient_volume) → destination
-    per sfx_cue: fetch source → BufferSource @ offset_ms → destination
-  sync: play / pause / seeked → reschedule
+  StitchSlotAudioMixEngine + W9 ambient loop:
+    speech from <video> element
+    ambient bed @ 0.15 via slot_ambient_loop (preview only — not baked into video_path)
+    SFX cues via Web Audio (preview only)
+  stitch_save_job: persist geometry only — NO server ffmpeg rebake
 
-[stitch_save_job]
-  persist sfx_cues / ambient_bed / volume only
-  client engine rebuild — NO server slot mux
-
-[Bake Final]
+[Bake Final]  ← normalize · loudnorm · ambient · SFX · transitions happen HERE
   per slot: normalize → loudnorm → _stitch_mix_slot_audio(dry) → concat + transitions
+  → kid module MP4
 ```
 
 ---

@@ -135,6 +135,34 @@ export function hydrateAllSlotMediaFromJob(
       continue;
     }
 
+    if (stitchSlotUsesDryAuthorityClientMix(slot)) {
+      purgeStitchSlotPlaybackCache(sessionKey, slotKey);
+      const flatUrl = resolveDrySlotSourceVideoUrl(slot.video_path);
+      if (flatUrl) {
+        previewUrls[slotKey] = flatUrl;
+        commitMuxSession(sessionKey, slotKey, {
+          previewUrl: flatUrl,
+          videoPath: slot.video_path,
+          audioSig: stitchSlotLiveGeometrySig({
+            ...slot,
+            sfx_cues: slot.sfx_cues ?? [],
+          }),
+        });
+      }
+      if (slot.waveform_peaks_hash && slot._waveform_peaks_url) {
+        void fetchPeaksIntoSession(
+          sessionKey,
+          slotKey,
+          slot._waveform_peaks_url,
+          slot.video_path,
+          slot.waveform_peaks_duration_s,
+        );
+      } else {
+        slotsNeedingPeaks.push(slotKey);
+      }
+      continue;
+    }
+
     if (!stitchSlotBgO3ExportLineageMatches(slot)) {
       purgeStitchSlotPlaybackCache(sessionKey, slotKey);
       slotsNeedingMux.push(slotKey);

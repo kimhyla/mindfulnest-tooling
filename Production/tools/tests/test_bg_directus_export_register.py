@@ -54,7 +54,6 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
             "assert_stitch_export_cumulative_av_aligned": staticmethod(lambda _c: None),
             "assert_stitch_export_assembled_av_drift": staticmethod(lambda _p: None),
             "export_clip_timeline_duration_s": staticmethod(lambda _p: 2.0),
-            "normalize_for_concat": staticmethod(_norm),
         })(),
     )
     monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_reencode", lambda c, d, **k: d.write_bytes(b"x"))
@@ -83,8 +82,9 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
     )
     assert len(resolved) == 2
     assert all(p.is_file() for p in resolved)
-    assert resolved[0].name.endswith("_norm_concat.mp4")
-    assert resolved[1].name.endswith("_norm_concat.mp4")
+    # KLING_O3_EXPORT_BG_PASSTHROUGH_V1 — aligned clips feed concat directly (BG parity).
+    assert resolved[0].resolve() == clip_a.resolve()
+    assert resolved[1].resolve() == clip_b.resolve()
 
     out_path, _, _ = bg.concat_kling_o3_approved_beats(
         beats, event_dir, "intro", phase="pre", event_id="2",

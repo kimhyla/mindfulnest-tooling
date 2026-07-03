@@ -4353,6 +4353,11 @@ _last_api_restart_at: float = 0.0
 _API_RESTART_MIN_INTERVAL_S = 30.0
 
 
+def restart_in_progress() -> bool:
+    """True while a server restart thread holds the restart lock."""
+    return _restart_lock.locked()
+
+
 def perform_server_restart(server, app, reason: str = "api") -> None:
     """Cleanly shut down the HTTP server and re-exec or exit for launchd respawn.
 

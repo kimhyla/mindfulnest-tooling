@@ -18,11 +18,13 @@ def test_speech_loudnorm_module_exports_recipe() -> None:
     assert "-c:v copy" in src
 
 
-def test_layer_a_hook_in_beat_export() -> None:
+def test_layer_a_not_on_send_to_stitcher_export() -> None:
+    """FF-042 — per-beat loudnorm is Bake Final only; Send to Stitcher passthrough."""
     src = _read("beat_generator.py")
-    assert "apply_speech_loudnorm_export_beat_clip" in src
     block = src.split("def resolve_segment_stitch_export_clip_paths", 1)[1].split("\ndef ", 1)[0]
-    assert "apply_speech_loudnorm_export_beat_clip" in block
+    assert "KLING_O3_EXPORT_BG_PASSTHROUGH_V1" in block
+    assert "apply_speech_loudnorm_export_beat_clip" not in block
+    assert "normalize_for_concat" not in block
 
 
 def test_layer_b_hook_pre_mix_not_post() -> None:

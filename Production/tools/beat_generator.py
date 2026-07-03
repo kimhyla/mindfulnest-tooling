@@ -14533,20 +14533,13 @@ def resolve_segment_stitch_export_clip_paths(
                 scratch_dir,
                 event_id=event_id,
             )
-            from server_handlers.speech_loudnorm import apply_speech_loudnorm_export_beat_clip  # noqa: PLC0415
-
-            loudnorm_clip = apply_speech_loudnorm_export_beat_clip(
-                raw_clip,
-                beat_id=str(beat.get("beat_id") or f"beat_{i}"),
-                scratch_dir=scratch_dir,
-            )
             from o3_gallery_option_identity import assert_beat_export_audio_contract  # noqa: PLC0415
 
-            assert_beat_export_audio_contract(beat, loudnorm_clip)
-            fs = _ffmpeg_stitch_module()
-            norm_out = scratch_dir / f"{beat.get('beat_id') or i}_norm_concat.mp4"
-            fs.normalize_for_concat(loudnorm_clip, norm_out)
-            clip_paths.append(norm_out)
+            assert_beat_export_audio_contract(beat, raw_clip)
+            # FF-042 / KLING_O3_EXPORT_BG_PASSTHROUGH_V1 — Send to Stitcher concat uses the
+            # same per-beat MP4 authority as Beat Gen preview (approved delivery or trim
+            # bake). No per-beat loudnorm, normalize, or ambient — those run at Bake Final.
+            clip_paths.append(raw_clip.resolve())
             still_insert_flags.append(beat_is_still_insert(beat))
     return clip_paths, still_insert_flags, scratch_dir
 
@@ -14590,7 +14583,11 @@ def concat_kling_o3_approved_beats(
         progress_cb=progress_cb,
     )
     fs = _ffmpeg_stitch_module()
-    fs.assert_stitch_export_clips_av_aligned(clip_paths)
+    # FF-042 passthrough — BG-approved clips may carry ~33ms Kling A/V offset; concat aligns.
+    fs.assert_stitch_export_clips_av_aligned(
+        clip_paths,
+        max_drift_s=fs.STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S,
+    )
     fs.assert_stitch_export_cumulative_av_aligned(clip_paths)
     ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     out_path = out_dir / f"{slot_key}_kling_o3_{ts}.mp4"

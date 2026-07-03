@@ -57,6 +57,7 @@ import { useBgO3TrimNumericDraft } from '../hooks/useBgO3TrimNumericDraft';
 import { useBgO3CutSession } from '../hooks/useBgO3CutSession';
 import { writePersistedTrackSlot, isStitchUiSlotKey } from '../utils/stitchTrackFocus';
 import { stitchJobSessionKey } from '../state/producerSessionKeys';
+import { ensureStitchJobSession } from '../state/stitchJobSessionStore';
 import { stitcherRefreshTick } from '../state/refreshSignals';
 import {
   BeatMagicButtons,
@@ -2784,21 +2785,28 @@ export function BgTab() {
         return;
       }
       const slot = slotKey ?? stitchSlotForSegment;
-      if (isStitchUiSlotKey(slot)) {
-        const stitchSessionKey = stitchJobSessionKey(
-          scopeEventId,
-          activeProjectType.value,
-          activeMilestoneId.value,
-        );
-        writePersistedTrackSlot(stitchSessionKey, slot);
-        notifyStitchSlotExportApplied(scopeEventId, slot);
-      }
-      stitcherRefreshTick.value += 1;
-      pushToast({
-        kind: 'success',
-        message: `Sent to Stitcher → ${slot} slot (canonical tail + intro fades when applicable)`,
-        source: 'bg-kling-export',
-      });
+      void (async () => {
+        await ensureStitchJobSession(scopeEventId, {
+          force: true,
+          projectType: activeProjectType.value,
+          milestoneId: activeMilestoneId.value,
+        });
+        if (isStitchUiSlotKey(slot)) {
+          const stitchSessionKey = stitchJobSessionKey(
+            scopeEventId,
+            activeProjectType.value,
+            activeMilestoneId.value,
+          );
+          writePersistedTrackSlot(stitchSessionKey, slot);
+          notifyStitchSlotExportApplied(scopeEventId, slot);
+        }
+        stitcherRefreshTick.value += 1;
+        pushToast({
+          kind: 'success',
+          message: `Sent to Stitcher → ${slot} slot (canonical tail + intro fades when applicable)`,
+          source: 'bg-kling-export',
+        });
+      })();
       return;
     }
 
@@ -2880,9 +2888,13 @@ export function BgTab() {
         },
       );
       if (!result.ok) {
+        const hint = result.hint?.trim();
+        const detail = result.error_message ?? result.error ?? 'unknown error';
         pushToast({
           kind: 'error',
-          message: `Send to Stitcher failed: ${result.error ?? 'unknown error'}`,
+          message: hint
+            ? `Send to Stitcher failed: ${hint}`
+            : `Send to Stitcher failed: ${detail}`,
           source: 'bg-kling-export-error',
         });
         setStitcherExportStatus('idle');
@@ -2893,7 +2905,9 @@ export function BgTab() {
       if (!jobId) {
         pushToast({
           kind: 'error',
-          message: 'Send to Stitcher failed: server returned no job_id',
+          message:
+            'Send to Stitcher failed: server returned no job_id '
+            + '(export was not queued — server may have been restarting)',
           source: 'bg-kling-export-error',
         });
         setStitcherExportStatus('idle');

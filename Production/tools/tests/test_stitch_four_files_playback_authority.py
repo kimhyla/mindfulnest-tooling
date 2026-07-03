@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -60,16 +60,22 @@ def test_bake_slot_playback_mp4_copy_when_no_mix_layers(tmp_path: Path) -> None:
     _make_dry_mp4(dry)
     h = MagicMock()
     h._ffprobe_duration_ms.return_value = 1000
-    dur_s = bake_slot_playback_mp4(h, {}, dry_video_path=dry, dest=dest)
+    with patch(
+        "server_handlers.stitch_slot_playback._prepare_dry_concat_for_slot_bake",
+        return_value=dry,
+    ):
+        dur_s = bake_slot_playback_mp4(h, {}, dry_video_path=dry, dest=dest)
     assert dest.is_file()
     assert dur_s == pytest.approx(1.0, abs=0.05)
 
 
-def test_stitch_upsert_event_slot_uses_dry_authority_branch() -> None:
+def test_stitch_upsert_event_slot_uses_four_files_bake_branch() -> None:
     src = Path(__file__).resolve().parents[1] / "server_handlers" / "stitch_editor.py"
     text = src.read_text(encoding="utf-8")
-    assert "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1" in text
-    assert "persist_dry_authority_slot_export" in text
+    block = text.split("def stitch_upsert_event_slot", 1)[1].split("\ndef ", 1)[0]
+    assert "STITCH_FOUR_FILES_V1" in block
+    assert "bake_and_persist_slot_playback_mp4" in block
+    assert "persist_dry_authority_slot_export" not in block
 
 
 def test_module_bake_passthrough_branch() -> None:
