@@ -218,7 +218,7 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         server_read="resolve_slot_playback_path",
         server_write="persist_dry_authority_slot_export",
         client_module="storyboard-v2/src/audio/StitchSlotAudioMixEngine.ts",
-        client_read="StitchSlotAudioMixEngine.attach",
+        client_read="async attach(",
         spec_doc="Production/docs/TECH_SPEC_STITCH_DRY_AUTHORITY_CLIENT_MIX_V1.md",
     ),
     AuthorityConcept(
