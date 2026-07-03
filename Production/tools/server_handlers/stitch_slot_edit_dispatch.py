@@ -77,6 +77,10 @@ def ambient_artifact_fresh(h, slot: dict) -> bool:
 
 def slot_needs_ambient_rebuild(h, prev: dict, nxt: dict) -> bool:
     """Ambient tier rebuild required (drift or missing/stale artifact)."""
+    from server_handlers.stitch_slot_playback import slot_skips_legacy_playback_artifact_tiers  # noqa: PLC0415
+
+    if slot_skips_legacy_playback_artifact_tiers(nxt):
+        return False
     if not (nxt.get("video_path") or "").strip():
         return False
     if not (nxt.get("ambient_bed") or "").strip():

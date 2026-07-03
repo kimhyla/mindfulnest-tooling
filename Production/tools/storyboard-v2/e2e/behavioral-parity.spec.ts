@@ -450,6 +450,9 @@ test.describe('parity / bg', () => {
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
     await expect(page.locator('[data-testid="bg-toolbar"]')).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator('[data-testid="bg-beat-list"], [data-testid="bg-empty"]'),
+    ).toBeVisible({ timeout: 15000 });
     const beatList = page.locator('[data-testid="bg-beat-list"]');
     if (await beatList.count()) {
       await expect(page.locator('[data-testid^="bg-pipeline-still-"]').first()).toBeVisible();
@@ -464,6 +467,9 @@ test.describe('parity / bg', () => {
     await gotoApp(page);
     await page.click('[data-testid="tab-bg"]');
     await expect(page.locator('[data-testid="bg-toolbar"]')).toBeVisible({ timeout: 15000 });
+    await expect(
+      page.locator('[data-testid="bg-beat-list"], [data-testid="bg-empty"]'),
+    ).toBeVisible({ timeout: 15000 });
     const insertRow = page.locator('[data-testid^="bg-insert-after-btn-"]').first();
     if (await insertRow.count()) {
       await expect(insertRow).toBeVisible();

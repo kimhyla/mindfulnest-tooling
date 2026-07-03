@@ -126,7 +126,7 @@ def test_kling_export_audio_join_uses_pcm_micro_fade() -> None:
 
     src = Path(bg.__file__).read_text(encoding="utf-8")
     assert KLING_EXPORT_AUDIO_JOIN_V1 in src
-    assert KLING_EXPORT_AUDIO_JOIN_FADE_MS >= 20
+    assert KLING_EXPORT_AUDIO_JOIN_FADE_MS >= 80
     lane = src.split("def _kling_export_audio_lane_filter", 1)[1].split("\ndef ", 1)[0]
     assert "sample_fmts=s16" in lane
     assert "afade=t=in" in lane

@@ -264,6 +264,17 @@ def _build_mux_for_slot(h, *, stitch_job_name: str, slot_key: str) -> dict[str, 
     slot = ((state.get("jobs") or {}).get(stitch_job_name) or {}).get("slots", {}).get(slot_key)
     if not isinstance(slot, dict):
         raise RuntimeError(f"slot {slot_key!r} missing for mux build")
+    from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
+        STITCH_FOUR_FILES_LEGACY_PURGE_V1,
+        slot_skips_legacy_playback_artifact_tiers,
+    )
+
+    if slot_skips_legacy_playback_artifact_tiers(slot):
+        return {
+            "ok": True,
+            "skipped": True,
+            "code": STITCH_FOUR_FILES_LEGACY_PURGE_V1,
+        }
     mix_sig = compute_stitch_mix_sig_from_slot(h, slot)
     hash_id, dur_ms = build_stitch_slot_mux_preview_file(h, slot)
     video_path = (slot.get("video_path") or "").strip()
@@ -480,6 +491,10 @@ def plan_playback_ladder_warm(
     state = stitch_store.read_state() or {}
     slot = ((state.get("jobs") or {}).get(stitch_job_name) or {}).get("slots", {}).get(slot_key)
     if not isinstance(slot, dict):
+        return [], []
+    from server_handlers.stitch_slot_playback import slot_skips_legacy_playback_artifact_tiers  # noqa: PLC0415
+
+    if slot_skips_legacy_playback_artifact_tiers(slot):
         return [], []
     prev: dict = {}
     ambient_keys: list[str] = []

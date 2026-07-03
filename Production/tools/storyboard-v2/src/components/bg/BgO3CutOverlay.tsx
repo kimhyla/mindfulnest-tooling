@@ -8,7 +8,7 @@ import { shouldPreserveBgO3CutDraft } from '../../utils/bgO3CutSession.ts';
 
 const MIN_KEEP_S = 0.25;
 
-/** Overlay timeline: match what the operator sees in the video element. */
+/** ffprobe ∪ video element — used for export/persist gates (never shorter than operator view). */
 export function resolveO3PlaybackDurationS(
   sourceDurationS: number | null | undefined,
   loadedDurationS: number | null | undefined,
@@ -16,6 +16,17 @@ export function resolveO3PlaybackDurationS(
   const src = sourceDurationS != null && sourceDurationS > 0 ? sourceDurationS : 0;
   const loaded = loadedDurationS != null && loadedDurationS > 0 ? loadedDurationS : 0;
   return Math.max(src, loaded);
+}
+
+/** Overlay drag timeline: prefer loaded video metadata (what the operator sees). */
+export function resolveO3OverlayDurationS(
+  sourceDurationS: number | null | undefined,
+  loadedDurationS: number | null | undefined,
+): number {
+  const loaded = loadedDurationS != null && loadedDurationS > 0 ? loadedDurationS : 0;
+  if (loaded > 0) return loaded;
+  const src = sourceDurationS != null && sourceDurationS > 0 ? sourceDurationS : 0;
+  return src;
 }
 
 /** Export/persist timeline: server ffprobe, never shorter than what the operator sees. */
@@ -26,6 +37,20 @@ export function resolveO3ExportDurationS(
   const src = sourceDurationS != null && sourceDurationS > 0 ? sourceDurationS : 0;
   const playback = playbackDurationS > 0 ? playbackDurationS : 0;
   return Math.max(src, playback);
+}
+
+/**
+ * Duration for trim_start + trim_back math — must match server `_o3_trim_authority_path`.
+ * Prefer the loaded overlay timeline (handle drags); fall back to export ffprobe.
+ */
+export function resolveO3TrimAuthorityDurationS(
+  overlayTimelineDurationS: number,
+  exportDurationS: number,
+  playbackDurationS: number,
+): number {
+  if (overlayTimelineDurationS > 0) return overlayTimelineDurationS;
+  if (exportDurationS > 0) return exportDurationS;
+  return playbackDurationS > 0 ? playbackDurationS : 0;
 }
 
 /** Clamp keep handles into [0, duration] with ≥ minKeepS kept (fixes stale keepEnd > duration). */
@@ -45,9 +70,14 @@ export function normalizeO3KeepWindow(
   const endCap = Math.min(endHint, durationS);
   const startS = Math.max(0, Math.min(keepStartS, endCap - minKeepS));
   const endS = Math.max(startS + minKeepS, Math.min(endCap, durationS));
+  const startRounded = Math.round(startS * 100) / 100;
+  const endRounded = Math.round(endS * 100) / 100;
+  // Post-round clamp: centisecond round must not push end past ffprobe duration (e.g. 8.125 → 8.13).
+  const endClamped = Math.min(endRounded, durationS);
+  const startClamped = Math.max(0, Math.min(startRounded, endClamped - minKeepS));
   return {
-    startS: Math.round(startS * 100) / 100,
-    endS: Math.round(endS * 100) / 100,
+    startS: startClamped,
+    endS: endClamped,
   };
 }
 
@@ -114,6 +144,8 @@ export function BgO3CutOverlay({
 }: BgO3CutOverlayProps) {
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [draft, setDraft] = useState<{ startS: number; endS: number } | null>(null);
+  const timelineRef = useRef({ durationS, keepStartS, keepEndS, draft: null as { startS: number; endS: number } | null });
+  timelineRef.current = { durationS, keepStartS, keepEndS, draft };
 
   useEffect(() => {
     if (shouldPreserveBgO3CutDraft(beatId, optionIndex, draft !== null)) return;
@@ -122,6 +154,13 @@ export function BgO3CutOverlay({
 
   const normalizedKeep = normalizeO3KeepWindow(durationS, keepStartS, keepEndS);
   const display = draft ?? normalizedKeep;
+
+  const resolveKeepAtCommit = () => {
+    const live = timelineRef.current;
+    const liveDraft = live.draft;
+    const liveNorm = normalizeO3KeepWindow(live.durationS, live.keepStartS, live.keepEndS);
+    return liveDraft ?? liveNorm;
+  };
   const hasKeep = display.endS > display.startS + MIN_KEEP_S - 0.001 && durationS > 0;
   const pct = (s: number) => (durationS > 0 ? (s / durationS) * 100 : 0);
   const keepLeft = pct(display.startS);
@@ -130,20 +169,19 @@ export function BgO3CutOverlay({
   const tailWidth = hasKeep ? Math.max(0, 100 - keepRight) : 0;
 
   const commitDraft = useCallback((startS: number, endS: number) => {
-    if (durationS <= 0) return;
-    const { startS: roundedStart, endS: roundedEnd } = normalizeO3KeepWindow(durationS, startS, endS);
-    if (!isValidO3KeepWindow(durationS, roundedStart, roundedEnd)) {
-      setDraft(null);
+    const dur = timelineRef.current.durationS;
+    if (dur <= MIN_KEEP_S * 2) {
       onKeepRejected?.(
-        durationS <= MIN_KEEP_S * 2
-          ? `Clip is only ${durationS.toFixed(1)}s — too short to trim`
-          : 'Trim window too small — drag handles farther apart (need ≥0.25s kept)',
+        dur <= 0
+          ? 'Loading clip duration — try again in a moment'
+          : `Clip is only ${dur.toFixed(1)}s — too short to trim`,
       );
       return;
     }
+    const { startS: roundedStart, endS: roundedEnd } = normalizeO3KeepWindow(dur, startS, endS);
     setDraft(null);
     onKeepDraftChange(roundedStart, roundedEnd);
-  }, [durationS, onKeepDraftChange, onKeepRejected]);
+  }, [onKeepDraftChange, onKeepRejected]);
 
   const onLeftHandlePointerDown = (e: PointerEvent) => {
     e.stopPropagation();
@@ -165,8 +203,14 @@ export function BgO3CutOverlay({
     };
 
     const onUp = (upEvt: PointerEvent) => {
-      const newStart = relXFromPointer(container, upEvt) * durationS;
-      commitDraft(Math.max(0, Math.min(endS - MIN_KEEP_S, newStart)), endS);
+      const live = timelineRef.current;
+      const atCommit = resolveKeepAtCommit();
+      const endSAtCommit = atCommit.endS > atCommit.startS + 0.001 ? atCommit.endS : live.durationS;
+      const newStart = relXFromPointer(container, upEvt) * live.durationS;
+      commitDraft(
+        Math.max(0, Math.min(endSAtCommit - MIN_KEEP_S, newStart)),
+        endSAtCommit,
+      );
       onDragEnd?.();
       handle.removeEventListener('pointermove', applyPreview);
       handle.removeEventListener('pointerup', onUp);
@@ -198,8 +242,14 @@ export function BgO3CutOverlay({
     };
 
     const onUp = (upEvt: PointerEvent) => {
-      const newEnd = relXFromPointer(container, upEvt) * durationS;
-      commitDraft(startS, Math.max(startS + MIN_KEEP_S, Math.min(durationS, newEnd)));
+      const live = timelineRef.current;
+      const atCommit = resolveKeepAtCommit();
+      const startSAtCommit = atCommit.startS;
+      const newEnd = relXFromPointer(container, upEvt) * live.durationS;
+      commitDraft(
+        startSAtCommit,
+        Math.max(startSAtCommit + MIN_KEEP_S, Math.min(live.durationS, newEnd)),
+      );
       onDragEnd?.();
       handle.removeEventListener('pointermove', applyPreview);
       handle.removeEventListener('pointerup', onUp);

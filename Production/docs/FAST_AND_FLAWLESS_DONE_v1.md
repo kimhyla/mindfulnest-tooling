@@ -36,6 +36,19 @@ Extends V2 with Phase G (RC11–RC14). No carve-outs.
 | FF-025 | Atomic stitch export artifact persist | `STITCH_EXPORT_ATOMIC_V1` in stitch_editor |
 | FF-026 | Ambient loop full-period tile | `STITCH_AMBIENT_FULL_PERIOD_TILE_V2` in stitch_ambient_loop |
 | FF-027 | Operator export truth closure meta | `verify_operator_export_truth_closure_durability.sh` |
+| FF-028 | O3 failed-redo sidecar heal (G1) | `verify_o3_failed_redo_heal_durability.sh` + `o3_failed_redo_restores_prior_clip.spec.ts` |
+| FF-029 | O3 subprocess lifecycle / restart (G2) | `verify_o3_subprocess_lifecycle_durability.sh` |
+| FF-030 | O3 job truth stack (G3) | `verify_o3_job_truth_durability.sh` + `o3_job_truth.py` |
+| FF-031 | Sidecar SQLite authority (G4) | `verify_beatgen_truth_stack_durability.sh` (extended) |
+| FF-032 | Scope / library root parity (G5) | `verify_event_library_scope_durability.sh` + `verify_per_event_library_durability.sh` |
+| FF-033 | Directus has_crop disk fallback (G6) | `verify_directus_has_crop_disk_fallback_durability.sh` |
+| FF-034 | Library client cache coherence (G7) | `verify_library_cache_coherence_durability.sh` |
+| FF-035 | Stitch export lineage authority (G8) | `verify_stitch_export_trim_authority_durability.sh` + `bg_o3_stitch_invalidation.py` |
+| FF-036 | Stitch four-files playback authority | `verify_stitch_four_files_durability.sh` + `stitch_slot_playback.py` |
+| FF-037 | Stitch intro export truth v1 (join fade / legacy purge) | `verify_stitch_export_truth_v1_durability.sh` |
+| FF-038 | Stitch intro export truth v2 (still-insert fade / ambient tile concat) | `verify_stitch_export_truth_v2_durability.sh` |
+| FF-039 | Ambient period junction crossfade (no extraneous bed restart) | `verify_stitch_ambient_period_junction_durability.sh` |
+| FF-040 | Lipsync export video A/V authority (norm + concat) | `verify_stitch_export_lipsync_video_authority_durability.sh` |
 
 ## Non-blocking (explicit)
 

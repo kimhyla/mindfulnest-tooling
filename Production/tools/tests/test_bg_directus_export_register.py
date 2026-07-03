@@ -50,14 +50,14 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
         bg,
         "_ffmpeg_stitch_module",
         lambda: type("FS", (), {
-            "assert_stitch_export_clips_av_aligned": staticmethod(lambda _c: None),
-            "assert_stitch_export_cumulative_av_aligned": staticmethod(lambda _c: None),
-            "assert_stitch_export_assembled_av_drift": staticmethod(lambda _p: None),
+            "assert_stitch_export_clips_av_aligned": staticmethod(lambda _c, **k: None),
+            "assert_stitch_export_cumulative_av_aligned": staticmethod(lambda _c, **k: None),
+            "assert_stitch_export_assembled_av_drift": staticmethod(lambda _p, **k: None),
             "export_clip_timeline_duration_s": staticmethod(lambda _p: 2.0),
-            "normalize_for_concat": staticmethod(_norm),
+            "STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S": 0.05,
         })(),
     )
-    monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_reencode", lambda c, d: d.write_bytes(b"x"))
+    monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_reencode", lambda c, d, **k: d.write_bytes(b"x"))
     monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_with_pair_fades", lambda *a, **k: a[1].write_bytes(b"x"))
     monkeypatch.setattr(bg, "_intro_export_pair_fades", lambda *a, **k: [])
     monkeypatch.setattr(bg, "_boundaries_for_pair_fade_concat", lambda b, c, f: [])
@@ -78,13 +78,14 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
             "kling_o3_status": "approved",
         },
     ]
-    resolved, _ = bg.resolve_segment_stitch_export_clip_paths(
+    resolved, _, _ = bg.resolve_segment_stitch_export_clip_paths(
         beats, event_dir, phase="pre", event_id="2",
     )
     assert len(resolved) == 2
     assert all(p.is_file() for p in resolved)
-    assert resolved[0].name.endswith("_norm_concat.mp4")
-    assert resolved[1].name.endswith("_norm_concat.mp4")
+    # KLING_O3_EXPORT_BG_PASSTHROUGH_V1 — aligned clips feed concat directly (BG parity).
+    assert resolved[0].resolve() == clip_a.resolve()
+    assert resolved[1].resolve() == clip_b.resolve()
 
     out_path, _, _ = bg.concat_kling_o3_approved_beats(
         beats, event_dir, "intro", phase="pre", event_id="2",

@@ -5,6 +5,7 @@ import {
   commitWaveformSession,
   getStitchSlotSession,
   purgeStitchSlotPlaybackCache,
+  stitchSlotSessionExpectedSig,
   type StitchSessionSlotKey,
 } from './stitchSlotSessionCache';
 import {
@@ -12,12 +13,15 @@ import {
   stitchSlotLiveGeometrySig,
   stitchSlotRequiresAmbientMix,
   stitchSlotRequiresMuxedPreview,
+  stitchSlotUsesDryAuthorityClientMix,
+  stitchSlotUsesFourFilesPlayback,
+  reconcileFourFilesSlotArtifacts,
   type StitchSlotMuxSigInput,
 } from './stitchSlotMuxAudioSig';
 import { stitchSlotSpeechPeaksSig } from './stitchSlotMuxAudioSig';
 import { resolveServerMediaUrl, resolveStitchSlotSourceVideoUrl } from './stitchSlotVideo';
-import { stitchSlotMuxPreviewLineageMatches, stitchSlotAmbientMixLineageMatches } from './stitchMuxVideoLineage';
-export { stitchSlotAmbientMixLineageMatches } from './stitchMuxVideoLineage';
+import { stitchSlotMuxPreviewLineageMatches, stitchSlotAmbientMixLineageMatches, stitchSlotBgO3ExportLineageMatches } from './stitchMuxVideoLineage';
+export { stitchSlotAmbientMixLineageMatches, stitchSlotBgO3ExportLineageMatches } from './stitchMuxVideoLineage';
 
 export const STITCH_SLOT_MEDIA_ARTIFACTS_V1 = 'STITCH_SLOT_MEDIA_ARTIFACTS_V1';
 export const STITCH_MUX_REBUILD_QUEUE_V1 = 'STITCH_MUX_REBUILD_QUEUE_V1';
@@ -28,6 +32,8 @@ export const STITCH_SFX_PLAYBACK_TRUTH_V1 = 'STITCH_SFX_PLAYBACK_TRUTH_V1';
 export const STITCH_MUX_INTERIM_DRY_VIDEO_V1 = 'STITCH_MUX_INTERIM_DRY_VIDEO_V1';
 /** STITCH_SLOT_TIMELINE_CLOCK_V1 — one duration for drop, cue markers, and mux offset. */
 export const STITCH_SLOT_TIMELINE_CLOCK_V1 = 'STITCH_SLOT_TIMELINE_CLOCK_V1';
+/** BG_O3_EXPORT_LINEAGE_HYDRATE_V1 — invalidate stitch preview when export authority changes. */
+export const BG_O3_EXPORT_LINEAGE_HYDRATE_V1 = 'BG_O3_EXPORT_LINEAGE_HYDRATE_V1';
 
 export interface StitchSlotMediaArtifactFields {
   video_path?: string;
@@ -51,6 +57,10 @@ export interface StitchSlotMediaArtifactFields {
   ambient_bed_path?: string;
   ambient_volume?: number;
   sfx_cues?: StitchSlotMuxSigInput['sfx_cues'];
+  bg_o3_export_lineage_sig?: string;
+  bg_o3_export_lineage_sig_expected?: string;
+  playback_recipe_version?: string;
+  dry_export_path?: string;
 }
 
 export interface HydratedJobMedia {
@@ -91,8 +101,73 @@ export function hydrateAllSlotMediaFromJob(
   const slotsNeedingAmbientMix: StitchSessionSlotKey[] = [];
 
   for (const slotKey of SLOT_KEYS) {
-    const slot = slots?.[slotKey];
+    const rawSlot = slots?.[slotKey];
+    const slot = (reconcileFourFilesSlotArtifacts(rawSlot) ?? rawSlot) as
+      | StitchSlotMediaArtifactFields
+      | undefined;
     if (!slot?.video_path) continue;
+
+    if (stitchSlotUsesFourFilesPlayback(slot)) {
+      purgeStitchSlotPlaybackCache(sessionKey, slotKey);
+      const flatUrl = resolveDrySlotSourceVideoUrl(slot.video_path);
+      if (flatUrl) {
+        previewUrls[slotKey] = flatUrl;
+        commitMuxSession(sessionKey, slotKey, {
+          previewUrl: flatUrl,
+          videoPath: slot.video_path,
+          audioSig: stitchSlotSessionExpectedSig({
+            ...slot,
+            sfx_cues: slot.sfx_cues ?? [],
+          }),
+        });
+      }
+      if (slot.waveform_peaks_hash && slot._waveform_peaks_url) {
+        void fetchPeaksIntoSession(
+          sessionKey,
+          slotKey,
+          slot._waveform_peaks_url,
+          slot.video_path,
+          slot.waveform_peaks_duration_s,
+        );
+      } else {
+        slotsNeedingPeaks.push(slotKey);
+      }
+      continue;
+    }
+
+    if (stitchSlotUsesDryAuthorityClientMix(slot)) {
+      purgeStitchSlotPlaybackCache(sessionKey, slotKey);
+      const flatUrl = resolveDrySlotSourceVideoUrl(slot.video_path);
+      if (flatUrl) {
+        previewUrls[slotKey] = flatUrl;
+        commitMuxSession(sessionKey, slotKey, {
+          previewUrl: flatUrl,
+          videoPath: slot.video_path,
+          audioSig: stitchSlotLiveGeometrySig({
+            ...slot,
+            sfx_cues: slot.sfx_cues ?? [],
+          }),
+        });
+      }
+      if (slot.waveform_peaks_hash && slot._waveform_peaks_url) {
+        void fetchPeaksIntoSession(
+          sessionKey,
+          slotKey,
+          slot._waveform_peaks_url,
+          slot.video_path,
+          slot.waveform_peaks_duration_s,
+        );
+      } else {
+        slotsNeedingPeaks.push(slotKey);
+      }
+      continue;
+    }
+
+    if (!stitchSlotBgO3ExportLineageMatches(slot)) {
+      purgeStitchSlotPlaybackCache(sessionKey, slotKey);
+      slotsNeedingMux.push(slotKey);
+      continue;
+    }
 
     const liveGeometrySig = stitchSlotLiveGeometrySig({
       ...slot,
@@ -246,6 +321,9 @@ export function resolvePersistedPlaybackFromArtifacts(
   slot: StitchSlotMediaArtifactFields | null | undefined,
 ): string | undefined {
   if (!slot?.video_path) return undefined;
+  if (stitchSlotUsesFourFilesPlayback(slot)) {
+    return resolveDrySlotSourceVideoUrl(slot.video_path);
+  }
   const sigSlot = { ...slot, sfx_cues: slot.sfx_cues ?? [] };
   if (stitchSlotRequiresMuxedPreview(sigSlot)) {
     return resolvePersistedMuxPreviewUrl(slot);
@@ -317,6 +395,22 @@ export function previewUrlMatchesPersistedAmbientMix(
 }
 
 /**
+ * Waveform peaks must track speech-only dry export under four-files — not ambient-mixed playback.
+ * STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1
+ */
+export function resolveSlotWaveformVideoPath(
+  slot: StitchSlotMediaArtifactFields | null | undefined,
+): string | undefined {
+  if (!slot?.video_path) return undefined;
+  const reconciled = reconcileFourFilesSlotArtifacts(slot) ?? slot;
+  if (stitchSlotUsesFourFilesPlayback(reconciled)) {
+    const dry = (reconciled.dry_export_path ?? '').trim();
+    if (dry) return dry;
+  }
+  return reconciled.video_path;
+}
+
+/**
  * Resolve composer playback URL without triggering remux — state, session cache,
  * then persisted server artifacts, then dry slot source (speech-only and ambient-only
  * slots without a baked mix yet).
@@ -328,6 +422,13 @@ export function resolveSlotPlaybackPreviewUrl(
   previewUrls: Partial<Record<StitchSessionSlotKey, string>>,
 ): string | undefined {
   if (!slot?.video_path) return undefined;
+
+  const reconciled = reconcileFourFilesSlotArtifacts(slot) ?? slot;
+
+  if (stitchSlotUsesFourFilesPlayback(reconciled) || stitchSlotUsesDryAuthorityClientMix(reconciled)) {
+    return resolveDrySlotSourceVideoUrl(reconciled.video_path);
+  }
+
   const sigSlot = { ...slot, sfx_cues: slot.sfx_cues ?? [] };
   const requiresMux = stitchSlotRequiresMuxedPreview(sigSlot);
   const requiresAmbient = stitchSlotRequiresAmbientMix(sigSlot);

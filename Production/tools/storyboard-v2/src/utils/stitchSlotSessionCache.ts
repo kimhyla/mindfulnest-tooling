@@ -10,6 +10,8 @@ import {
   stitchSlotMuxAudioSig,
   stitchSlotRequiresAmbientMix,
   stitchSlotRequiresMuxedPreview,
+  stitchSlotUsesFourFilesPlayback,
+  stitchSlotUsesDryAuthorityClientMix,
   stitchSlotSpeechPeaksSig,
   type StitchSlotMuxSigInput,
 } from './stitchSlotMuxAudioSig';
@@ -30,6 +32,7 @@ export interface CachedStitcherPreviewLs {
   video_path: string;
   preview_url: string;
   audio_sig?: string;
+  playback_recipe_version?: string;
 }
 
 export type StitchSessionSlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution' | 'standalone';
@@ -190,13 +193,21 @@ export function commitWaveformSession(
 export function readCachedStitcherPreviewLs(
   sessionKey: string,
   slot: StitchSessionSlotKey,
+  slotData?: { playback_recipe_version?: string } | null,
 ): CachedStitcherPreviewLs | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(`${STITCHER_PREVIEW_LS_PREFIX}:${sessionKey}:${slot}`);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CachedStitcherPreviewLs;
-    if (parsed?.video_path && parsed?.preview_url) return parsed;
+    if (parsed?.video_path && parsed?.preview_url) {
+      const slotRecipe = (slotData?.playback_recipe_version ?? '').trim();
+      const cachedRecipe = (parsed.playback_recipe_version ?? '').trim();
+      if (slotRecipe && cachedRecipe && slotRecipe !== cachedRecipe) {
+        return null;
+      }
+      return parsed;
+    }
   } catch {
     // ignore corrupt cache
   }
@@ -260,13 +271,16 @@ export function hydrateMuxFromLocalStorage(
     const slotData = slots[slot];
     const videoPath = (slotData?.video_path ?? '').trim();
     if (!videoPath) continue;
+    if (stitchSlotUsesFourFilesPlayback(slotData) || stitchSlotUsesDryAuthorityClientMix(slotData)) {
+      continue;
+    }
     // Ambient/SFX previews must come from server artifacts — never dry LS alone.
     if (
       stitchSlotRequiresMuxedPreview(slotData)
       || stitchSlotRequiresAmbientMix(slotData)
     ) continue;
     const audioSig = stitchSlotMuxAudioSig(slotData);
-    const cached = readCachedStitcherPreviewLs(sessionKey, slot);
+    const cached = readCachedStitcherPreviewLs(sessionKey, slot, slotData);
     if (
       cached?.video_path === videoPath
       && (cached.audio_sig ?? '') === audioSig

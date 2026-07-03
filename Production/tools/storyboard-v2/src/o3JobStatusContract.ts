@@ -125,8 +125,7 @@ export function activeO3PollJobsFromBeats(
   const merged = collectActiveO3JobsFromBeats(beats);
   for (const [beatId, jobId] of Object.entries(submitPollLatch)) {
     if (merged[beatId] || !jobId) continue;
-    const beat = beats.find((b) => (b.beat_id ?? '').trim() === beatId);
-    if (beat && o3BeatTerminallyIdleForSubmitLatch(beat)) continue;
+    // Honor latch through approved-beat redos until poll terminal or server handoff prunes it.
     merged[beatId] = jobId;
   }
   return merged;
@@ -156,9 +155,6 @@ export function pruneSubmitPollLatch(
     const beatId = (beat.beat_id ?? '').trim();
     if (!beatId) continue;
     if (collectActiveO3JobsFromBeats([beat])[beatId]) {
-      delete next[beatId];
-    }
-    if (o3BeatTerminallyIdleForSubmitLatch(beat)) {
       delete next[beatId];
     }
   }

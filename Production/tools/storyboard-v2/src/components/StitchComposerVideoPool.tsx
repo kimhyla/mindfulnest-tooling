@@ -92,7 +92,7 @@ export function StitchComposerVideoPool({
         const isActive = slot === activeSlot;
         return (
           <video
-            key={slot}
+            key={`${slot}:${url}`}
             ref={(el) => {
               videoRefs.current[slot] = el;
             }}

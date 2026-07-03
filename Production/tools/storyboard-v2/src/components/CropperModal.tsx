@@ -18,6 +18,7 @@ import { Spinner } from './ui/Spinner';
 import { pushToast } from './ui/Toast';
 import { CropperCanvas, type CropperCanvasHandle } from './CropperCanvas';
 import { flattenLibraryResponse, libraryThumbSrc } from './LibraryPanel';
+import { cropSavedEventDetail, type LibraryCropSavedDetail } from '../utils/libraryCropSave';
 
 export interface CropperModalState {
   open: boolean;
@@ -48,14 +49,19 @@ export interface CropperModalProps {
    * server response (key, filename, etc.). Lets parents (Beat Generator,
    * Storyboard) attach the crop to the right slot.
    */
-  onSaved?: (result: { key: string; filename: string }) => void;
+  onSaved?: (result: LibraryCropSavedDetail) => void;
 }
 
 interface SaveResult {
+  ok?: boolean;
   key?: string;
   filename?: string;
+  display_name?: string;
   thumb_b64?: string;
   gallery_b64?: string;
+  library_item?: Record<string, unknown>;
+  parent_library_key?: string;
+  [key: string]: unknown;
 }
 
 // ----------------------------------------------------------------
@@ -132,16 +138,14 @@ export function CropperModal({ state, onClose, onSaved }: CropperModalProps) {
       source_key: state.value.source ?? '',
     });
     if (result.ok) {
-      const data = result.data ?? {};
+      const data = (result.data ?? {}) as SaveResult;
+      const saved = cropSavedEventDetail(data as Record<string, unknown>);
       pushToast({
         kind: 'success',
-        message: `Crop saved: ${data.filename ?? data.key ?? 'unnamed'}`,
+        message: `Crop saved: ${saved.item.display_name ?? data.filename ?? data.key ?? 'unnamed'}`,
         source: 'cropper-save',
       });
-      onSaved?.({
-        key: String(data.key ?? ''),
-        filename: String(data.filename ?? ''),
-      });
+      onSaved?.(saved);
       close();
     } else {
       setSaveStatus('error');

@@ -96,9 +96,25 @@ def clear_o3_pointer_if_terminal(beat: dict, event_dir: Path | None) -> bool:
             fail_msg = str((terminal.get("failure") or {}).get("message") or "")
             if fail_msg:
                 beat["kling_o3_voice_fix_error"] = fail_msg
-            from o3_generation_intent import heal_o3_beat_after_aborted_attempt
+            from o3_generation_intent import (
+                heal_o3_beat_after_aborted_attempt,
+                restore_last_good_o3_delivery_after_failed_attempt,
+            )
 
-            if not heal_o3_beat_after_aborted_attempt(beat):
+            intent_gen = None
+            intent = (terminal or {}).get("intent") or {}
+            if isinstance(intent, dict):
+                slot = intent.get("generation_slot") or intent.get("generation")
+                if slot and str(slot).startswith("g"):
+                    try:
+                        intent_gen = int(str(slot)[1:])
+                    except ValueError:
+                        intent_gen = None
+            if not restore_last_good_o3_delivery_after_failed_attempt(
+                beat,
+                ev,
+                failed_generation=intent_gen,
+            ) and not heal_o3_beat_after_aborted_attempt(beat, ev):
                 video = str(beat.get("kling_o3_video_path") or "")
                 if video and Path(video).is_file():
                     from kling_stitch_readiness import align_beat_active_delivery_clip  # noqa: PLC0415

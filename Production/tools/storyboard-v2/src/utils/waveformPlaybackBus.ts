@@ -1,4 +1,5 @@
 import { isStitchComposerPlaybackOwner } from './stitchConstants';
+import { stopAllStitchClientMix } from '../audio/StitchSlotAudioMixEngine';
 
 /** Coordinates Phase A/B waveform players (only one should play at a time).
  *  PHASE_WAVEFORM_PLAY + PHASE_PRODUCER_AB — keep-alive mounts both panes. */
@@ -36,6 +37,7 @@ export function pauseAllPhasePlayback(): void {
 /** WaveSurfer + preview media app-wide; resets playhead (tab / Stop audio). */
 export function stopAllPhasePlayback(): void {
   pauseAllWaveformPlayback();
+  stopAllStitchClientMix();
   pauseAppMediaElements(true);
 }
 
@@ -49,7 +51,7 @@ function pauseAppMediaElements(resetTime: boolean): void {
     )
     .forEach((el) => {
       if (!(el instanceof HTMLMediaElement)) return;
-      if (isStitchComposerPlaybackOwner(el)) return;
+      if (!resetTime && isStitchComposerPlaybackOwner(el)) return;
       el.pause();
       if (!resetTime) return;
       try {

@@ -38,7 +38,17 @@ PHASE_COUNT="$(curl -sf "${BASE}/api/phase/watercolor_list" | python3 -c "import
 [[ "${WC_ROWS}" == "${PHASE_COUNT}" ]] || fail "catalog mismatch cr=${WC_ROWS} phase=${PHASE_COUNT}"
 
 LIB_PANEL="$TOOLING/Production/tools/storyboard-v2/src/components/LibraryPanel.tsx"
-grep -q 'mn.library.items.v4' "$LIB_PANEL" || fail "LibraryPanel cache key must be v4"
+LIB_CACHE="$TOOLING/Production/tools/storyboard-v2/src/utils/libraryCachePolicy.ts"
+grep -q 'LIBRARY_CLIENT_CACHE_COHERENCE_V1' "$LIB_CACHE" \
+  || fail "missing libraryCachePolicy authority module (G7)"
+grep -q 'mn.library.items.v4' "$LIB_CACHE" \
+  || fail "library cache session key must be v4 in libraryCachePolicy.ts"
+grep -q 'libraryItemsStorageKey' "$LIB_PANEL" \
+  || fail "LibraryPanel must use libraryItemsStorageKey from libraryCachePolicy"
+grep -q "from '../utils/libraryCachePolicy'" "$LIB_PANEL" \
+  || fail "LibraryPanel must import library cache policy (no inline session key)"
+grep -q 'mn.library.items.v3' "$LIB_PANEL" \
+  && fail "LibraryPanel must not use stale v3 cache key inline"
 grep -q 'phase_watercolor_list' "$LIB_PANEL" || fail "LibraryPanel must reconcile phase watercolor count (G3)"
 
 echo "[event-catalog-invariants] OK — ${EVENT} disk=${WC_FILES} cr=${WC_ROWS} phase=${PHASE_COUNT}"

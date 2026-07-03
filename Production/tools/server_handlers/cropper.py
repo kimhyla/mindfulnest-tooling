@@ -179,18 +179,104 @@ def _library_asset_name_from_source_key(source_key: str) -> str | None:
     return source_key.replace(" ", "_") or None
 
 
+def _crop_source_display_stem(source_key: str) -> str | None:
+    """Human-readable source label for crop filenames (ChatGPT upload names, etc.)."""
+    source_real = _source_abs_path_from_source_key(source_key)
+    if source_real:
+        return os.path.splitext(os.path.basename(source_real))[0]
+    if source_key and not source_key.startswith("data:"):
+        base = os.path.basename(source_key.split("?")[0])
+        if base:
+            return os.path.splitext(base)[0]
+    return None
+
+
+def _library_key_from_filename(filename: str) -> str:
+    return os.path.splitext(filename)[0].replace(" ", "_")
+
+
+def _safe_crop_filename_stem(display_stem: str) -> str:
+    """Filesystem-safe stem — preserves readability, drops path chars."""
+    stem = re.sub(r"[^\w\s\-,.()]+", "", display_stem).strip()
+    stem = re.sub(r"\s+", "_", stem)
+    stem = stem.strip("._")[:72]
+    return stem or "crop"
+
+
+def _crop_delivery_names(source_key: str, beat_id: str, ts: int) -> tuple[str, str, str]:
+    """Return (filename, library_key, display_name) for a saved delivery crop."""
+    display_stem = _crop_source_display_stem(source_key)
+    if display_stem:
+        file_stem = _safe_crop_filename_stem(display_stem)
+        filename = f"{file_stem}_crop_{ts}.webp"
+        key = _library_key_from_filename(filename)
+        return filename, key, f"{display_stem} (4:3 crop)"
+    filename = f"crop_{beat_id}_{ts}.webp"
+    return filename, f"crop_{beat_id}_{ts}", f"Crop {beat_id}"
+
+
+def _source_abs_path_from_source_key(source_key: str) -> str | None:
+    """Realpath for cropper source_key when it is a /api/cr/full?abs_path= URL."""
+    if not source_key or not isinstance(source_key, str):
+        return None
+    if "abs_path=" not in source_key:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(source_key)
+        qs = urllib.parse.parse_qs(parsed.query)
+        abs_path = qs.get("abs_path", [None])[0]
+        if abs_path:
+            return os.path.realpath(abs_path)
+    except (OSError, ValueError):
+        return None
+    return None
+
+
 def _resolve_parent_asset_id_from_source_key(source_key: str) -> int | None:
     """Rule 6.2 — link delivery crop to still_master parent via asset_name."""
-    asset_name = _library_asset_name_from_source_key(source_key)
-    if not asset_name:
-        return None
     try:
         from lib.directus_admin_client import DirectusAdminClient
         client = DirectusAdminClient()
     except Exception as e:
         print(f"[BG] WARN: parent_asset_id lookup skipped: {e}")
         return None
-    name_variants = {asset_name, asset_name.replace("_", " "), asset_name.replace(" ", "_")}
+    # Prefer exact file_path match — asset_name normalization (spaces vs underscores)
+    # misses ChatGPT-style upload names.
+    source_real = _source_abs_path_from_source_key(source_key)
+    if source_real:
+        try:
+            rows = client.get_items(
+                "prod_assets",
+                filters={
+                    "_and": [
+                        {"asset_type": {"_eq": "still_master"}},
+                        {"file_path": {"_eq": source_real}},
+                    ]
+                },
+                fields=["id"],
+                limit=1,
+            )
+        except Exception as e:
+            print(f"[BG] WARN: parent_asset_id file_path lookup failed: {e}")
+            rows = []
+        if rows:
+            pid = rows[0].get("id")
+            if isinstance(pid, int) and pid > 0:
+                return pid
+    asset_name = _library_asset_name_from_source_key(source_key)
+    if not asset_name:
+        return None
+    raw_stem = None
+    if source_real:
+        raw_stem = os.path.splitext(os.path.basename(source_real))[0]
+    name_variants = {
+        asset_name,
+        asset_name.replace("_", " "),
+        asset_name.replace(" ", "_"),
+    }
+    if raw_stem:
+        name_variants.add(raw_stem)
+        name_variants.add(raw_stem.replace(" ", "_"))
     for name in name_variants:
         if not name:
             continue
@@ -216,7 +302,37 @@ def _resolve_parent_asset_id_from_source_key(source_key: str) -> int | None:
     return None
 
 
-def _enrich_library_items_prod_assets(images: list) -> None:
+def _enrich_has_crop_from_disk(images: list, library_event_dir: str | Path) -> None:
+    """DIRECTUS_HAS_CROP_DISK_FALLBACK_V1 — stem match in library/images/crops/."""
+    library_event_dir = Path(library_event_dir)
+    crops_dir = library_event_dir / "library" / "images" / "crops"
+    if not crops_dir.is_dir():
+        return
+    crop_stems = {p.stem.lower() for p in crops_dir.iterdir() if p.is_file()}
+    if not crop_stems:
+        return
+    for item in images:
+        if not isinstance(item, dict):
+            continue
+        if item.get("has_crop"):
+            continue
+        is_master = bool(item.get("is_master")) or str(item.get("asset_type") or "") == "still_master"
+        if not is_master:
+            continue
+        fp = str(item.get("abs_path") or item.get("file_path") or "")
+        if not fp:
+            continue
+        master_stem = Path(fp).stem.lower()
+        if not master_stem:
+            continue
+        for crop_stem in crop_stems:
+            if crop_stem == master_stem or master_stem in crop_stem or crop_stem.startswith(master_stem[:12]):
+                item["has_crop"] = True
+                item["has_crop_source"] = "disk_stem_match"
+                break
+
+
+def _enrich_library_items_prod_assets(images: list, *, library_event_dir: str | Path | None = None) -> None:
     """LD-738 — annotate library items with is_master / has_crop from prod_assets."""
     import concurrent.futures
 
@@ -232,11 +348,13 @@ def _enrich_library_items_prod_assets(images: list) -> None:
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
             fut = pool.submit(_run)
-            fut.result(timeout=3.0)
+            fut.result(timeout=10.0)
     except concurrent.futures.TimeoutError:
-        print("[library] WARN: Directus enrich skipped — timed out after 3s", flush=True)
+        print("[library] WARN: Directus enrich skipped — timed out after 10s", flush=True)
     except Exception as e:
         print(f"[library] WARN: Directus enrich skipped: {e}", flush=True)
+    if library_event_dir is not None:
+        _enrich_has_crop_from_disk(images, library_event_dir)
 
 
 def _enrich_library_items_prod_assets_inner(images: list) -> None:
@@ -661,7 +779,7 @@ def handle_cr_library(h)-> None:
         _append(row)
 
     attach_panel_tabs_all(images)
-    _enrich_library_items_prod_assets(images)
+    _enrich_library_items_prod_assets(images, library_event_dir=library_event_dir)
     attach_panel_tabs_all(images)
 
     response_images = _cr_library_response_images(images, panel_filter)
@@ -999,7 +1117,8 @@ def handle_cr_save_crop(h, body: dict)-> None:
 
     """POST /api/cr/save-crop {crop_png_b64, beat_id, source_key, event_id?}
     Rule 6 upscale + Rule 6.2 WebP delivery + registered_write two-write (BG-22).
-    Returns { key, filename, thumb_b64, gallery_b64, asset_id }."""
+    CROP_SAVE_LIBRARY_VISIBILITY_V1 — friendly names, parent link, library_item row.
+    Returns { key, filename, display_name, library_item, parent_library_key, ... }."""
     ctx = _resolve_cr_library_scope(h, body, allow_missing=False)
     if ctx is None:
         return
@@ -1049,9 +1168,9 @@ def handle_cr_save_crop(h, body: dict)-> None:
 
     delivery_bytes, width, height, thumb_b64, gallery_b64 = bg.process_crop(crop_bytes)
 
-    # Save to disk
+    # Save to disk — name from source when available (CROP_SAVE_LIBRARY_VISIBILITY_V1).
     ts = int(time.time())
-    filename   = f"crop_{beat_id}_{ts}.webp"
+    filename, key, display_name = _crop_delivery_names(source_key, beat_id, ts)
     crops_dir  = str(event_images_crops_dir(ctx.library_event_dir))
     os.makedirs(crops_dir, exist_ok=True)
     delivery_path = os.path.join(crops_dir, filename)
@@ -1059,7 +1178,12 @@ def handle_cr_save_crop(h, body: dict)-> None:
     with open(safe_delivery_path, "wb") as f:
         f.write(delivery_bytes)
 
-    key = f"crop_{beat_id}_{ts}"
+    source_real = _source_abs_path_from_source_key(source_key)
+    parent_library_key = (
+        _library_key_from_filename(os.path.basename(source_real))
+        if source_real
+        else None
+    )
 
     # BG-22 + C-9 — Asset registration via registered_write.register_asset
     # (replaces the legacy inline `_directus_post_bg("prod_visual_assets", ...)`
@@ -1089,7 +1213,7 @@ def handle_cr_save_crop(h, body: dict)-> None:
             tags=["bg_cropper", "crop_4x3", "delivery"],
             library=True,
             role="delivery",
-            colloquial_name=f"crop {beat_id} {ts}",
+            colloquial_name=display_name,
         )
         if asset_id and asset_id > 0:
             print(f"[BG] registered_write OK asset_id={asset_id} {filename}")
@@ -1098,12 +1222,38 @@ def handle_cr_save_crop(h, body: dict)-> None:
     except Exception as e:
         print(f"[BG] registered_write warning (non-fatal): {e}")
 
-    return h._send_json(200, {
+    invalidate_cr_library_cache(ctx.library_event_dir.name)
+
+    library_row = {
         "key": key,
         "filename": filename,
+        "display_name": display_name,
+        "tier": "cropped",
+        "abs_path": safe_delivery_path,
+        "thumb_url": _cr_thumb_url(safe_delivery_path),
+        "panel_tabs": ["images"],
+        "asset_type": "still_delivery",
+        "is_master": False,
+        "has_crop": False,
+    }
+    attach_panel_tabs_all([library_row])
+
+    return h._send_json(200, {
+        "ok": True,
+        "key": key,
+        "filename": filename,
+        "display_name": display_name,
+        "tier": "cropped",
+        "abs_path": safe_delivery_path,
+        "thumb_url": library_row.get("thumb_url"),
+        "panel_tabs": library_row.get("panel_tabs") or ["images"],
+        "asset_type": "still_delivery",
         "thumb_b64": thumb_b64,
         "gallery_b64": gallery_b64,
         "asset_id": asset_id,
+        "parent_asset_id": parent_asset_id,
+        "parent_library_key": parent_library_key,
+        "library_item": library_row,
     })
 
 
