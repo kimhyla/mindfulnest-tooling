@@ -394,6 +394,36 @@ def _job_canonical_audio_needs_persist(live_slots, normalized_slots: dict) -> bo
     return False
 
 
+def _stitch_slot_artifact_pins_need_persist(pre_slot: dict, post_slot: dict) -> bool:
+    """True when validate/load_job pinned artifact fields not yet on disk."""
+    if not isinstance(pre_slot, dict) or not isinstance(post_slot, dict):
+        return False
+    from server_handlers.stitch_media_sig import STITCH_SLOT_ARTIFACT_FIELDS  # noqa: PLC0415
+
+    for field in STITCH_SLOT_ARTIFACT_FIELDS:
+        if post_slot.get(field) != pre_slot.get(field):
+            return True
+    return False
+
+
+def _job_stitch_artifact_pins_need_persist(
+    pre_slots: dict,
+    post_slots: dict,
+) -> bool:
+    if not isinstance(pre_slots, dict) or not isinstance(post_slots, dict):
+        return False
+    for slot_key, post in post_slots.items():
+        if not isinstance(post, dict):
+            continue
+        pre = pre_slots.get(slot_key)
+        if _stitch_slot_artifact_pins_need_persist(
+            pre if isinstance(pre, dict) else {},
+            post,
+        ):
+            return True
+    return False
+
+
 def _persist_stitch_job_canonical_audio(state: dict, name: str, normalized_slots: dict) -> None:
     """Write canonical slot fields (ambient, duration, phase_a path) into persisted stitch job."""
     live = state.get("jobs", {}).get(name)
@@ -2468,6 +2498,7 @@ def handle_stitch_load_job(h, name: str)-> None:
     artifact_warnings: dict[str, list[str]] = {}
     artifacts_healed = False
     live_slots = (job.get("slots") if isinstance(job, dict) else None)
+    pre_validate_slots: dict = {}
     if isinstance(live_slots, dict):
         normalize_job_slots_audio(live_slots)
         defaults_changed = ensure_job_slot_defaults(h, live_slots, fast=True)
@@ -2494,6 +2525,7 @@ def handle_stitch_load_job(h, name: str)-> None:
                 defaults_changed = True
 
         mux_cleared_on_load = False
+        pre_validate_slots = copy.deepcopy(live_slots)
         for slot_key, slot in live_slots.items():
             if not isinstance(slot, dict):
                 continue
@@ -2539,11 +2571,15 @@ def handle_stitch_load_job(h, name: str)-> None:
         defaults_changed
         or artifacts_healed
         or _job_canonical_audio_needs_persist(live_slots, live_slots)
+        or _job_stitch_artifact_pins_need_persist(pre_validate_slots, live_slots)
     ):
 
         def persist_job_slots(state: dict) -> None:
             _persist_stitch_job_canonical_audio(state, name, live_slots)
-            if artifacts_healed:
+            if artifacts_healed or _job_stitch_artifact_pins_need_persist(
+                pre_validate_slots,
+                live_slots,
+            ):
                 _persist_stitch_job_healed_slots(state, name, live_slots)
 
         stitch_store.mutate_state(persist_job_slots)
@@ -4044,6 +4080,27 @@ def handle_stitch_preview(h, body: dict)-> None:
                     error_message=str(exc),
                     retry_safe=True,
                     extra={"code": STITCH_ARTIFACT_ORCHESTRATOR_V1},
+                )
+            from server_handlers.stitch_artifact_build import (  # noqa: PLC0415
+                reconcile_stitch_preview_artifacts_from_build,
+            )
+
+            if slot_key and not reconcile_stitch_preview_artifacts_from_build(
+                h,
+                stitch_job_name=job_name,
+                slot_key=slot_key,
+                build_id=queued["build_id"],
+                stitch_store=stitch_store,
+            ):
+                return h._send_error_v59(
+                    500,
+                    error_code="GENERIC_ERROR",
+                    error_message=(
+                        "preview orchestrator finished but mux artifacts did not persist "
+                        f"({STITCH_ARTIFACT_ORCHESTRATOR_V1})"
+                    ),
+                    retry_safe=True,
+                    extra={"code": STITCH_SLOT_MEDIA_ARTIFACTS_V1},
                 )
 
         state = stitch_store.read_state() or {}

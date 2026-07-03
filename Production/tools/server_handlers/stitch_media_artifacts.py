@@ -366,12 +366,19 @@ def validate_stitch_slot_media_artifacts(
             warnings.append("ambient_mix_sig stale — ambient mix cleared")
 
     if not stored_mix_sig and had_mux:
-        clear_stitch_slot_mux_artifacts(slot)
-        warnings.append("mix_sig missing — mux artifacts cleared")
+        if _mux_preview_cache_still_valid(h, slot, fast=fast):
+            # Heal: mux cache is valid — pin mix_sig below instead of clearing mux.
+            pass
+        else:
+            clear_stitch_slot_mux_artifacts(slot)
+            warnings.append("mix_sig missing — mux artifacts cleared")
 
     if not stored_ambient_sig and had_ambient:
-        clear_stitch_slot_ambient_mix_artifacts(slot)
-        warnings.append("ambient_mix_sig missing — ambient mix cleared")
+        if _ambient_mix_cache_still_valid(h, slot, fast=fast):
+            pass
+        else:
+            clear_stitch_slot_ambient_mix_artifacts(slot)
+            warnings.append("ambient_mix_sig missing — ambient mix cleared")
 
     # Migration: ambient-only slots should not keep legacy mux preview (once per slot).
     if _stitch_slot_has_ambient(slot) and not _stitch_slot_has_sfx(slot):
@@ -507,6 +514,13 @@ def validate_stitch_slot_media_artifacts(
             slot.pop("mux_preview_duration_ms", None)
             slot.pop("mux_video_path", None)
             slot.pop("mux_video_mtime_ms", None)
+        elif (
+            fast
+            and not stored_mix_sig
+            and _artifact_cache_file_present(cache_dir, "preview", mux_hash)
+        ):
+            # Mux cache present without mix_sig — heal pins below instead of clearing.
+            pass
         elif fast and stored_mix_sig == current_mix_sig and stored_mix_sig:
             if not _artifact_cache_file_present(cache_dir, "preview", mux_hash):
                 slot.pop("mux_preview_hash", None)
@@ -522,8 +536,10 @@ def validate_stitch_slot_media_artifacts(
             slot.pop("mux_video_path", None)
             slot.pop("mux_video_mtime_ms", None)
             warnings.append("mux preview cache missing or truncated — cleared")
-        elif stored_mix_sig != current_mix_sig and _stitch_preview_lacks_layered_mix(
-            h, slot, mux_hash,
+        elif (
+            stored_mix_sig
+            and stored_mix_sig != current_mix_sig
+            and _stitch_preview_lacks_layered_mix(h, slot, mux_hash)
         ):
             slot.pop("mux_preview_hash", None)
             slot.pop("mux_preview_duration_ms", None)
@@ -566,6 +582,7 @@ def persist_stitch_slot_ambient_mix_artifacts(
     ambient_mix_duration_ms: int,
     ambient_mix_video_path: str | None = None,
     ambient_mix_video_mtime_ms: int | None = None,
+    stitch_store=None,
 ) -> None:
     """Persist ambient-only mix artifact (se_slot_*) on stitch job slot."""
 
@@ -602,7 +619,8 @@ def persist_stitch_slot_ambient_mix_artifacts(
 
     from server_handlers.stitch_editor import stitch_state_store_for_job  # noqa: PLC0415
 
-    stitch_state_store_for_job(h, job_name).mutate_state(update)
+    store = stitch_store or stitch_state_store_for_job(h, job_name)
+    store.mutate_state(update)
 
 
 def persist_stitch_slot_media_artifacts(
@@ -618,6 +636,7 @@ def persist_stitch_slot_media_artifacts(
     mux_video_path: str | None = None,
     mux_video_mtime_ms: int | None = None,
     persist_ambient_bed_path: str | None = None,
+    stitch_store=None,
 ) -> None:
     """Write artifact hashes onto the canonical stitch job slot."""
 
@@ -667,7 +686,8 @@ def persist_stitch_slot_media_artifacts(
 
     from server_handlers.stitch_editor import stitch_state_store_for_job  # noqa: PLC0415
 
-    stitch_state_store_for_job(h, job_name).mutate_state(update)
+    store = stitch_store or stitch_state_store_for_job(h, job_name)
+    store.mutate_state(update)
 
 
 def find_stitch_job_slot_for_video(h, video_path: str) -> tuple[str, str] | None:
