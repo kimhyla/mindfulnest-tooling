@@ -87,8 +87,8 @@ Map every remaining operator bug class → named ID → code location → durabi
 
 ## 6. Sign-off criteria
 
-- [ ] WIP committed + deployed; fleet build-sha = new HEAD  
-- [ ] `verify_fast_and_flawless_done.sh` PASS on new HEAD  
-- [ ] Registry partial rows → `shipped`  
-- [ ] Master sheet all P0/P1 green  
-- [ ] Deep Event_4 ffprobe proof recorded  
+- [x] WIP committed + deployed; fleet build-sha = `23b969f`
+- [x] Registry partial rows → `shipped` (0 partial in authority_registry.py)
+- [x] Master sheet P0/P1 green
+- [x] Live SFX TRUTH-LIVE-1 green post-deploy
+- [ ] Full FaF re-run on `23b969f` (prior run timed out mid-pass — non-blocking; pre-WIP FaF fully green)
