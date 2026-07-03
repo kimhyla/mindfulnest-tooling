@@ -50,10 +50,11 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
         bg,
         "_ffmpeg_stitch_module",
         lambda: type("FS", (), {
-            "assert_stitch_export_clips_av_aligned": staticmethod(lambda _c: None),
-            "assert_stitch_export_cumulative_av_aligned": staticmethod(lambda _c: None),
-            "assert_stitch_export_assembled_av_drift": staticmethod(lambda _p: None),
+            "assert_stitch_export_clips_av_aligned": staticmethod(lambda _c, **k: None),
+            "assert_stitch_export_cumulative_av_aligned": staticmethod(lambda _c, **k: None),
+            "assert_stitch_export_assembled_av_drift": staticmethod(lambda _p, **k: None),
             "export_clip_timeline_duration_s": staticmethod(lambda _p: 2.0),
+            "STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S": 0.05,
         })(),
     )
     monkeypatch.setattr(bg, "_ffmpeg_concat_kling_clips_reencode", lambda c, d, **k: d.write_bytes(b"x"))
