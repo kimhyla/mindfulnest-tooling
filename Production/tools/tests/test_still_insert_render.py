@@ -418,8 +418,13 @@ def test_bake_still_insert_uses_untrimmed_when_active_is_trimmed(tmp_path: Path,
     monkeypatch.setattr(bg, "kling_o3_trim_is_active", lambda beat, raw_dur=None: True)
     monkeypatch.setattr(bg, "materialize_kling_o3_trimmed_clip", _mat)
     beat = {
+        "pipeline": "still_insert",
         "kling_o3_video_path": str(trimmed),
-        "kling_o3_options": [{"video_path": str(trimmed), "trim_back_s": 2.3}],
+        "kling_o3_options": [{
+            "video_path": str(trimmed),
+            "source": "still_insert_ken_burns",
+            "trim_back_s": 2.3,
+        }],
         "kling_o3_trim_start": 0.0,
         "kling_o3_trim_back": 2.3,
     }

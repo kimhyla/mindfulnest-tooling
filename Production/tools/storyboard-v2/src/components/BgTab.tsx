@@ -39,7 +39,9 @@ import {
   isValidO3CutWindow,
   normalizeO3KeepWindow,
   resolveO3ExportDurationS,
+  resolveO3OverlayDurationS,
   resolveO3PlaybackDurationS,
+  resolveO3TrimAuthorityDurationS,
 } from './bg/BgO3CutOverlay';
 import { resolveClipPlaybackTruth } from '../utils/playbackCache';
 import {
@@ -4776,19 +4778,25 @@ function BgOptionTile({
   const MIN_O3_CUT_S = 0.25;
   const isCutPreviewActive = !!previewUrl;
   const playbackDurationS = resolveO3PlaybackDurationS(sourceDurationS, loadedDuration);
+  const overlayTimelineDurationS = resolveO3OverlayDurationS(sourceDurationS, loadedDuration);
   const exportDurationS = resolveO3ExportDurationS(sourceDurationS, playbackDurationS);
-  const trimTruthReady = exportDurationS > 0 || playbackDurationS > 0;
+  const trimAuthorityDurationS = resolveO3TrimAuthorityDurationS(
+    overlayTimelineDurationS,
+    exportDurationS,
+    playbackDurationS,
+  );
+  const trimTruthReady = trimAuthorityDurationS > 0;
   const savedKeepStartS = trimStartS > 0.009 ? trimStartS : 0;
-  const savedKeepEndRaw = playbackDurationS > 0
-    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, playbackDurationS - (trimBackS > 0.009 ? trimBackS : 0))
+  const savedKeepEndRaw = overlayTimelineDurationS > 0
+    ? Math.max(savedKeepStartS + MIN_O3_CUT_S, overlayTimelineDurationS - (trimBackS > 0.009 ? trimBackS : 0))
     : 0;
   const savedKeep = normalizeO3KeepWindow(
-    playbackDurationS,
+    overlayTimelineDurationS,
     savedKeepStartS,
     savedKeepEndRaw,
   );
-  const pendingKeep = pendingCut && playbackDurationS > 0
-    ? normalizeO3KeepWindow(playbackDurationS, pendingCut.startS, pendingCut.endS)
+  const pendingKeep = pendingCut && overlayTimelineDurationS > 0
+    ? normalizeO3KeepWindow(overlayTimelineDurationS, pendingCut.startS, pendingCut.endS)
     : null;
   const effectiveKeepStartS = pendingKeep?.startS ?? savedKeep.startS;
   const effectiveKeepEndS = pendingKeep?.endS ?? savedKeep.endS;
@@ -4796,20 +4804,39 @@ function BgOptionTile({
     Math.abs((pendingKeep?.startS ?? pendingCut.startS) - savedKeep.startS) > 0.009
     || Math.abs((pendingKeep?.endS ?? pendingCut.endS) - savedKeep.endS) > 0.009
   );
-  const hasActiveCut = effectiveKeepEndS > effectiveKeepStartS + MIN_O3_CUT_S - 0.01;
+  const hasActiveCut = (
+    savedKeepStartS > 0.009
+    || trimBackS > 0.05
+    || (pendingCut !== null && cutDraftDirty)
+  );
   const hasSavedCut = savedKeepStartS > 0.009 || trimBackS > 0.05;
   const cutPreviewTrimBackS = () => {
-    const dur = exportDurationS || playbackDurationS;
+    const dur = trimAuthorityDurationS;
     if (dur <= 0) return 0;
     return Math.max(0, dur - effectiveKeepEndS);
   };
   // Magic-on-video override must win over cached Kling playback — same clip the beat exports.
   const activeVideoUrl = previewUrl ?? overrideVideoUrl ?? playbackUrl ?? canonicalVideoUrl;
-  // Overlay timeline = video element truth (never stale short server-only duration).
-  const trimTimelineDurationS = playbackDurationS;
-  const overlayDurationS = isCutPreviewActive || loadedDuration == null || loadedDuration <= 0
+  // Overlay timeline = loaded video element duration (not max(ffprobe, loaded)).
+  const trimTimelineDurationS = overlayTimelineDurationS;
+  const overlayDurationS = isCutPreviewActive || overlayTimelineDurationS <= 0
     ? 0
     : trimTimelineDurationS;
+
+  useEffect(() => {
+    if (!pendingCut || overlayTimelineDurationS <= 0) return;
+    const clamped = normalizeO3KeepWindow(
+      overlayTimelineDurationS,
+      pendingCut.startS,
+      pendingCut.endS,
+    );
+    if (
+      Math.abs(clamped.startS - pendingCut.startS) > 0.009
+      || Math.abs(clamped.endS - pendingCut.endS) > 0.009
+    ) {
+      setPendingCut(clamped);
+    }
+  }, [overlayTimelineDurationS]);
 
   useEffect(() => {
     if (!selected || !option.video_path || previewUrl) {
@@ -4964,7 +4991,7 @@ function BgOptionTile({
     keepStartS?: number;
   }> => {
     if (!selected) return { ok: false };
-    const validateDuration = exportDurationS || playbackDurationS;
+    const validateDuration = trimAuthorityDurationS;
     if (validateDuration <= 0) {
       pushToast({
         kind: 'info',
@@ -4981,6 +5008,22 @@ function BgOptionTile({
           ? `Clip is only ${validateDuration.toFixed(1)}s — too short to trim`
           : 'Trim window too small — drag handles farther apart (need ≥0.25s kept)',
         source: 'bg-o3-cut-rejected',
+      });
+      console.info('[bg_o3_trim_audit_client]', {
+        phase: 'persist_reject',
+        beatId,
+        optionIndex,
+        validateDuration,
+        exportDurationS,
+        overlayTimelineDurationS,
+        trimAuthorityDurationS,
+        playbackDurationS,
+        keepStartS,
+        keepEndS,
+        keptS: endS - startS,
+        trimStartS,
+        trimBackS,
+        pendingCut,
       });
       return { ok: false };
     }
@@ -5061,7 +5104,7 @@ function BgOptionTile({
     }
     setCutBusy(true);
     try {
-      const validateDuration = exportDurationS || playbackDurationS;
+      const validateDuration = trimAuthorityDurationS;
       const { startS, endS } = normalizeO3KeepWindow(validateDuration, effectiveKeepStartS, effectiveKeepEndS);
       const trimBack = Math.max(0, validateDuration - endS);
       const applied = await onApplyO3Cut(
@@ -5136,7 +5179,7 @@ function BgOptionTile({
   };
 
   const initCutFromDuration = () => {
-    const clipDur = exportDurationS || playbackDurationS;
+    const clipDur = overlayTimelineDurationS || exportDurationS || playbackDurationS;
     if (clipDur <= MIN_O3_CUT_S * 2) {
       pushToast({
         kind: 'info',
@@ -5392,6 +5435,25 @@ function BgOptionTile({
                   setPendingCut({ startS, endS });
                 }}
                 onKeepRejected={(message) => {
+                  console.info('[bg_o3_trim_audit_client]', {
+                    phase: 'overlay_reject',
+                    beatId,
+                    optionIndex,
+                    message,
+                    overlayDurationS,
+                    overlayTimelineDurationS,
+                    playbackDurationS,
+                    exportDurationS,
+                    sourceDurationS,
+                    loadedDuration,
+                    effectiveKeepStartS,
+                    effectiveKeepEndS,
+                    keptS: effectiveKeepEndS - effectiveKeepStartS,
+                    trimStartS,
+                    trimBackS,
+                    pendingCut,
+                    isCutPreviewActive,
+                  });
                   pushToast({ kind: 'info', message, source: 'bg-o3-cut-rejected' });
                 }}
               />

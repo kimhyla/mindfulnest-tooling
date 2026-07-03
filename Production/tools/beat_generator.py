@@ -7137,6 +7137,39 @@ def o3_trim_effective_is_shorter(
     return float(effective_duration_s) < float(raw_duration_s) - epsilon
 
 
+def _o3_trim_authority_path(beat: dict, opt: dict | None, vp: str) -> Path:
+    """File whose ffprobe duration defines trim_start/trim_back for this option."""
+    vp_path = Path(vp)
+    if not vp_path.is_file():
+        return vp_path
+    if not isinstance(opt, dict) or not beat_is_still_insert(beat):
+        return vp_path
+    untrimmed = _guess_o3_untrimmed_video_path(beat, opt)
+    if not untrimmed or not os.path.isfile(untrimmed):
+        return vp_path
+    unt_path = Path(untrimmed)
+    vp_res = str(vp_path.resolve())
+    unt_res = str(unt_path.resolve())
+    if vp_res == unt_res:
+        return vp_path
+    # Ken-burns TTS still: trim coords stay relative to the full TTS render.
+    if str(opt.get("source") or "").strip() == "still_insert_ken_burns":
+        return unt_path
+    # Pre-trimmed delivery / idle clip edited in Beat Gen: coords match the visible file.
+    if "_trimmed" in vp_path.stem.lower():
+        vp_stem = vp_path.stem.lower()
+        unt_stem = unt_path.stem.lower()
+        if unt_stem in vp_stem or vp_stem.startswith(unt_stem):
+            vp_dur = _ffprobe_duration(vp_path)
+            unt_dur = _ffprobe_duration(unt_path)
+            if unt_dur > vp_dur + 0.05 and "_delivery" not in vp_path.name.lower():
+                return unt_path
+        return vp_path
+    if "_delivery" in vp_path.name.lower():
+        return vp_path
+    return unt_path
+
+
 def set_o3_option_trim(
     beat: dict,
     *,
@@ -7156,11 +7189,7 @@ def set_o3_option_trim(
     vp = str(video_path or opt.get("video_path") or "").strip()
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before trimming")
-    duration_path = Path(vp)
-    if beat_is_still_insert(beat):
-        untrimmed = _guess_o3_untrimmed_video_path(beat, opt)
-        if untrimmed and os.path.isfile(untrimmed):
-            duration_path = Path(untrimmed)
+    duration_path = _o3_trim_authority_path(beat, opt, vp)
     raw_dur = _ffprobe_duration(duration_path)
     if raw_dur <= 0:
         raise ValueError("Could not read clip duration")
@@ -7283,6 +7312,13 @@ def _guess_o3_untrimmed_video_path(beat: dict, opt: dict) -> str | None:
         if "_trimmed" in op.lower() or "_kling_o3_trim_scratch" in op.lower():
             continue
         if opt_key and opt_key not in op and Path(op).stem not in Path(vp).stem:
+            continue
+        vp_lower = vp.lower()
+        op_lower = op.lower()
+        # Never treat an O3 delivery import as the untrimmed lineage for a still-insert clip.
+        if "still_insert" in vp_lower and "still_insert" not in op_lower and "_delivery" in op_lower:
+            continue
+        if "_delivery" in vp_lower and "still_insert" in op_lower and "_delivery" not in op_lower:
             continue
         dur = _ffprobe_duration(Path(op))
         if dur <= 0:
@@ -7728,15 +7764,16 @@ def resolve_still_insert_trim_bake_source(
     *,
     source_path: Path | str | None = None,
 ) -> tuple[Path, dict | None]:
-    """Untrimmed still-insert source + option row for trim bake (never double-trim)."""
+    """Trim-authority source + option row for still-insert bake (never double-trim)."""
     active = Path(source_path or beat.get("kling_o3_video_path") or "")
     opt = find_o3_option_by_video_path(beat, str(active)) if str(active) else None
     if opt is None and active.is_file():
         opt = find_o3_option_by_video_path(beat, str(active.resolve()))
-    untrimmed = _guess_o3_untrimmed_video_path(beat, opt) if isinstance(opt, dict) else None
-    if untrimmed and Path(untrimmed).is_file():
-        src = Path(untrimmed)
-    elif active.is_file() and "_trimmed" not in active.stem.lower():
+    vp = str(active) if active.is_file() else str(beat.get("kling_o3_video_path") or "")
+    authority = _o3_trim_authority_path(beat, opt, vp)
+    if authority.is_file():
+        src = authority.resolve()
+    elif active.is_file():
         src = active.resolve()
     else:
         src = active
