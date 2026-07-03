@@ -7261,13 +7261,46 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                         else:
                             opt.pop("trim_back_s", None)
                         bg.clear_o3_cut_fields(opt)
-                    bg.hydrate_beat_trim_from_active_option(beat)
+                    # Mirror trim from the slot being edited — not hydrate from active,
+                    # which can resolve to a different row via o3_untrimmed_video_path.
+                    if isinstance(opt, dict) and bg.option_has_o3_trim(opt):
+                        bg.mirror_beat_trim_from_option(beat, opt)
+                    else:
+                        bg.hydrate_beat_trim_from_active_option(beat)
                     bg.prune_stale_kling_o3_trim_scratch(
                         beat_id,
                         Path(h.app.event_dir),
                         beat,
                     )
                     if not body.get("clear"):
+                        if (
+                            bg.beat_is_still_insert(beat)
+                            and isinstance(opt, dict)
+                            and bg.option_has_o3_trim(opt)
+                        ):
+                            try:
+                                slot_vp = str(opt.get("video_path") or "").strip()
+                                bake_si = bg.bake_still_insert_trim_into_clip(
+                                    beat,
+                                    source_path=slot_vp or None,
+                                )
+                                result["trim_baked"] = bool(bake_si.get("baked"))
+                                if bake_si.get("video_path"):
+                                    result["video_path"] = bake_si["video_path"]
+                                    result["trim_start"] = 0.0
+                                    result["trim_back"] = None
+                                    if bake_si.get("baked"):
+                                        raw_dur = bg._ffprobe_duration(Path(bake_si["video_path"]))
+                                        if raw_dur > 0:
+                                            result["raw_duration_s"] = round(raw_dur, 3)
+                                            result["effective_duration_s"] = round(raw_dur, 3)
+                            except Exception as exc:
+                                return h._send_error_v59(
+                                    500,
+                                    error_code="STILL_TRIM_BAKE_FAILED",
+                                    error_message=str(exc),
+                                    retry_safe=True,
+                                )
                         try:
                             bake = bg.bake_o3_active_export_clip(
                                 beat,
@@ -7371,6 +7404,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 and not use_cut
                 and bg.beat_is_still_insert(beat)
                 and bg.still_insert_trim_pending(beat)
+                and not result.get("trim_baked")
             ):
                 try:
                     bake = bg.bake_still_insert_trim_into_clip(beat)

@@ -332,6 +332,7 @@ function inferO3OptionPipelineMode(opt?: GptOption | null): BeatGenerationMode |
     return 'element_native';
   }
   if (source.includes('still_insert') || path.includes('still_insert')) return 'still_insert';
+  if (path.includes('_delivery')) return 'still_insert';
   if (path.includes('_avatar_pro') || source === 'kling_o3_avatar_pro') return 'avatar_pro';
   if (path.includes('_voice_lipsync')) return 'voice_first';
   if (path.includes('_element_o3') || (path.includes('_element_') && !path.includes('_voice_lipsync'))) {
@@ -2420,7 +2421,13 @@ export function BgTab() {
     trimStartS: number,
     trimBackS: number | null,
     opts?: { clear?: boolean; previewOnly?: boolean; silent?: boolean; videoPath?: string },
-  ) => {
+  ): Promise<{
+    previewUrl?: string;
+    rawDurationS?: number;
+    effectiveDurationS?: number | null;
+    trimBaked?: boolean;
+    videoPath?: string;
+  } | undefined> => {
     const result = await pathappPatch<{
       trim_start?: number;
       trim_back?: number | null;
@@ -2431,6 +2438,7 @@ export function BgTab() {
       preview_video_url?: string;
       video_path?: string;
       trim_baked?: boolean;
+      export_baked?: boolean;
     }>(activeScope.value, 'bg_kling_o3_trim', {
       beat_id: beatId,
       slot_index: slotIndex,
@@ -2446,8 +2454,10 @@ export function BgTab() {
       const shorteningRequested = !opts?.clear && (
         trimStartS > 0.05 || (trimBackS != null && trimBackS > 0.05)
       );
+      const trimBaked = !!result.data?.trim_baked;
       if (
         shorteningRequested
+        && !trimBaked
         && rawDurationGate != null
         && effectiveGate != null
         && effectiveGate >= rawDurationGate - 0.05
@@ -2467,8 +2477,18 @@ export function BgTab() {
           const slots = buildFixedO3OptionSlots(b);
           const slotOpt = slots[slotIndex];
           const targetPath = opts?.videoPath ?? slotOpt?.video_path ?? '';
+          const bakedPath = result.data?.video_path;
+          const trimBaked = !!result.data?.trim_baked;
+          const optionMatchesTarget = (o: GptOption | undefined): boolean => {
+            if (!o?.video_path) return false;
+            if (targetPath && o.video_path === targetPath) return true;
+            if (bakedPath && o.video_path === bakedPath) return true;
+            if (typeof o.slot_index === 'number' && o.slot_index === slotIndex) return true;
+            const slotPath = slotOpt?.video_path;
+            return !!slotPath && o.video_path === slotPath;
+          };
           const nextOptions = (b.kling_o3_options ?? []).map((o) => {
-            if (!o || !targetPath || o.video_path !== targetPath) return o;
+            if (!o || !optionMatchesTarget(o)) return o;
             if (opts?.clear) {
               const {
                 trim_start_s: _ts,
@@ -2478,6 +2498,18 @@ export function BgTab() {
                 ...rest
               } = o as GptOption & Record<string, unknown>;
               return rest as GptOption;
+            }
+            if (trimBaked && bakedPath) {
+              const {
+                trim_start_s: _ts,
+                trim_back_s: _tb,
+                cut_start_s: _cs,
+                cut_end_s: _ce,
+                kling_o3_baked_path: _obp,
+                kling_o3_baked_token: _obt,
+                ...rest
+              } = o as GptOption & Record<string, unknown>;
+              return { ...rest, video_path: bakedPath } as GptOption;
             }
             const next: GptOption & Record<string, unknown> = {
               ...o,
@@ -2494,7 +2526,9 @@ export function BgTab() {
             return next as GptOption;
           });
           const activePath = b.kling_o3_video_path ?? '';
-          const mirrorsActive = targetPath === activePath;
+          const mirrorsActive = targetPath === activePath
+            || bakedPath === activePath
+            || slotOpt?.video_path === activePath;
           if (mirrorsActive && opts?.clear) {
             const restoredPath = result.data?.video_path;
             const beatAny = b as BgBeat & Record<string, unknown>;
@@ -2535,12 +2569,24 @@ export function BgTab() {
             const nextBeat: BgBeat = {
               ...b,
               kling_o3_options: nextOptions,
-              kling_o3_trim_start: result.data?.trim_start ?? trimStartS,
-              kling_o3_trim_back: back != null && back > 0.009 ? back : null,
+              ...(trimBaked && bakedPath ? { kling_o3_video_path: bakedPath } : {}),
+              ...(trimBaked
+                ? {}
+                : {
+                  kling_o3_trim_start: result.data?.trim_start ?? trimStartS,
+                  kling_o3_trim_back: back != null && back > 0.009 ? back : null,
+                }),
             };
             delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_cut_start_s;
             delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_cut_end_s;
+            if (trimBaked) {
+              delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_trim_start;
+              delete (nextBeat as BgBeat & Record<string, unknown>).kling_o3_trim_back;
+            }
             return nextBeat;
+          }
+          if (trimBaked && bakedPath) {
+            return { ...b, kling_o3_options: nextOptions };
           }
           return { ...b, kling_o3_options: nextOptions };
         }));
@@ -2577,11 +2623,17 @@ export function BgTab() {
       }
       const rawDurationS = result.data?.raw_duration_s;
       const effectiveDurationS = result.data?.effective_duration_s;
+      const bakedVideoPath = result.data?.video_path;
       return {
         ...(previewUrl !== undefined ? { previewUrl } : {}),
         ...(rawDurationS !== undefined ? { rawDurationS } : {}),
         ...(effectiveDurationS !== undefined ? { effectiveDurationS } : {}),
+        ...(trimBaked ? { trimBaked: true as const } : {}),
+        ...(bakedVideoPath ? { videoPath: bakedVideoPath } : {}),
       };
+    }
+    if (opts?.silent && opts?.previewOnly) {
+      return undefined;
     }
     await guardBeatPatchResult(
       beatId,
@@ -3685,6 +3737,8 @@ interface BeatGenCardProps {
     previewUrl?: string;
     rawDurationS?: number;
     effectiveDurationS?: number | null;
+    trimBaked?: boolean;
+    videoPath?: string;
   } | undefined>;
   onApplyO3Trim: (
     trimStart: number,
@@ -4596,6 +4650,8 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
     previewUrl?: string;
     rawDurationS?: number;
     effectiveDurationS?: number | null;
+    trimBaked?: boolean;
+    videoPath?: string;
   } | undefined>;
   trimStart: number;
   trimBack: number | null;
@@ -4989,6 +5045,8 @@ function BgOptionTile({
     previewUrl?: string;
     trimBackS?: number;
     keepStartS?: number;
+    trimBaked?: boolean;
+    videoPath?: string;
   }> => {
     if (!selected) return { ok: false };
     const validateDuration = trimAuthorityDurationS;
@@ -5044,12 +5102,14 @@ function BgOptionTile({
       const raw = applied.rawDurationS ?? validateDuration;
       const eff = applied.effectiveDurationS;
       const shortening = startS > 0.05 || trimBack > 0.05;
-      if (shortening && eff != null && eff >= raw - 0.05) {
+      if (shortening && eff != null && eff >= raw - 0.05 && !applied.trimBaked) {
         return { ok: false };
       }
       return {
         ok: true,
         ...(applied.previewUrl !== undefined ? { previewUrl: applied.previewUrl } : {}),
+        ...(applied.trimBaked ? { trimBaked: true as const } : {}),
+        ...(applied.videoPath ? { videoPath: applied.videoPath } : {}),
         trimBackS: trimBack,
         keepStartS: startS,
       };
@@ -5149,6 +5209,17 @@ function BgOptionTile({
     const saved = await persistCut(effectiveKeepStartS, effectiveKeepEndS);
     if (!saved.ok) return;
     clearPendingCut();
+    if (saved.trimBaked && saved.videoPath) {
+      setPreviewUrl(null);
+      lastAutoPreviewRef.current = null;
+      forgetCutPreviewsForBeat(beatId);
+      const video = videoRef.current;
+      if (video && canonicalVideoUrl) {
+        video.src = canonicalVideoUrl;
+        video.load();
+      }
+      return;
+    }
     const trimBack = saved.trimBackS ?? cutPreviewTrimBackS();
     const startS = saved.keepStartS ?? effectiveKeepStartS;
     await refreshSavedCutPreview(startS, trimBack, saved.previewUrl);

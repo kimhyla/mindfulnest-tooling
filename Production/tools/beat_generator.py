@@ -4769,7 +4769,10 @@ def o3_option_visible_in_ui_slots(option: dict, generation_mode: str) -> bool:
     """UI shows three newest clips for the active pipeline — hide cross-pipeline history."""
     opt_mode = infer_o3_option_pipeline_mode(option)
     if generation_mode == PIPELINE_MODE_STILL:
-        return opt_mode == PIPELINE_MODE_STILL
+        if opt_mode == PIPELINE_MODE_STILL:
+            return True
+        path = str(option.get("video_path") or "").lower()
+        return "_delivery" in path
     if opt_mode == PIPELINE_MODE_STILL:
         return False
     if generation_mode in (
@@ -6569,6 +6572,8 @@ def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
     if not vp:
         return None
     resolved_vp = _resolve_o3_video_path_for_match(vp)
+    exact: dict | None = None
+    untrimmed_match: dict | None = None
     for opt in beat.get("kling_o3_options") or []:
         if not isinstance(opt, dict):
             continue
@@ -6576,8 +6581,39 @@ def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
         if not op:
             continue
         if op == vp or _resolve_o3_video_path_for_match(op) == resolved_vp:
-            return opt
-    return None
+            exact = opt
+            break
+        untrimmed = str(opt.get("o3_untrimmed_video_path") or "").strip()
+        if untrimmed and (
+            untrimmed == vp
+            or _resolve_o3_video_path_for_match(untrimmed) == resolved_vp
+        ):
+            untrimmed_match = opt
+    return exact or untrimmed_match
+
+
+def _o3_trim_stem(path: str) -> str:
+    """Normalize pre/post still-insert bake filenames for option lookup."""
+    name = Path(path).stem
+    if name.endswith("_trimmed"):
+        return name[: -len("_trimmed")]
+    return name
+
+
+def _o3_option_paths_same_clip_family(a: str, b: str) -> bool:
+    """True when paths are the same clip or a pre-bake / *_trimmed successor pair."""
+    left = str(a or "").strip()
+    right = str(b or "").strip()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    try:
+        if Path(left).resolve() == Path(right).resolve():
+            return True
+    except OSError:
+        pass
+    return _o3_trim_stem(left) == _o3_trim_stem(right)
 
 
 def _resolve_o3_video_path_for_match(video_path: str) -> str:
@@ -6698,6 +6734,10 @@ def find_o3_option_by_slot_index(
             direct = find_o3_option_by_video_path(beat, vp)
             if direct is not None:
                 return direct
+            # After still-insert Apply Cut bake, sidecar points at *_trimmed.mp4 while
+            # the client may still send the pre-bake path — trust the slot container.
+            if slot_vp and _o3_option_paths_same_clip_family(vp, slot_vp):
+                return slot_opt if isinstance(slot_opt, dict) else None
             raise ValueError(f"video_path not in beat O3 options: {vp}")
     return slot_opt if isinstance(slot_opt, dict) else None
 
@@ -7155,19 +7195,9 @@ def _o3_trim_authority_path(beat: dict, opt: dict | None, vp: str) -> Path:
     # Ken-burns TTS still: trim coords stay relative to the full TTS render.
     if str(opt.get("source") or "").strip() == "still_insert_ken_burns":
         return unt_path
-    # Pre-trimmed delivery / idle clip edited in Beat Gen: coords match the visible file.
-    if "_trimmed" in vp_path.stem.lower():
-        vp_stem = vp_path.stem.lower()
-        unt_stem = unt_path.stem.lower()
-        if unt_stem in vp_stem or vp_stem.startswith(unt_stem):
-            vp_dur = _ffprobe_duration(vp_path)
-            unt_dur = _ffprobe_duration(unt_path)
-            if unt_dur > vp_dur + 0.05 and "_delivery" not in vp_path.name.lower():
-                return unt_path
-        return vp_path
-    if "_delivery" in vp_path.name.lower():
-        return vp_path
-    return unt_path
+    # All other still-insert edits (kling idle, delivery import, re-trim after bake):
+    # authority = the file the operator sees in Beat Gen — never a longer sibling.
+    return vp_path
 
 
 def set_o3_option_trim(
@@ -12466,6 +12496,67 @@ def _sync_o3_option_gen_label(opt: dict) -> bool:
     return changed
 
 
+def heal_duplicate_o3_slot_indexes(beat: dict) -> bool:
+    """Ensure at most one option row owns each UI slot_index (0–2)."""
+    options = [
+        o for o in (beat.get("kling_o3_options") or [])
+        if isinstance(o, dict) and str(o.get("video_path") or "").strip()
+    ]
+    if len(options) < 2:
+        return False
+
+    def _slot_rank(opt: dict) -> tuple[int, int, str]:
+        source = str(opt.get("source") or "").strip().lower()
+        path = str(opt.get("video_path") or "").lower()
+        if source in O3_OPTION_SOURCE_STILL:
+            tier = 0
+        elif "_delivery" in path:
+            tier = 1
+        elif source == "kling_o3_disk_reconcile":
+            tier = 3
+        else:
+            tier = 2
+        gen = int(opt.get("generation") or 0)
+        if gen <= 0:
+            gen = _kling_o3_gen_from_video_path(str(opt.get("video_path") or "")) or 0
+        return (tier, -gen, path)
+
+    changed = False
+    by_slot: dict[int, list[dict]] = {}
+    for opt in options:
+        si = opt.get("slot_index")
+        if isinstance(si, int) and 0 <= si <= 2:
+            by_slot.setdefault(si, []).append(opt)
+    used: set[int] = set()
+    for si, rows in by_slot.items():
+        if len(rows) <= 1:
+            used.add(si)
+            continue
+        rows.sort(key=_slot_rank)
+        winner = rows[0]
+        used.add(si)
+        for loser in rows[1:]:
+            loser.pop("slot_index", None)
+            changed = True
+        if winner.get("slot_index") != si:
+            winner["slot_index"] = si
+            changed = True
+    next_free = 0
+    for opt in sorted(options, key=_slot_rank):
+        si = opt.get("slot_index")
+        if isinstance(si, int) and 0 <= si <= 2:
+            continue
+        while next_free in used and next_free <= 2:
+            next_free += 1
+        if next_free > 2:
+            break
+        opt["slot_index"] = next_free
+        used.add(next_free)
+        changed = True
+        next_free += 1
+    return changed
+
+
 def refresh_o3_ui_slot_layout(beat: dict) -> bool:
     """Sync generation labels only — does not reorder pin-slot layout."""
     options = [
@@ -12475,6 +12566,8 @@ def refresh_o3_ui_slot_layout(beat: dict) -> bool:
     if not options:
         return False
     changed = migrate_o3_options_edge_cut_to_trim(beat)
+    if heal_duplicate_o3_slot_indexes(beat):
+        changed = True
     for opt in options:
         if _sync_o3_option_gen_label(opt):
             changed = True
