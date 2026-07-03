@@ -115,8 +115,8 @@ STITCH_SLOT_CANONICAL_DEFAULTS_V1 = "STITCH_SLOT_CANONICAL_DEFAULTS_V1"
 STITCH_CANONICAL_DEFAULTS_PERSIST_V1 = "STITCH_CANONICAL_DEFAULTS_PERSIST_V1"
 # STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1 — phase_a/b boundary SFX span fades in bake pipeline only.
 STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1 = "STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1"
-# STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1 — phase_b→resolution: no outgoing clip dim (black hold only).
-STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1 = "STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1"
+# STITCH_MODULE_BOUNDARY_SYMMETRIC_FADE_V1 — all module boundaries use symmetric outgoing/incoming visual fades.
+STITCH_MODULE_BOUNDARY_SYMMETRIC_FADE_V1 = "STITCH_MODULE_BOUNDARY_SYMMETRIC_FADE_V1"
 STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX = 2
 STITCH_SLOT_DEFAULT_TAIL_SFX_MAX_MS = 8000
 # Boundary dissolve SFX filenames owned by _stitch_apply_canonical_boundary_sfx (not slot tail cues).
@@ -3707,7 +3707,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
 
 
 _STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
-_DEFAULT_PHASE_TRANSITION_FADE_MS = 2800
+_DEFAULT_PHASE_TRANSITION_FADE_MS = 3800
 
 # STITCH_CANONICAL_TRANSITIONS_V1 — module boundaries always fade-through-black like intro.
 STITCH_CANONICAL_TRANSITIONS_V1 = "STITCH_CANONICAL_TRANSITIONS_V1"
@@ -3725,11 +3725,8 @@ STITCH_CANONICAL_BOUNDARY_SFX: dict[int, str] = {
 
 
 def module_boundary_visual_out_ms_by_pair(pair_count: int, default_out_ms: int) -> list[int]:
-    """Per-boundary outgoing visual fade. Phase B→resolution uses 0 — no tail dimming."""
-    return [
-        0 if i == STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX else int(default_out_ms)
-        for i in range(max(0, pair_count))
-    ]
+    """Per-boundary outgoing visual fade — symmetric dissolve tails at every phase join."""
+    return [int(default_out_ms) for _ in range(max(0, pair_count))]
 
 
 def boundary_sfx_overlay_plan(
@@ -3827,7 +3824,7 @@ def default_stitch_transitions() -> list[dict]:
 
 
 def canonical_stitch_transitions_for_pipeline(_existing=None) -> list[dict]:
-    """Preview/bake always use dissolve / 2800ms / hard audio cut — ignore UI drift."""
+    """Preview/bake always use dissolve / 3800ms / hard audio cut — ignore UI drift."""
     return default_stitch_transitions()
 
 

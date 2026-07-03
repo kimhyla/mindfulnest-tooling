@@ -60,12 +60,12 @@ def test_strip_removes_stale_boundary_tail_cues() -> None:
 
 def test_boundary_sfx_overlay_spans_dissolve_not_tail_only() -> None:
     clip_dur_ms = 38986
-    pair_ms = 2800
+    pair_ms = 3800
     plan = se.boundary_sfx_overlay_plan(clip_dur_ms, pair_ms)
     assert plan["out_ms"] == 600
-    assert plan["black_ms"] == 1600
+    assert plan["black_ms"] == 2600
     assert plan["in_ms"] == 600
-    assert plan["total_span_ms"] == 500 + 600 + 1600 + 600 + 500
+    assert plan["total_span_ms"] == 500 + 600 + 2600 + 600 + 500
     # SFX seg1 starts 1100ms before clip end — then continues through black + incoming fade.
     assert plan["seg1_offset_ms"] == clip_dur_ms - (500 + 600)
     assert plan["seg1_offset_ms"] > clip_dur_ms - 3000  # not a 3s-only tail window

@@ -1,4 +1,4 @@
-"""Resolution head whoosh + phase B boundary outgoing fade — category fixes."""
+"""Resolution head whoosh + symmetric module boundary fades — category fixes."""
 
 from __future__ import annotations
 
@@ -77,21 +77,21 @@ def test_resolution_head_whoosh_cue_materialized() -> None:
     assert head.get("auto_default")
 
 
-def test_phase_b_boundary_zero_outgoing_visual_fade() -> None:
+def test_module_boundary_symmetric_outgoing_visual_fade() -> None:
     from server_handlers.stitch_editor import (
         STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX,
         module_boundary_visual_out_ms_by_pair,
     )
 
     by_pair = module_boundary_visual_out_ms_by_pair(3, 600)
-    assert by_pair[STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX] == 0
+    assert by_pair[STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX] == 600
     assert by_pair[0] == 600
     assert by_pair[1] == 600
 
-    out_ms, in_ms, black_ms = fs.allocate_pair_fade_budget(2800, visual_out_ms=0, visual_in_ms=600)
-    assert out_ms == 0
+    out_ms, in_ms, black_ms = fs.allocate_pair_fade_budget(3800, visual_out_ms=600, visual_in_ms=600)
+    assert out_ms == 600
     assert in_ms == 600
-    assert black_ms == 2200
+    assert black_ms == 2600
 
 
 def test_expand_clips_honors_per_pair_visual_out(tmp_path: Path) -> None:
@@ -102,13 +102,13 @@ def test_expand_clips_honors_per_pair_visual_out(tmp_path: Path) -> None:
         clips.append(p)
     out = fs.expand_clips_with_black_pause_boundaries(
         clips,
-        [2800],
+        [3800],
         tmp_path / "scratch",
         visual_out_ms=600,
         visual_in_ms=600,
-        visual_out_ms_by_pair=[0],
+        visual_out_ms_by_pair=[600],
         fade_audio=False,
     )
     assert len(out) == 3
-    assert out[0].name == "clip_0.mp4"
-    assert any(p.name.startswith("black_pause_body_") and "fo0.000" in p.name for p in out)
+    assert out[0].name.startswith("black_pause_body_")
+    assert "fo0.600" in out[0].name

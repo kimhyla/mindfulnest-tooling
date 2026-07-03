@@ -10,7 +10,7 @@ export type SlotKey = 'intro' | 'phase_a' | 'phase_b' | 'resolution';
 export const STITCH_SLOT_ORDER: SlotKey[] = ['intro', 'phase_a', 'phase_b', 'resolution'];
 
 /** Match intro canonical final_pair_fade_ms default (prolonged fade-through-black). */
-export const DEFAULT_PHASE_TRANSITION_FADE_MS = 2800;
+export const DEFAULT_PHASE_TRANSITION_FADE_MS = 3800;
 
 export function defaultStitchTransitions(): Transition[] {
   return [0, 1, 2].map((after_slot) => ({

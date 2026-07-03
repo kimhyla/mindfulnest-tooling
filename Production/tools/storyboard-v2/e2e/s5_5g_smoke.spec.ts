@@ -90,9 +90,9 @@ const DEFAULT_SLOTS: Record<string, MockSlot> = {
 const CANONICAL_STITCH_JOB = `${FIXTURE_EVENT}_stitch`;
 
 const DEFAULT_CANONICAL_TRANSITIONS = [
-  { after_slot: 0, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
-  { after_slot: 1, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
-  { after_slot: 2, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+  { after_slot: 0, kind: 'dissolve', fade_ms: 3800, audio_xfade_ms: 0 },
+  { after_slot: 1, kind: 'dissolve', fade_ms: 3800, audio_xfade_ms: 0 },
+  { after_slot: 2, kind: 'dissolve', fade_ms: 3800, audio_xfade_ms: 0 },
 ];
 
 /**
@@ -192,7 +192,7 @@ async function mockStitchPreviewAndBoundaries(page: Page): Promise<void> {
         ok: true,
         preview_url: 'http://localhost:5200/api/stitch_editor/preview_file/mock_preview',
         slot_durations: [30000, 50000, 100000, 30000],
-        slot_start_offsets_ms: [0, 32600, 82600, 182600],
+        slot_start_offsets_ms: [0, 32600, 85200, 187800],
       }),
     });
   });
