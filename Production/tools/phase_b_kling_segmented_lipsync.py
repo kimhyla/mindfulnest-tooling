@@ -34,7 +34,10 @@ from phase_b_kling_pause_aligned_segments import (  # noqa: E402
     compute_pause_aligned_segments,
     chunk_audio_pause_aligned,
 )
-from phase_module_lipsync_delivery import finalize_phase_module_lipsync_delivery  # noqa: E402
+from phase_module_lipsync_delivery import (  # noqa: E402
+    PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+    finalize_phase_module_lipsync_delivery,
+)
 
 def _detect_silences(audio_path: Path) -> list[tuple[float, float]]:
     if str(TOOLS) not in sys.path:
@@ -180,7 +183,11 @@ def run_phase_b_kling_segmented_lipsync(
     os.replace(concat_tmp, out_path)
     delivery_meta: dict = {}
     if apply_delivery:
-        delivery_meta = finalize_phase_module_lipsync_delivery(out_path, sharpen=True)
+        delivery_meta = finalize_phase_module_lipsync_delivery(
+            out_path,
+            sharpen=True,
+            delivery_recipe=PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+        )
 
     manifest = {
         "code": seg_code,
