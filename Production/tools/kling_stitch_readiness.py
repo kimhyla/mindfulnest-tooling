@@ -180,6 +180,13 @@ def finalize_kling_delivery_clip(
     from beat_generator import beat_is_still_insert  # noqa: PLC0415
 
     vp = str(Path(video_path).resolve())
+    prev_raw = str(beat.get("kling_o3_video_path") or "").strip()
+    prev_vp = ""
+    if prev_raw:
+        try:
+            prev_vp = str(Path(prev_raw).resolve())
+        except OSError:
+            prev_vp = prev_raw
     beat["kling_o3_video_path"] = vp
     beat_id = str(beat.get("beat_id") or "beat")
     from o3_gallery_option_identity import canonical_o3_option_key  # noqa: PLC0415
@@ -189,8 +196,10 @@ def finalize_kling_delivery_clip(
     if still:
         beat["kling_o3_status"] = "still_rendered"
         beat["status"] = "draft"
-        beat.pop("kling_o3_still_stitch_approved", None)
-        beat.pop("kling_o3_still_stitch_approved_at", None)
+        same_active_clip = bool(prev_vp and prev_vp == vp)
+        if not (same_active_clip and beat.get("kling_o3_still_stitch_approved")):
+            beat.pop("kling_o3_still_stitch_approved", None)
+            beat.pop("kling_o3_still_stitch_approved_at", None)
     else:
         beat["kling_o3_status"] = "approved"
         beat["status"] = "approved"

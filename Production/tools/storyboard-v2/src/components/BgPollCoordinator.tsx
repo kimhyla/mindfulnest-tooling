@@ -28,6 +28,7 @@ import {
   mergeBeatFromO3Poll,
   o3PollResultHasVideo,
 } from '../utils/bgPollHelpers';
+import { bgBeats } from '../state/bgSessionStore';
 
 const POLL_INTERVAL_MS = 10000;
 const O3_POLL_INTERVAL_MS = 3000;
@@ -130,7 +131,11 @@ export function BgPollCoordinator() {
           }
           if (res.data.status === 'done_with_warning') {
             completedBeatIds.push(beatId);
-            const beatPatch = beatPatchFromO3PollTerminal(beatId, res.data);
+            const beatPatch = beatPatchFromO3PollTerminal(
+              beatId,
+              res.data,
+              bgBeats.value.find((b) => b.beat_id === beatId),
+            );
             if (beatPatch) beatPatches.push(beatPatch);
             if (!o3PollResultHasVideo(res.data)) {
               pushToast({
@@ -153,7 +158,11 @@ export function BgPollCoordinator() {
           }
           if (res.data.status === 'done') {
             completedBeatIds.push(beatId);
-            const beatPatch = beatPatchFromO3PollTerminal(beatId, res.data);
+            const beatPatch = beatPatchFromO3PollTerminal(
+              beatId,
+              res.data,
+              bgBeats.value.find((b) => b.beat_id === beatId),
+            );
             if (beatPatch) beatPatches.push(beatPatch);
             if (!o3PollResultHasVideo(res.data)) {
               pushToast({
@@ -172,7 +181,11 @@ export function BgPollCoordinator() {
           }
           if (res.data.status === 'failed') {
             failedBeatIds.push(beatId);
-            const beatPatch = beatPatchFromO3PollTerminal(beatId, res.data);
+            const beatPatch = beatPatchFromO3PollTerminal(
+              beatId,
+              res.data,
+              bgBeats.value.find((b) => b.beat_id === beatId),
+            );
             if (beatPatch) beatPatches.push(beatPatch);
             const recovered =
               o3PollResultHasVideo(res.data)
