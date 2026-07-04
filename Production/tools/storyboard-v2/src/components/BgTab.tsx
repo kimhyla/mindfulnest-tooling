@@ -45,6 +45,12 @@ import {
 } from './bg/BgO3CutOverlay';
 import { clearPlaybackUrlCache, resolveClipPlaybackTruth } from '../utils/playbackCache';
 import {
+  o3TrimApplyArtifactPath,
+  o3TrimApplyIsBaked,
+  o3TrimApplyPreviewUrl,
+  type O3TrimApplyServerData,
+} from '../utils/o3TrimApplyContract';
+import {
   forgetCutPreviewsForBeat,
   recallCutPreviewUrl,
   rememberCutPreviewUrl,
@@ -2535,17 +2541,11 @@ export function BgTab() {
     trimBaked?: boolean;
     videoPath?: string;
   } | undefined> => {
-    const result = await pathappPatch<{
-      trim_start?: number;
-      trim_back?: number | null;
+    const result = await pathappPatch<O3TrimApplyServerData & {
       trim_end?: number;
       slot_index?: number;
       raw_duration_s?: number;
       effective_duration_s?: number | null;
-      preview_video_url?: string;
-      video_path?: string;
-      trim_baked?: boolean;
-      export_baked?: boolean;
     }>(activeScope.value, 'bg_kling_o3_trim', {
       beat_id: beatId,
       slot_index: slotIndex,
@@ -2564,7 +2564,7 @@ export function BgTab() {
       const shorteningRequested = !opts?.clear && (
         trimStartS > 0.05 || (trimBackS != null && trimBackS > 0.05)
       );
-      const trimBaked = !!result.data?.trim_baked;
+      const trimBaked = o3TrimApplyIsBaked(result.data);
       if (
         shorteningRequested
         && !trimBaked
@@ -2587,12 +2587,13 @@ export function BgTab() {
           const slots = buildFixedO3OptionSlots(b);
           const slotOpt = slots[slotIndex];
           const targetPath = opts?.videoPath ?? slotOpt?.video_path ?? '';
-          const bakedPath = result.data?.video_path;
-          const trimBaked = !!result.data?.trim_baked;
+          const bakedArtifact = o3TrimApplyArtifactPath(result.data);
+          const trimBaked = o3TrimApplyIsBaked(result.data);
+          const inPlaceVideoPath = result.data?.trim_baked ? result.data?.video_path : undefined;
           const optionMatchesTarget = (o: GptOption | undefined): boolean => {
             if (!o?.video_path) return false;
             if (targetPath && o.video_path === targetPath) return true;
-            if (bakedPath && o.video_path === bakedPath) return true;
+            if (inPlaceVideoPath && o.video_path === inPlaceVideoPath) return true;
             if (typeof o.slot_index === 'number' && o.slot_index === slotIndex) return true;
             const slotPath = slotOpt?.video_path;
             return !!slotPath && o.video_path === slotPath;
@@ -2609,17 +2610,22 @@ export function BgTab() {
               } = o as GptOption & Record<string, unknown>;
               return rest as GptOption;
             }
-            if (trimBaked && bakedPath) {
+            if (trimBaked) {
               const {
                 trim_start_s: _ts,
                 trim_back_s: _tb,
                 cut_start_s: _cs,
                 cut_end_s: _ce,
-                kling_o3_baked_path: _obp,
-                kling_o3_baked_token: _obt,
                 ...rest
               } = o as GptOption & Record<string, unknown>;
-              return { ...rest, video_path: bakedPath } as GptOption;
+              const next: GptOption & Record<string, unknown> = { ...rest };
+              if (bakedArtifact) {
+                next['kling_o3_baked_path'] = bakedArtifact;
+              }
+              if (inPlaceVideoPath) {
+                next.video_path = inPlaceVideoPath;
+              }
+              return next as GptOption;
             }
             const next: GptOption & Record<string, unknown> = {
               ...o,
@@ -2637,7 +2643,7 @@ export function BgTab() {
           });
           const activePath = b.kling_o3_video_path ?? '';
           const mirrorsActive = targetPath === activePath
-            || bakedPath === activePath
+            || (inPlaceVideoPath != null && inPlaceVideoPath === activePath)
             || slotOpt?.video_path === activePath;
           if (mirrorsActive && opts?.clear) {
             const restoredPath = result.data?.video_path;
@@ -2679,7 +2685,7 @@ export function BgTab() {
             const nextBeat: BgBeat = {
               ...b,
               kling_o3_options: nextOptions,
-              ...(trimBaked && bakedPath ? { kling_o3_video_path: bakedPath } : {}),
+              ...(trimBaked && inPlaceVideoPath ? { kling_o3_video_path: inPlaceVideoPath } : {}),
               ...(trimBaked
                 ? {}
                 : {
@@ -2695,7 +2701,7 @@ export function BgTab() {
             }
             return nextBeat;
           }
-          if (trimBaked && bakedPath) {
+          if (trimBaked) {
             return { ...b, kling_o3_options: nextOptions };
           }
           return { ...b, kling_o3_options: nextOptions };
@@ -2715,10 +2721,7 @@ export function BgTab() {
           source: 'bg-o3-cut',
         });
       }
-      const preview = result.data?.preview_video_url;
-      const previewUrl = preview
-        ? (preview.startsWith('http') ? preview : `${SERVER_BASE}${preview}`)
-        : undefined;
+      const previewUrl = o3TrimApplyPreviewUrl(result.data, SERVER_BASE);
       if (
         !opts?.previewOnly
         && !opts?.clear
@@ -2733,7 +2736,7 @@ export function BgTab() {
       }
       const rawDurationS = result.data?.raw_duration_s;
       const effectiveDurationS = result.data?.effective_duration_s;
-      const bakedVideoPath = result.data?.video_path;
+      const bakedVideoPath = o3TrimApplyArtifactPath(result.data) ?? result.data?.video_path;
       return {
         ...(previewUrl !== undefined ? { previewUrl } : {}),
         ...(rawDurationS !== undefined ? { rawDurationS } : {}),
@@ -2755,15 +2758,10 @@ export function BgTab() {
   };
 
   const onApplyO3Trim = async (beatId: string, trimStart: number, trimBack: number | null, clear = false) => {
-    const result = await pathappPatch<{
-      trim_start?: number;
-      trim_back?: number | null;
+    const result = await pathappPatch<O3TrimApplyServerData & {
       trim_end?: number;
       raw_duration_s?: number;
       effective_duration_s?: number | null;
-      preview_video_url?: string;
-      trim_baked?: boolean;
-      video_path?: string;
     }>(activeScope.value, 'bg_kling_o3_trim', {
       beat_id: beatId,
       trim_start: trimStart,
@@ -2772,20 +2770,37 @@ export function BgTab() {
     });
     if (result.ok) {
       clearPlaybackUrlCache();
+      const trimBaked = o3TrimApplyIsBaked(result.data);
+      const inPlaceVideoPath = result.data?.trim_baked ? result.data?.video_path : undefined;
+      const bakedArtifact = o3TrimApplyArtifactPath(result.data);
       updateBgBeats((bs) => bs.map((b) => (
         b.beat_id === beatId
           ? {
             ...b,
-            kling_o3_trim_start: result.data?.trim_start ?? 0,
-            kling_o3_trim_back: result.data?.trim_back ?? null,
-            ...(result.data?.video_path ? { kling_o3_video_path: result.data.video_path } : {}),
-            ...(result.data?.trim_baked && result.data?.video_path
+            ...(trimBaked
               ? {
-                kling_o3_options: (b.kling_o3_options ?? []).map((o) => (
-                  o?.video_path === b.kling_o3_video_path
-                    ? { ...o, video_path: result.data!.video_path! }
-                    : o
-                )),
+                kling_o3_trim_start: 0,
+                kling_o3_trim_back: null,
+              }
+              : {
+                kling_o3_trim_start: result.data?.trim_start ?? 0,
+                kling_o3_trim_back: result.data?.trim_back ?? null,
+              }),
+            ...(inPlaceVideoPath ? { kling_o3_video_path: inPlaceVideoPath } : {}),
+            ...(trimBaked && (bakedArtifact || inPlaceVideoPath)
+              ? {
+                kling_o3_options: (b.kling_o3_options ?? []).map((o) => {
+                  if (o?.video_path !== b.kling_o3_video_path) return o;
+                  const {
+                    trim_start_s: _ts,
+                    trim_back_s: _tb,
+                    ...rest
+                  } = o as GptOption & Record<string, unknown>;
+                  const next: GptOption & Record<string, unknown> = { ...rest };
+                  if (bakedArtifact) next['kling_o3_baked_path'] = bakedArtifact;
+                  if (inPlaceVideoPath) next.video_path = inPlaceVideoPath;
+                  return next as GptOption;
+                }),
               }
               : {}),
           }
@@ -2796,7 +2811,7 @@ export function BgTab() {
         kind: 'success',
         message: clear
           ? 'Trim cleared — full clip restored for export (switch O3 option separately if needed)'
-          : result.data?.trim_baked
+          : trimBaked
             ? (dur != null
               ? `Trim baked into clip (${dur.toFixed(1)}s) — audio/video updated in place`
               : 'Trim baked into clip — audio/video updated in place')
@@ -2805,17 +2820,16 @@ export function BgTab() {
               : 'Trim saved'),
         source: 'bg-o3-trim',
       });
-      if (result.data?.trim_baked || result.data?.video_path) {
+      const previewUrl = o3TrimApplyPreviewUrl(result.data, SERVER_BASE);
+      if ((trimBaked || result.data?.video_path) && !previewUrl) {
         await refreshState();
       }
-      const preview = result.data?.preview_video_url;
-      const previewUrl = preview
-        ? (preview.startsWith('http') ? preview : `${SERVER_BASE}${preview}`)
-        : undefined;
       const rawDurationS = result.data?.raw_duration_s;
       return {
         ...(previewUrl !== undefined ? { previewUrl } : {}),
         ...(rawDurationS !== undefined ? { rawDurationS } : {}),
+        ...(trimBaked ? { trimBaked: true as const } : {}),
+        ...(o3TrimApplyArtifactPath(result.data) ? { videoPath: o3TrimApplyArtifactPath(result.data) } : {}),
       };
     }
     await guardBeatPatchResult(
@@ -4878,6 +4892,8 @@ function BgOptionTile({
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [cutBusy, setCutBusy] = useState(false);
   const lastAutoPreviewRef = useRef<string | null>(null);
+  /** Skip one sourceVideoPath reset after Apply Cut sets materialized preview (export_baked path churn). */
+  const skipPreviewClearRef = useRef(false);
   /** STITCH_NO_AUTO_CUT_PREVIEW_V1 — Apply Cut only after operator commits both handles. */
   const [cutHandlesAdjusted, setCutHandlesAdjusted] = useState({ start: false, end: false });
   const resetCutHandleFlags = () => setCutHandlesAdjusted({ start: false, end: false });
@@ -5122,8 +5138,12 @@ function BgOptionTile({
   useEffect(() => {
     // Only drop materialized preview when the underlying source clip changes —
     // NOT when cache-bust query params change on session refresh.
-    setPreviewUrl(null);
-    lastAutoPreviewRef.current = null;
+    if (skipPreviewClearRef.current) {
+      skipPreviewClearRef.current = false;
+    } else {
+      setPreviewUrl(null);
+      lastAutoPreviewRef.current = null;
+    }
     setPendingCut(null);
     resetCutHandleFlags();
     setLoadedDuration(null);
@@ -5150,6 +5170,7 @@ function BgOptionTile({
 
   const swapVideoToPreview = async (url: string, opts?: { autoplay?: boolean }) => {
     const autoplay = opts?.autoplay === true;
+    skipPreviewClearRef.current = true;
     setVideoLoadError(false);
     setPreviewUrl(url);
     const video = videoRef.current;
@@ -5340,6 +5361,7 @@ function BgOptionTile({
       return;
     }
     if (saved.trimBaked && saved.videoPath) {
+      skipPreviewClearRef.current = true;
       setPreviewUrl(null);
       lastAutoPreviewRef.current = null;
       forgetCutPreviewsForBeat(beatId);
