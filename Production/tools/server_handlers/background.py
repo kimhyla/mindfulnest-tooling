@@ -5323,6 +5323,7 @@ def _enriched_beat_snapshot_for_o3_poll(
             sidecar,
             event_id=str(event_id_h or ""),
             phase=str(phase_h or "full"),
+            event_dir=event_dir,
             approved_roots=None,
         )
         derived = snap["_derived"]
@@ -6898,17 +6899,6 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
     preview_only = bool(body.get("preview_only") or body.get("preview"))
     slot_index = body.get("slot_index")
     req_video_path = str(body.get("video_path") or "").strip() or None
-    bg = _bg_module()
-    if slot_index is not None:
-        try:
-            bg.normalize_o3_ui_slot_index(slot_index)
-        except ValueError as exc:
-            return h._send_error_v59(
-                400,
-                error_code="INVALID_SLOT_INDEX",
-                error_message=str(exc),
-                retry_safe=False,
-            )
     raw_cut_start = body.get("cut_start_s")
     raw_cut_end = body.get("cut_end_s")
     raw_trim_start = body.get("trim_start")
@@ -6922,6 +6912,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         raw_cut_start is not None or raw_cut_end is not None
     )
 
+    bg = _bg_module()
     trim_mode = (
         "option_trim" if use_option_trim else ("cut" if use_cut else "beat_trim")
     )
@@ -7559,8 +7550,6 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                                 if bake.get("baked_path"):
                                     opt_bake["kling_o3_baked_path"] = bake["baked_path"]
                                     opt_bake["kling_o3_baked_token"] = bake.get("baked_token")
-                                    if bake.get("baked_source_path"):
-                                        opt_bake["kling_o3_baked_source_path"] = bake["baked_source_path"]
                                 else:
                                     bg.clear_o3_baked_fields(opt_bake)
                         except Exception as exc:

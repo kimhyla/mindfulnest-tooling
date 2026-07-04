@@ -929,21 +929,37 @@ def _prepare_bg_export_request(h, body: dict) -> dict | None:
         )
         return None
 
-    not_ready = []
-    for beat in beats:
-        if not bg.beat_has_stitch_export_clip(beat, data_dir):
-            not_ready.append(beat.get("beat_id"))
+    from bg_stitch_export_preflight import (  # noqa: PLC0415
+        append_bg_stitch_export_preflight_audit,
+        build_bg_stitch_export_preflight_manifest,
+        preflight_error_message,
+    )
 
-    if not_ready:
+    preflight = build_bg_stitch_export_preflight_manifest(
+        arc_number=arc_number,
+        event_id=event_id,
+        phase=phase,
+        slot_key=str(slot_key),
+        beats=beats,
+        event_dir=data_dir,
+    )
+    append_bg_stitch_export_preflight_audit(data_dir, preflight)
+    if not preflight["ready"]:
+        blocking_ids = [
+            str(b.get("beat_id"))
+            for b in preflight.get("beats") or []
+            if isinstance(b, dict) and not b.get("ready") and b.get("beat_id")
+        ]
         h._send_error_v59(
             400,
             error_code="BEATS_NOT_APPROVED",
-            error_message=(
-                f"{len(not_ready)} beat(s) not ready for stitch export "
-                "(need approved Kling clip or magic-on-still composite)"
-            ),
+            error_message=preflight_error_message(preflight),
             retry_safe=False,
-            extra={"beat_ids": not_ready},
+            extra={
+                **preflight,
+                "beat_ids": blocking_ids,
+                "hint": preflight_error_message(preflight),
+            },
         )
         return None
 
@@ -972,7 +988,14 @@ def _prepare_bg_export_request(h, body: dict) -> dict | None:
             error_code="EXPORT_TRIM_AUTHORITY",
             error_message="; ".join(trim_errors),
             retry_safe=False,
-            extra={"beat_ids": [e.split(":")[0] for e in trim_errors], "code": bg.KLING_O3_EXPORT_TRIM_AUTHORITY_V1},
+            extra={
+                "beat_ids": [e.split(":")[0] for e in trim_errors],
+                "code": bg.KLING_O3_EXPORT_TRIM_AUTHORITY_V1,
+                "hint": (
+                    "Trim authority drift — open the listed beat(s), apply trim on the active option, "
+                    "then retry Send to Stitcher."
+                ),
+            },
         )
         return None
     if trim_changed:
@@ -1440,6 +1463,82 @@ def _execute_bg_export_to_stitcher_job(
 
     bg = _bg(h)
     run_in_beatgen_scope(h.app, bg, _worker_body)
+
+
+def handle_bg_export_to_stitcher_preflight(h) -> None:
+    """GET /api/bg/export-to-stitcher-preflight — silent readiness manifest (alert client-side only on error)."""
+    import urllib.parse  # noqa: PLC0415
+
+    from bg_stitch_export_preflight import (  # noqa: PLC0415
+        append_bg_stitch_export_preflight_audit,
+        build_bg_stitch_export_preflight_manifest,
+    )
+    from server_handlers.milestone_scope import assert_production_scope, parse_scope_query
+
+    qs_body = parse_scope_query(h)
+    pctx = assert_production_scope(
+        h,
+        qs_body,
+        allow_missing=True,
+        allow_missing_video_role=True,
+        repair_sidecar=False,
+    )
+    if pctx is None:
+        return
+
+    bg = _bg_module()
+    qs = urllib.parse.parse_qs(urllib.parse.urlparse(h.path).query)
+
+    def _q(name: str, default=None):
+        v = qs.get(name)
+        return v[0] if v else default
+
+    if pctx and pctx.is_milestone:
+        skel = pctx.skeleton_ref or {}
+        arc_number = int(skel.get("arc_number") or 1)
+        event_id = str(skel.get("event_id"))
+        phase = str(skel.get("phase") or "full")
+        slot_key = "standalone"
+        data_dir = pctx.root_dir
+    else:
+        arc_number = int(_q("scope_arc_number") or _q("arc_number") or 1)
+        event_id = bg.normalize_bg_event_id(str(_q("scope_event_id") or _q("event_id") or "1"))
+        phase = str(_q("scope_phase") or _q("phase") or "pre")
+        video_role = str(_q("scope_video_role") or _q("scope_target_video") or _q("video_role") or "")
+        slot_key = (
+            _q("slot_key")
+            or bg.resolve_bg_export_stitch_slot(phase=phase, video_role=video_role or None)
+        )
+        data_dir = h.app.event_dir
+
+    if not slot_key:
+        return h._send_error_v59(
+            400,
+            error_code="UNSUPPORTED_PHASE",
+            error_message=f"no stitch slot mapping for BG phase {phase!r}",
+            retry_safe=False,
+        )
+
+    sidecar = bg.read_sidecar()
+    seg = bg.get_seg_entry(sidecar, arc_number, event_id, phase)
+    beats = list(seg.get("beats") or [])
+    if not beats:
+        return h._send_error_v59(
+            400, error_code="NO_BEATS", error_message="segment has no beats", retry_safe=False,
+        )
+
+    manifest = build_bg_stitch_export_preflight_manifest(
+        arc_number=arc_number,
+        event_id=event_id,
+        phase=phase,
+        slot_key=str(slot_key),
+        beats=beats,
+        event_dir=data_dir,
+    )
+    append_bg_stitch_export_preflight_audit(data_dir, manifest)
+    payload = dict(manifest)
+    payload["ok"] = True
+    return h._send_json(200, payload)
 
 
 def handle_bg_export_to_stitcher(h, body: dict) -> None:

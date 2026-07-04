@@ -51,6 +51,7 @@ export const READ_ENDPOINTS = {
   bg_poll_arlo_o3_voice_status: `${SERVER_BASE}/api/bg/poll-arlo-o3-voice-status`,
   bg_poll_kling_native_lipsync_experiment_status: `${SERVER_BASE}/api/bg/poll-kling-native-lipsync-experiment-status`,
   bg_poll_export_to_stitcher: `${SERVER_BASE}/api/bg/poll-export-to-stitcher`,
+  bg_export_to_stitcher_preflight: `${SERVER_BASE}/api/bg/export-to-stitcher-preflight`,
   // S5.5e — Storyboard beat-level reads.
   // beat_audio is a templated path: GET /api/beat/audio/<beat_id>?event_id=...
   // apiGet() substitutes {beat_id} from the query dict before issuing.
