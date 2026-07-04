@@ -31,6 +31,10 @@ export async function resolveClipPlaybackTruth(
   const truth: ClipPlaybackTruth = { playbackUrl: url, rawDurationS };
   // Server token = sha256(path+mtime+size); always refetch so in-place clip swaps reach the tile.
   const cacheKey = res.data.cache_token ? `${key}|${res.data.cache_token}` : key;
+  if (res.data.cache_token) {
+    playbackUrlCache.delete(key);
+    playbackTruthCache.delete(key);
+  }
   playbackUrlCache.set(cacheKey, url);
   playbackTruthCache.set(cacheKey, truth);
   return truth;

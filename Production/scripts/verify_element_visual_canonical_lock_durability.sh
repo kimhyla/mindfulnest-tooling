@@ -46,6 +46,8 @@ echo "[element-visual-canonical-lock] pass 3/6 — patch scripts removed"
 echo "[element-visual-canonical-lock] pass 4/6 — HTTP route + authority registry row"
 grep -q 'handle_bg_set_element_identity' "$TOOLS/server_handlers/background.py"   || fail "missing handle_bg_set_element_identity"
 grep -q '/api/bg/set-element-identity' "$TOOLS/production_server.py"   || fail "missing /api/bg/set-element-identity route"
+grep -q "@with_pin_and_drain('_handle_bg_set_element_identity'" "$TOOLS/production_server.py" \
+  || fail "set_element_identity handler must use @with_pin_and_drain"
 grep -q 'element_visual_canonical_lock' "$TOOLS/authority_registry.py"   || fail "authority_registry.py missing element_visual_canonical_lock"
 grep -q 'element_visual_canonical_lock' "$ROOT/Production/docs/STORYBOARD_AUTHORITY_REGISTRY_v1.md"   || fail "STORYBOARD_AUTHORITY_REGISTRY missing element_visual_canonical_lock row"
 

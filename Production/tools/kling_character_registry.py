@@ -874,6 +874,8 @@ def _register_element_after_pose_update(
     wavespeed_key: str,
     data: dict,
     chars: dict,
+    *,
+    persist: bool = True,
 ) -> str:
     from tools.kling_element_voice import register_kling_element
 
@@ -888,7 +890,8 @@ def _register_element_after_pose_update(
     element_id = str(element_id)
     chars[char_key] = cfg
     data["characters"] = chars
-    save_character_subjects(data)
+    if persist:
+        save_character_subjects(data)
     return element_id
 
 
@@ -969,7 +972,9 @@ def set_element_identity(
     cfg["visual_canonical_locked_at"] = _utc_now_iso()
     scrub_refer_images_for_canonical_identity(cfg, char_key, rel_pose)
 
-    element_id = _register_element_after_pose_update(char_key, cfg, wavespeed_key, data, chars)
+    element_id = _register_element_after_pose_update(
+        char_key, cfg, wavespeed_key, data, chars, persist=False,
+    )
     pin_proven_o3_bind_for_visual_canonical(cfg, element_id=element_id)
     chars[char_key] = cfg
     data["characters"] = chars

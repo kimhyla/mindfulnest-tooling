@@ -1,7 +1,9 @@
 // BeatMagicButtons — magic trail triggers (LD-468 still / LD-469 video).
 // Shared by StoryboardTab and BgTab so resolution Beat Gen keeps parity.
 
+import { pathappPatch } from '../api/client';
 import { SERVER_BASE } from '../api/endpoints';
+import { activeScope } from '../state/scope';
 
 export interface BeatMagicButtonsProps {
   index: number;
@@ -22,8 +24,8 @@ export interface BeatMagicButtonsProps {
   klingO3Status?: string | null | undefined;
   onPreviewMagicStill?: (() => void) | undefined;
   onPreviewMagicVideo?: (() => void) | undefined;
-  /** Called after server clears magic_still_path (refresh beat state). */
-  onMagicStillCleared?: (() => void) | undefined;
+  /** Called after server clears magic still or video (refresh beat state). */
+  onMagicCleared?: (() => void) | undefined;
 }
 
 export function BeatMagicButtons({
@@ -42,7 +44,7 @@ export function BeatMagicButtons({
   klingO3Status,
   onPreviewMagicStill,
   onPreviewMagicVideo,
-  onMagicStillCleared,
+  onMagicCleared,
 }: BeatMagicButtonsProps) {
   const hasMagicStill = !!magicStillPath;
   const hasMagicVideo = !!magicVideoPath;
@@ -67,21 +69,20 @@ export function BeatMagicButtons({
       'Remove magic on video from this beat? (The old MP4 stays on disk; preview and stitch will ignore it.)',
     )) return;
     try {
-      const resp = await fetch(`${SERVER_BASE}/api/storyboard/clear_magic_video`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const result = await pathappPatch<{ ok?: boolean; error_message?: string; error?: string }>(
+        activeScope.value,
+        'storyboard_clear_magic_video',
+        {
           beat_id: beatId,
           scope_event_id: eventId,
           scope_video_role: videoRole,
-        }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok || data.ok === false) {
-        window.alert(data.error_message || data.error || `Clear failed (HTTP ${resp.status})`);
+        },
+      );
+      if (!result.ok || result.data?.ok === false) {
+        window.alert(result.error ?? result.data?.error_message ?? result.data?.error ?? `Clear failed (HTTP ${result.status})`);
         return;
       }
-      onMagicStillCleared?.();
+      onMagicCleared?.();
     } catch (err) {
       window.alert(`Clear failed: ${String(err)}`);
     }
@@ -105,21 +106,20 @@ export function BeatMagicButtons({
       'Remove magic on still from this beat? (The old MP4 stays on disk; preview and stitch will ignore it.)',
     )) return;
     try {
-      const resp = await fetch(`${SERVER_BASE}/api/storyboard/clear_magic_still`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const result = await pathappPatch<{ ok?: boolean; error_message?: string; error?: string }>(
+        activeScope.value,
+        'storyboard_clear_magic_still',
+        {
           beat_id: beatId,
           scope_event_id: eventId,
           scope_video_role: videoRole,
-        }),
-      });
-      const data = await resp.json().catch(() => ({}));
-      if (!resp.ok || data.ok === false) {
-        window.alert(data.error_message || data.error || `Clear failed (HTTP ${resp.status})`);
+        },
+      );
+      if (!result.ok || result.data?.ok === false) {
+        window.alert(result.error ?? result.data?.error_message ?? result.data?.error ?? `Clear failed (HTTP ${result.status})`);
         return;
       }
-      onMagicStillCleared?.();
+      onMagicCleared?.();
     } catch (err) {
       window.alert(`Clear failed: ${String(err)}`);
     }
