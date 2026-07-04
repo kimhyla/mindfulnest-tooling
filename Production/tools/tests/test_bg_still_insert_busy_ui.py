@@ -80,6 +80,8 @@ def test_apply_o3_gallery_poll_ignores_o3_job_fields_on_still_insert() -> None:
     assert "stillInsert" in fn
     assert "delete gallery.job_busy" in fn
     assert "delete gallery.o3_current_job_id" in fn
+    assert "'kling_o3_still_stitch_approved'" in fn
+    assert "'kling_o3_still_stitch_approved_at'" in fn
 
 
 def test_nav_module_purges_o3_client_latches_for_still_insert() -> None:

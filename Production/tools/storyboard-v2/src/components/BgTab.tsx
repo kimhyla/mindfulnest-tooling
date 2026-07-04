@@ -543,6 +543,15 @@ function isUserSelectableO3Video(path?: string | null, source?: string | null): 
     return Boolean(path);
   }
   const name = (path ?? '').toLowerCase().split('/').pop() ?? '';
+  if (
+    name.includes('_still_insert_')
+    && !name.includes('_tts')
+    && !name.includes('_trimmed')
+    && !name.includes('_kling_idle')
+  ) {
+    // Ken-burns silent preview — audible clip is the *_tts.mp4 sibling.
+    return false;
+  }
   return Boolean(path)
     && !name.includes('_silent_o3_base')
     && !name.includes('_delivery_input')

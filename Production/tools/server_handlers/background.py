@@ -7272,6 +7272,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                         Path(h.app.event_dir),
                         beat,
                     )
+                    effective_req_video = req_video_path
                     if not body.get("clear"):
                         if (
                             bg.beat_is_still_insert(beat)
@@ -7287,6 +7288,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                                 result["trim_baked"] = bool(bake_si.get("baked"))
                                 if bake_si.get("video_path"):
                                     result["video_path"] = bake_si["video_path"]
+                                    effective_req_video = str(bake_si["video_path"])
                                     result["trim_start"] = 0.0
                                     result["trim_back"] = None
                                     if bake_si.get("baked"):
@@ -7295,6 +7297,16 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                                             result["raw_duration_s"] = round(raw_dur, 3)
                                             result["effective_duration_s"] = round(raw_dur, 3)
                             except Exception as exc:
+                                _bg_o3_trim_audit(
+                                    h,
+                                    "FAIL",
+                                    beat_id=str(beat_id),
+                                    preview_only=preview_only,
+                                    error_code="STILL_TRIM_BAKE_FAILED",
+                                    error_message=str(exc),
+                                    slot_index=slot_index,
+                                    req_video=Path(req_video_path).name if req_video_path else None,
+                                )
                                 return h._send_error_v59(
                                     500,
                                     error_code="STILL_TRIM_BAKE_FAILED",
@@ -7306,7 +7318,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                                 beat,
                                 Path(h.app.event_dir),
                                 slot_index=int(slot_index),
-                                video_path=req_video_path,
+                                video_path=effective_req_video,
                             )
                             result["export_baked"] = bool(bake.get("baked"))
                             if bake.get("baked_path"):
@@ -7314,7 +7326,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                             opt_bake = bg.find_o3_option_by_slot_index(
                                 beat,
                                 int(slot_index),
-                                video_path=req_video_path,
+                                video_path=effective_req_video,
                             )
                             if isinstance(opt_bake, dict):
                                 if bake.get("baked_path"):
@@ -7323,6 +7335,16 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                                 else:
                                     bg.clear_o3_baked_fields(opt_bake)
                         except Exception as exc:
+                            _bg_o3_trim_audit(
+                                h,
+                                "FAIL",
+                                beat_id=str(beat_id),
+                                preview_only=preview_only,
+                                error_code="O3_TRIM_BAKE_FAILED",
+                                error_message=str(exc),
+                                slot_index=slot_index,
+                                req_video=Path(effective_req_video).name if effective_req_video else None,
+                            )
                             return h._send_error_v59(
                                 500,
                                 error_code="O3_TRIM_BAKE_FAILED",

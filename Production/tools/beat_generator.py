@@ -4769,6 +4769,12 @@ def o3_option_matches_generation_mode(option: dict, generation_mode: str) -> boo
 
 def o3_option_visible_in_ui_slots(option: dict, generation_mode: str) -> bool:
     """UI shows three newest clips for the active pipeline — hide cross-pipeline history."""
+    vp = str(option.get("video_path") or "").strip()
+    if vp:
+        from o3_gallery_option_identity import is_still_insert_silent_ken_burns_preview  # noqa: PLC0415
+
+        if is_still_insert_silent_ken_burns_preview(vp):
+            return False
     opt_mode = infer_o3_option_pipeline_mode(option)
     if generation_mode == PIPELINE_MODE_STILL:
         if opt_mode == PIPELINE_MODE_STILL:
@@ -6598,7 +6604,12 @@ def _o3_trim_stem(path: str) -> str:
     """Normalize pre/post still-insert bake filenames for option lookup."""
     name = Path(path).stem
     if name.endswith("_trimmed"):
-        return name[: -len("_trimmed")]
+        name = name[: -len("_trimmed")]
+    # Ken-burns still inserts keep TTS on the tile but bake from the silent sibling
+    # (`*_tts.mp4` → `*_trimmed.mp4`). Strip `_tts` so pre-bake client paths still
+    # resolve after Apply Cut materializes the trimmed export.
+    if name.endswith("_tts"):
+        name = name[: -len("_tts")]
     return name
 
 
@@ -7828,6 +7839,16 @@ def bake_still_insert_trim_into_clip(
     src, opt = resolve_still_insert_trim_bake_source(beat, source_path=source_path)
     if not src.is_file():
         raise ValueError(f"missing still clip: {src}")
+    # Ken-burns preview files carry near-silent AAC; bake trim from the *_tts sibling.
+    src_name = src.name.lower()
+    if (
+        "_still_insert_" in src_name
+        and "_tts" not in src_name
+        and "_trimmed" not in src_name
+    ):
+        tts_sibling = src.parent / f"{src.stem}_tts{src.suffix}"
+        if tts_sibling.is_file():
+            src = tts_sibling.resolve()
     raw_dur = _ffprobe_duration(src)
     if not kling_o3_trim_is_active(beat, raw_dur=raw_dur):
         return {"baked": False, "video_path": str(src.resolve())}
@@ -12426,7 +12447,9 @@ def list_o3_element_delivery_paths_on_disk(beat_id: str, event_dir: str | Path) 
             seen.add(key)
             paths.append(path)
     paths.sort(key=lambda p: _kling_o3_gen_from_video_path(str(p)) or 0)
-    return paths
+    from o3_gallery_option_identity import filter_still_insert_disk_paths_for_gallery  # noqa: PLC0415
+
+    return filter_still_insert_disk_paths_for_gallery(paths)
 
 
 def count_o3_element_delivery_paths(disk_paths: list[Path]) -> int:

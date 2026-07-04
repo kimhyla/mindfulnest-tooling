@@ -1,6 +1,6 @@
 /** Library → Kling Element pose registration (shared by LibraryPanel + BgTab). */
 
-export const ELEMENT_SPEAKERS = ['Lorelai', 'Tessa', 'Arlo', 'Chipper', 'Oliver'] as const;
+export const ELEMENT_SPEAKERS = ['Lorelai', 'Tessa', 'Arlo', 'Chipper', 'Oliver', 'Benson', 'Ember'] as const;
 export type ElementSpeaker = (typeof ELEMENT_SPEAKERS)[number];
 
 export interface LibraryElementItem {
