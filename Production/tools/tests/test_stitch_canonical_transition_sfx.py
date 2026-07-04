@@ -16,9 +16,9 @@ def test_canonical_transitions_for_pipeline_ignores_drift() -> None:
     drift = [{"after_slot": 0, "kind": "cut", "fade_ms": 500, "audio_xfade_ms": 500}]
     out = se.canonical_stitch_transitions_for_pipeline(drift)
     assert out == se.default_stitch_transitions()
+    assert [t["fade_ms"] for t in out] == list(se.STITCH_MODULE_BOUNDARY_PAIR_FADE_MS)
     for t in out:
         assert t["kind"] == "dissolve"
-        assert t["fade_ms"] == 3800
         assert t["audio_xfade_ms"] == 0
 
 
