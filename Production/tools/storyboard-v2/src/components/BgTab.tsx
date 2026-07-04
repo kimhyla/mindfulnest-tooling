@@ -5586,9 +5586,11 @@ function BgOptionTile({
       return;
     }
     clearTrimPlaybackListener(videoRef.current);
-    const applied = await onApplyO3Trim(
+    const applied = await onApplyO3Cut(
+      optionIndex,
       trimStartValue(),
       trimBackValue() > 0 ? trimBackValue() : null,
+      cutTargetOpts,
     );
     if (applied?.rawDurationS != null && applied.rawDurationS > 0) {
       rawDurationRef.current = applied.rawDurationS;
@@ -5628,7 +5630,7 @@ function BgOptionTile({
       video.src = canonicalVideoUrl;
       video.load();
     }
-    await onApplyO3Trim(0, null, true);
+    await onApplyO3Cut(optionIndex, 0, null, { clear: true, ...cutTargetOpts });
   };
 
   return (

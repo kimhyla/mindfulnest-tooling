@@ -62,6 +62,7 @@ def test_export_uses_baked_path_when_token_matches(tmp_path: Path):
     }
     with patch.object(bg, "_ffprobe_duration", return_value=4.0):
         beat["kling_o3_baked_token"] = bg.o3_baked_export_token(beat, video_path=clip)
+        beat["kling_o3_baked_source_path"] = str(clip.resolve())
         out = bg._kling_o3_export_clip_path(beat, tmp_path, tmp_path / "scratch")
     assert out.resolve() == baked.resolve()
 
