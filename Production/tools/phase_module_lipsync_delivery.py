@@ -34,8 +34,11 @@ PHASE_MODULE_LIPSYNC_DELIVERY_HEIGHT = 720
 # Bottom sacrifice zone — minimum trim; adaptive probe may raise up to MAX.
 PHASE_MODULE_LIPSYNC_SACRIFICE_ZONE_RATIO = 0.12
 PHASE_MODULE_LIPSYNC_SACRIFICE_ZONE_MIN_RATIO = PHASE_MODULE_LIPSYNC_SACRIFICE_ZONE_RATIO
-PHASE_MODULE_LIPSYNC_SACRIFICE_ZONE_MAX_RATIO = 0.22
-PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_PAD_PX = 12
+# Adaptive subtitle crop may exceed 22% on long stems (Event 3 Phase B ~25% at ~180s).
+PHASE_MODULE_LIPSYNC_SACRIFICE_ZONE_MAX_RATIO = 0.30
+PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_PAD_PX = 24
+# Extra rows above band_top — lanczos/unsharp can bleed subtitle ascenders into frame edge.
+PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_EXTRA_SAFETY_PX = 16
 PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_MIN_RUN = 3
 PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_SCAN_START_RATIO = 0.55
 # Target nose position in delivered 1280×720 (after sacrifice trim + 16:9 crop).
@@ -279,22 +282,101 @@ def probe_avatar_pro_subtitle_band_top_y(
                 pass
 
 
+def _probe_duration_s(path: Path) -> float:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    try:
+        return max(0.0, float(result.stdout.strip() or "0"))
+    except ValueError:
+        return 0.0
+
+
+def probe_avatar_pro_bright_subtitle_top_y(
+    path: Path | None = None,
+    *,
+    ss: float = 3.0,
+    im: "Image.Image | None" = None,
+) -> int | None:
+    """Return top row (px) of high-luminance bottom subtitle/gibberish, if any."""
+    from PIL import Image  # type: ignore
+
+    owned_probe: Path | None = None
+    try:
+        if im is None:
+            if path is None:
+                return None
+            owned_probe = _extract_probe_jpeg(path, ss=ss)
+            im = Image.open(owned_probe).convert("RGB")
+        else:
+            im = im.convert("RGB")
+        w, h = im.size
+        if h <= 0 or w <= 0:
+            return None
+        scan_from = int(h * 0.45)
+        for y in range(scan_from, h):
+            row = [im.getpixel((x, y)) for x in range(0, w, max(1, w // 640))]
+            bright = sum(1 for r, g, b in row if r + g + b > 500)
+            if bright / max(1, len(row)) > 0.15:
+                return y
+        return None
+    finally:
+        if owned_probe is not None:
+            try:
+                owned_probe.unlink()
+            except OSError:
+                pass
+
+
 def resolve_module_lipsync_sacrifice_ratio(
     path: Path,
     frame_h: int,
     *,
     ss: float = 3.0,
 ) -> tuple[float, str, int | None]:
-    """Return ``(sacrifice_ratio, source, band_top_y)`` for V3 bottom trim."""
+    """Return ``(sacrifice_ratio, source, band_top_y)`` for V3 bottom trim.
+
+    Scans multiple timestamps — Avatar Pro gibberish often appears late in long stems.
+    """
     min_r = PHASE_MODULE_LIPSYNC_SACRIFICE_ZONE_MIN_RATIO
     max_r = PHASE_MODULE_LIPSYNC_SACRIFICE_ZONE_MAX_RATIO
-    band_top = probe_avatar_pro_subtitle_band_top_y(path, ss=ss)
+    duration_s = _probe_duration_s(path)
+    scan_points: set[float] = {ss}
+    for frac in (0.25, 0.50, 0.70, 0.85, 0.92):
+        scan_points.add(max(1.0, duration_s * frac))
+    scan_points.add(max(1.0, duration_s - 1.0))
+    tail_start = max(1.0, duration_s * 0.70)
+    step = 3.0
+    offset = tail_start
+    while offset < duration_s:
+        scan_points.add(offset)
+        offset += step
+    band_top: int | None = None
+    for point in sorted(scan_points):
+        for probe in (
+            probe_avatar_pro_subtitle_band_top_y,
+            probe_avatar_pro_bright_subtitle_top_y,
+        ):
+            hit = probe(path, ss=point)
+            if hit is not None and (band_top is None or hit < band_top):
+                band_top = hit
     if band_top is None:
         return min_r, "fixed_min", None
     pad = PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_PAD_PX
-    active_h = max(1, band_top - pad)
+    extra = PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_EXTRA_SAFETY_PX
+    active_h = max(1, band_top - pad - extra)
     ratio = (frame_h - active_h) / max(1, frame_h)
-    ratio = max(min_r, min(max_r, ratio))
+    # Do not floor to min_r when adaptive band found — min floor kept gibberish visible.
+    ratio = min(max_r, max(0.0, ratio))
     return ratio, "adaptive_band", band_top
 
 
@@ -304,7 +386,15 @@ def plan_module_lipsync_reframe_v3(path: Path, *, ss: float = 3.0) -> dict:
     sacrifice, sacrifice_source, band_top_y = resolve_module_lipsync_sacrifice_ratio(
         path, frame_h, ss=ss,
     )
-    active_h = max(1, int(round(frame_h * (1.0 - sacrifice))))
+    if sacrifice_source == "adaptive_band" and band_top_y is not None:
+        # Never derive active_h from capped sacrifice ratio — 22% max was leaving
+        # subtitle ascenders visible when band_top-pad needed ~25% (Event 3 Phase B).
+        pad = PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_PAD_PX
+        extra = PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_EXTRA_SAFETY_PX
+        active_h = max(1, int(band_top_y) - pad - extra)
+        sacrifice = (frame_h - active_h) / max(1, frame_h)
+    else:
+        active_h = max(1, int(round(frame_h * (1.0 - sacrifice))))
     nose_y = probe_avatar_pro_nose_y_px(path, ss=ss, max_y=active_h)
     if nose_y is None:
         nose_y = int(round(active_h * PHASE_MODULE_LIPSYNC_FALLBACK_NOSE_Y_RATIO))
@@ -352,23 +442,28 @@ def plan_module_lipsync_reframe_v3(path: Path, *, ss: float = 3.0) -> dict:
     }
 
 
-def plan_module_lipsync_reframe(path: Path) -> dict:
-    """Decide whether/how to reframe a pinned module lipsync clip."""
+def resolve_module_lipsync_delivery_recipe(lipsync_method: str | None = None) -> str:
+    """Avatar/Beat Gen → V3 adaptive; legacy Kling/ByteDance module → V2 letterbox."""
+    if str(lipsync_method or "").strip() == "kling_avatar_pro_v1":
+        return PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V3
+    return PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2
+
+
+def plan_module_lipsync_reframe_v2(path: Path) -> dict:
+    """Legacy Kling Sync / ByteDance module output — side letterbox strip + subtitle band."""
     frame_w, frame_h = _probe_video_size(path)
     cw, ch, cx, cy = probe_avatar_pro_content_crop(path)
     has_letterbox = cw < int(frame_w * 0.92) and cx >= int(frame_w * 0.08)
     if has_letterbox:
-        mode = "letterbox"
-        bottom_crop = PHASE_MODULE_LIPSYNC_SUBTITLE_CROP_RATIO
         return {
-            "mode": mode,
+            "mode": "letterbox",
             "frame_w": frame_w,
             "frame_h": frame_h,
             "crop_w": cw,
             "crop_h": ch,
             "crop_x": cx,
             "crop_y": cy,
-            "bottom_crop_ratio": bottom_crop,
+            "bottom_crop_ratio": PHASE_MODULE_LIPSYNC_SUBTITLE_CROP_RATIO,
         }
     if (frame_w, frame_h) == (
         PHASE_MODULE_LIPSYNC_DELIVERY_WIDTH,
@@ -384,7 +479,54 @@ def plan_module_lipsync_reframe(path: Path) -> dict:
             "crop_y": 0,
             "bottom_crop_ratio": 0.0,
         }
-    return plan_module_lipsync_reframe_v3(path)
+    cw2, ch2, cx2, cy2 = center_crop_to_169_box(frame_w, frame_h)
+    return {
+        "mode": "letterbox",
+        "frame_w": frame_w,
+        "frame_h": frame_h,
+        "crop_w": cw2,
+        "crop_h": ch2,
+        "crop_x": cx2,
+        "crop_y": cy2,
+        "bottom_crop_ratio": PHASE_MODULE_LIPSYNC_SUBTITLE_CROP_RATIO,
+    }
+
+
+def plan_module_lipsync_reframe(
+    path: Path,
+    *,
+    delivery_recipe: str | None = None,
+) -> dict:
+    """Route V2 letterbox (legacy module) vs V3 adaptive (Avatar Pro / Beat Gen)."""
+    recipe = delivery_recipe or PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V3
+    if recipe == PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V3:
+        return plan_module_lipsync_reframe_v3(path)
+    return plan_module_lipsync_reframe_v2(path)
+
+
+def resolve_module_lipsync_reencode_source(event_dir: Path, pinned_name: str) -> Path:
+    """Prefer ``*_raw.mp4`` or non-``_reframed`` sibling for delivery reencode."""
+    event_dir = event_dir.resolve()
+    pinned = (pinned_name or "").strip()
+    if not pinned:
+        raise FileNotFoundError("pinned lipsync name empty")
+    candidates: list[Path] = []
+    stem = pinned.replace("_reframed", "")
+    if stem.endswith(".mp4"):
+        candidates.extend([
+            event_dir / stem.replace(".mp4", "_raw.mp4"),
+            event_dir / stem,
+        ])
+    candidates.append(event_dir / pinned)
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f"no reencode source for pinned lipsync: {pinned_name}")
 
 
 def build_phase_lipsync_reframe_vf_v3(
@@ -435,8 +577,17 @@ def finalize_phase_module_lipsync_delivery(
     sharpen: bool = True,
     timeout_s: int = 900,
     reframe: bool = True,
+    dest_path: Path | None = None,
+    delivery_recipe: str | None = None,
+    lipsync_method: str | None = None,
 ) -> dict:
-    """In-place delivery encode on a module lipsync MP4; returns delivery metadata."""
+    """Delivery encode on module lipsync MP4; returns delivery metadata.
+
+    When ``dest_path`` is set, copies ``path`` (raw WaveSpeed download) to
+    ``dest_path`` and encodes there — raw bytes stay on disk for reencode.
+    """
+    import shutil
+
     from video_delivery import (  # noqa: PLC0415
         DELIVERY_BUFSIZE,
         DELIVERY_MAXRATE,
@@ -453,18 +604,26 @@ def finalize_phase_module_lipsync_delivery(
     if not path.is_file():
         raise FileNotFoundError(f"lipsync file not found: {path}")
 
-    raw_w, raw_h = _probe_video_size(path)
-    tmp = path.with_name(f"{path.stem}.delivery_tmp{path.suffix}")
+    work = path
+    if dest_path is not None:
+        dest_path = Path(dest_path).resolve()
+        if dest_path != path:
+            shutil.copy2(path, dest_path)
+            work = dest_path
 
+    raw_w, raw_h = _probe_video_size(work)
+    tmp = work.with_name(f"{work.stem}.delivery_tmp{work.suffix}")
+
+    recipe = delivery_recipe or resolve_module_lipsync_delivery_recipe(lipsync_method)
     crop_meta: dict[str, int | float | str] = {}
     try:
         if reframe:
-            plan = plan_module_lipsync_reframe(path)
+            plan = plan_module_lipsync_reframe(work, delivery_recipe=recipe)
             if plan["mode"] == "none":
                 from video_delivery import encode_delivery_video  # noqa: PLC0415
 
                 encode_delivery_video(
-                    path,
+                    work,
                     tmp,
                     include_audio=True,
                     sharpen=sharpen,
@@ -493,6 +652,32 @@ def finalize_phase_module_lipsync_delivery(
                     "active_h": int(plan["active_h"]),
                     "subtitle_crop_ratio": float(plan["bottom_crop_ratio"]),
                 }
+                last_exc: Exception | None = None
+                for v_bitrate, maxrate, bufsize in (
+                    (VOICE_FIRST_DELIVERY_VIDEO_BITRATE, VOICE_FIRST_DELIVERY_MAXRATE, VOICE_FIRST_DELIVERY_BUFSIZE),
+                    (DELIVERY_VIDEO_BITRATE, DELIVERY_MAXRATE, DELIVERY_BUFSIZE),
+                ):
+                    try:
+                        _run_single_delivery_encode(
+                            work,
+                            tmp,
+                            vf=vf,
+                            video_bitrate=v_bitrate,
+                            maxrate=maxrate,
+                            bufsize=bufsize,
+                            max_bitrate_bps=VOICE_FIRST_DELIVERY_MAX_BITRATE_BPS,
+                            include_audio=_has_audio(work),
+                            use_lean_quality_encode=True,
+                            timeout_s=timeout_s,
+                        )
+                        last_exc = None
+                        break
+                    except RuntimeError as exc:
+                        last_exc = exc
+                        if "bitrate" not in str(exc):
+                            raise
+                if last_exc is not None:
+                    raise last_exc
             else:
                 cw, ch, cx, cy = (
                     int(plan["crop_w"]), int(plan["crop_h"]),
@@ -510,22 +695,21 @@ def finalize_phase_module_lipsync_delivery(
                     "content_crop_y": cy,
                     "subtitle_crop_ratio": bottom,
                 }
-            if plan["mode"] != "none":
-                last_exc: Exception | None = None
+                last_exc = None
                 for v_bitrate, maxrate, bufsize in (
                     (VOICE_FIRST_DELIVERY_VIDEO_BITRATE, VOICE_FIRST_DELIVERY_MAXRATE, VOICE_FIRST_DELIVERY_BUFSIZE),
                     (DELIVERY_VIDEO_BITRATE, DELIVERY_MAXRATE, DELIVERY_BUFSIZE),
                 ):
                     try:
                         _run_single_delivery_encode(
-                            path,
+                            work,
                             tmp,
                             vf=vf,
                             video_bitrate=v_bitrate,
                             maxrate=maxrate,
                             bufsize=bufsize,
                             max_bitrate_bps=VOICE_FIRST_DELIVERY_MAX_BITRATE_BPS,
-                            include_audio=_has_audio(path),
+                            include_audio=_has_audio(work),
                             use_lean_quality_encode=True,
                             timeout_s=timeout_s,
                         )
@@ -541,14 +725,14 @@ def finalize_phase_module_lipsync_delivery(
             from video_delivery import encode_delivery_video  # noqa: PLC0415
 
             encode_delivery_video(
-                path,
+                work,
                 tmp,
                 include_audio=True,
                 sharpen=sharpen,
                 delivery_profile=PHASE_MODULE_LIPSYNC_DELIVERY_PROFILE,
                 timeout_s=timeout_s,
             )
-        os.replace(tmp, path)
+        os.replace(tmp, work)
     finally:
         if tmp.exists():
             try:
@@ -556,22 +740,22 @@ def finalize_phase_module_lipsync_delivery(
             except OSError:
                 pass
 
-    out_w, out_h = _probe_video_size(path)
+    out_w, out_h = _probe_video_size(work)
     if (out_w, out_h) != (PHASE_MODULE_LIPSYNC_DELIVERY_WIDTH, PHASE_MODULE_LIPSYNC_DELIVERY_HEIGHT):
         raise RuntimeError(
             f"delivery encode shape {out_w}x{out_h} != "
             f"{PHASE_MODULE_LIPSYNC_DELIVERY_WIDTH}x{PHASE_MODULE_LIPSYNC_DELIVERY_HEIGHT}"
         )
-    bitrate = _probe_bitrate(path)
+    bitrate = _probe_bitrate(work)
     if bitrate <= 0 or bitrate > VOICE_FIRST_DELIVERY_MAX_BITRATE_BPS:
         raise RuntimeError(
             f"delivery bitrate {bitrate:,} bps outside (0, {VOICE_FIRST_DELIVERY_MAX_BITRATE_BPS:,}]"
         )
 
     return {
-        "path": str(path),
+        "path": str(work),
         "delivery_profile": PHASE_MODULE_LIPSYNC_DELIVERY_PROFILE,
-        "delivery_recipe": PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT,
+        "delivery_recipe": recipe,
         "raw_width": raw_w,
         "raw_height": raw_h,
         "width": out_w,

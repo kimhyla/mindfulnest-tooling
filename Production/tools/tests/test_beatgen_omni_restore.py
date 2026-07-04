@@ -75,13 +75,14 @@ def test_bgtab_restores_element_and_voice_first_toggles():
     assert "onSetGenerationMode('avatar_pro')" not in text
 
 
-def test_phase_b_handler_unchanged_submit_avatar_pro():
+def test_phase_b_module_handler_uses_kling_not_avatar_pro():
     phases = Path(__file__).resolve().parents[1] / "server_handlers" / "phases.py"
     block = phases.read_text(encoding="utf-8").split("def handle_phase_b_lipsync", 1)[1]
     block = block.split("\ndef _write_phase_b_lipsync_complete", 1)[0]
-    assert "submit_avatar_pro" in block
-    assert "STATIC_BG_PROMPT" in block
-    assert "phase_b_avatar_lipsync" in block
+    assert "submit_avatar_pro" not in block
+    assert "prep_phase_b_kling_base_video" in block
+    assert "LipSyncClient" in block
+    assert "PHASE_B_KLING_SEGMENT_STRATEGY_LEGACY" in block
 
 
 def test_phase_b_module_unchanged():

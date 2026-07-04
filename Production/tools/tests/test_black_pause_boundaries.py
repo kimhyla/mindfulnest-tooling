@@ -70,7 +70,7 @@ def test_intro_export_does_not_clamp_pair_fades_for_black_pause() -> None:
     assert "expand_clips_with_black_pause_boundaries" in block
 
 
-def test_stitch_module_preview_uses_manifest_visual_fades() -> None:
+def test_stitch_module_preview_uses_late_fade_constants() -> None:
     src = (TOOLS / "production_server.py").read_text(encoding="utf-8")
-    assert "_load_intro_fade_out_video_tail_ms" in src
-    assert "_load_intro_final_pair_fade_ms" in src
+    assert "STITCH_MODULE_VISUAL_OUT_MS" in src
+    assert "_load_intro_fade_out_video_tail_ms" not in src.split("def _stitch_build_pipeline", 1)[1].split("\n    def ", 1)[0]

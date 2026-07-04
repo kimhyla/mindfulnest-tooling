@@ -26,20 +26,20 @@ import production_server as PS  # noqa: E402
 from phase_a_arlo_contract import PHASE_A_ARLO_CANONICAL_STILL_REL  # noqa: E402
 
 
-def test_phases_handler_uses_avatar_pro_not_bytedance():
+def test_phases_handler_uses_bytedance_not_avatar_pro():
     src = TOOLS / "server_handlers" / "phases.py"
     block = src.read_text(encoding="utf-8").split("def handle_phase_a_lipsync", 1)[1]
     block = block.split("\ndef handle_phase_b_lipsync", 1)[0]
-    assert "submit_avatar_pro" in block
-    assert "resolve_phase_a_arlo_avatar_still" in block
-    assert "run_phase_a_base_clip_bytedance_lipsync" not in block
-    assert 'lipsync_method = "base_clip_bytedance_tight_v1"' not in block
+    assert "submit_avatar_pro" not in block
+    assert "run_phase_a_base_clip_bytedance_lipsync" in block
+    assert 'lipsync_method = "base_clip_bytedance_tight_v1"' in block or "base_clip_bytedance_tight_v1" in block
 
 
-def test_sweep_polls_both_phase_a_and_phase_b():
+def test_sweep_resume_byteDance_not_avatar_clear():
     src = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
-    assert 'for phase in ("a", "b"):' in src or "_sweep_one_phase_module_lipsync_poll" in src
-    assert "PHASE_A_LIPSYNC_METHOD_AVATAR" in src
+    resume = src.split("def sweep_phase_a_lipsync_resume", 1)[1].split("\ndef handle_phase_a_lipsync", 1)[0]
+    assert "run_phase_a_base_clip_bytedance_lipsync" in resume
+    assert "resubmit with Avatar Pro" not in resume
 
 
 def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
@@ -148,9 +148,13 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
 
-    def test_lipsync_submits_avatar_pro(self):
+    def test_lipsync_submits_bytedance_worker(self):
         vs = self.event_dir / "phase_a_voice_stem_test.mp3"
         vs.write_bytes(b"\x00fakevoice\x00")
+        bases = self.event_dir.parent / "assets" / "lipsync_bases"
+        bases.mkdir(parents=True, exist_ok=True)
+        base_clip = bases / "arlo_idle_wizard_desk_v4.mp4"
+        base_clip.write_bytes(b"\x00fakebase\x00")
 
         def _apply(state):
             state["phase_a_voice_stem_file"] = vs.name
@@ -174,64 +178,42 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
                 out.write_bytes(b"\x00trim\x00")
             return _R()
 
-        def _fake_lipsync_client(*_a, **_kw):
-            class _LSC:
-                def submit_avatar_pro(self, _still, _audio, _prompt):
-                    return "fake_phase_a_avatar_task_id"
-
-                def download(self, _url, dest):
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    dest.write_bytes(b"\x00avatar_out\x00")
-
-            return _LSC()
+        def _fake_bytedance(_base, _audio, out_path, **_kw):
+            Path(out_path).write_bytes(b"\x00bytedance_out\x00")
+            return Path(out_path)
 
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
              mock.patch(
-                 "phase_module_lipsync_delivery.finalize_phase_module_lipsync_delivery",
-                 side_effect=lambda path, **kw: {
-                     "delivery_profile": "voice_first_upscale",
-                     "delivery_recipe": "PHASE_MODULE_LIPSYNC_DELIVERY_V1",
-                     "raw_width": 720,
-                     "raw_height": 544,
-                     "width": 1280,
-                     "height": 720,
-                     "bitrate_bps": 1_800_000,
-                     "path": str(path),
-                 },
+                 "phase_a_middle_permanent.run_phase_a_base_clip_bytedance_lipsync",
+                 side_effect=_fake_bytedance,
              ), \
-             mock.patch("server_handlers.phases.LipSyncClient", create=True, new=_fake_lipsync_client):
+             mock.patch(
+                 "phase_a_av_post.av_duration_gap",
+                 return_value=(23.0, 23.0, 0.0),
+             ), \
+             mock.patch(
+                 "phase_a_middle_permanent.extract_qa_frames",
+                 return_value=None,
+             ):
             status, resp, _ = _http_post(
-                self.port, "/api/phase_a/lipsync", {"phase": "a"},
+                self.port,
+                "/api/phase_a/lipsync",
+                {"phase": "a", "base_clip_id": "arlo_idle_wizard_desk_v4"},
             )
             self.assertEqual(status, 202, resp)
-            self.assertEqual(resp.get("status"), "submitted")
-            self.assertEqual(resp.get("task_id"), "fake_phase_a_avatar_task_id")
-            self.assertEqual(resp.get("lipsync_method"), "kling_avatar_pro_v1")
-            self.assertEqual(resp.get("lipsync_route"), "single_full_stem_v1")
+            self.assertEqual(resp.get("status"), "running")
+            self.assertEqual(resp.get("vendor"), "base_clip_bytedance_tight_v1")
 
-            state_after = self.app.state.read_state()
-            self.assertEqual(state_after.get("phase_a_lipsync_status"), "polling")
-            self.assertEqual(state_after.get("phase_a_lipsync_task_id"), "fake_phase_a_avatar_task_id")
-            self.assertEqual(state_after.get("phase_a_lipsync_method"), "kling_avatar_pro_v1")
-            self.assertTrue(state_after.get("phase_a_avatar_still_file"))
-
-            from server_handlers.phases import sweep_phase_module_lipsync_polls
-
-            lipsync_file = None
-            for _ in range(10):
-                sweep_phase_module_lipsync_polls(self.app.state, self.app.client)
+            for _ in range(50):
                 state = self.app.state.read_state()
-                lipsync_file = state.get("phase_a_lipsync_file")
-                if lipsync_file:
+                if state.get("phase_a_lipsync_status") == "needs_manual_visual_review":
                     break
-                time.sleep(0.02)
+                time.sleep(0.05)
 
-        self.assertTrue(
-            lipsync_file and lipsync_file.startswith("phase_a_lipsync_"),
-            f"expected poller to finalize phase_a lipsync; state={state}",
-        )
-        self.assertEqual(state.get("phase_a_lipsync_status"), "done")
-        self.assertNotIn("phase_a_lipsync_task_id", state)
+        state = self.app.state.read_state()
+        self.assertEqual(state.get("phase_a_lipsync_status"), "needs_manual_visual_review")
+        self.assertEqual(state.get("phase_a_lipsync_method"), "base_clip_bytedance_tight_v1")
+        self.assertTrue(state.get("phase_a_lipsync_file", "").startswith("phase_a_lipsync_"))
 
 
 if __name__ == "__main__":

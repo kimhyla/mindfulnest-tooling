@@ -95,8 +95,8 @@ class AvatarStillPrepContractTests(unittest.TestCase):
         self.assertIn("negative_prompt", block)
         self.assertIn("AVATAR_PRO_NEGATIVE_PROMPT", block)
 
-    def test_segmented_production_uses_submit_avatar_pro(self) -> None:
-        src = (TOOLS / "run_phase_b_avatar_segmented_production.py").read_text(encoding="utf-8")
+    def test_beat_avatar_pipeline_still_uses_submit_avatar_pro(self) -> None:
+        src = (TOOLS / "arlo_avatar_beat_pipeline.py").read_text(encoding="utf-8")
         self.assertIn("client.submit_avatar_pro", src)
         self.assertNotIn("AVATAR_ENDPOINT", src)
 

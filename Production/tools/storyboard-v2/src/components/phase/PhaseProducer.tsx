@@ -528,15 +528,31 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   };
 
   const onSendForLipsync = async () => {
-    // Phase A + B: Avatar Pro — canonical still + voice stem (no base-clip loop).
+    const lipsyncClipId =
+      phase === 'a'
+        ? stateSlice.chipper_sitting_clip_id ?? baseClipPicker.selectedClipId
+        : baseClipPicker.selectedClipId ?? stateSlice.cedric_base_clip_id;
+    if (!lipsyncClipId) {
+      setStatusMsg(
+        phase === 'a'
+          ? 'Pick an Arlo base clip first (Regen base clip or picker below).'
+          : 'Pick a Cedric base clip first.',
+      );
+      return;
+    }
     if (!stateSlice.voice_stem_file) {
       setStatusMsg(`Generate a Phase ${phase.toUpperCase()} voice stem first (Regen Audio).`);
       return;
     }
     setBusyAction('lipsync');
-    setStatusMsg('Sending for Avatar Pro lipsync…');
+    setStatusMsg('Sending for lipsync…');
     const lipsyncEp = phase === 'a' ? 'phase_a_lipsync' : 'phase_b_lipsync';
-    const res = await pathappPatch(activeScope.value, lipsyncEp, { phase }, { fetchTimeoutMs: 180_000 });
+    const res = await pathappPatch(activeScope.value, lipsyncEp, {
+      phase,
+      base_clip_id: phase === 'a'
+        ? coercePhaseAArloBaseClipId(lipsyncClipId)
+        : coercePhaseBCedricBaseClipId(lipsyncClipId),
+    }, { fetchTimeoutMs: 180_000 });
     setBusyAction(null);
     if (res.ok) {
       if (res.status === 202) {
@@ -559,7 +575,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setStatusMsg(phaseLipsyncProgressMessage(phase));
     } else if (res.error_code === 'CLIENT_BUNDLE_STALE') {
       setStatusMsg(
-        `✗ ${res.error ?? 'Storyboard updated — hard refresh (Cmd+Shift+R), then Send for Avatar Pro again.'}`,
+        `✗ ${res.error ?? 'Storyboard updated — hard refresh (Cmd+Shift+R), then Send for Lipsync again.'}`,
       );
     } else {
       const data = res.data as { hint?: string; error_message?: string } | undefined;
@@ -1267,16 +1283,28 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         </div>
         ) : null}
 
-        {/* Action row: Phase A/B Avatar still chip + Send for Avatar Pro */}
+        {/* Action row: Base clip select + Send for Lipsync + Mix Audio (B) + Export */}
         <div class="mn-phase-row">
-          <span
-            class="mn-dim mn-phase-avatar-still-chip"
-            data-testid={`phase-${phase}-avatar-still-chip`}
+          <label class="mn-dim" for={`phase-${phase}-baseclip`}>Base clip:</label>
+          <select
+            id={`phase-${phase}-baseclip`}
+            data-testid={`phase-${phase}-baseclip-select`}
+            value={baseClipPicker.selectedClipId}
+            onChange={(e: Event) => {
+              const clipId = (e.target as HTMLSelectElement).value;
+              void baseClipPicker.pickClip(
+                clipId,
+                phase === 'b' ? 'phase_b_cedric_base_clip_id' : 'phase_a_chipper_sitting_clip_id',
+              );
+            }}
           >
-            {phase === 'a'
-              ? PHASE_A_ARLO_AVATAR_STILL_LABEL
-              : 'Cedric still (Avatar Pro) — canonical Jun 21 PNG'}
-          </span>
+            <option value="">— select —</option>
+            {phaseABaseClipOptions(baseClips).map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.id} ({c.duration_s ?? '?'}s)
+              </option>
+            ))}
+          </select>
           <button
             type="button"
             class="mn-btn"
@@ -1285,15 +1313,16 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             disabled={
               busyAction !== null ||
               lipsyncInFlight ||
+              !baseClipPicker.selectedClipId ||
               !stateSlice.voice_stem_file
             }
-            title="Single Avatar Pro job on full voice stem (~10–50 min, billed per second). No segmented chunks."
+            title="Kling Sync (Phase B) or ByteDance on base clip (Phase A). Long Phase B stems split at 28s silence chunks."
           >
             {busyAction === 'lipsync'
               ? 'Sending…'
               : lipsyncInFlight
                 ? 'Lipsync in progress…'
-                : 'Send for Avatar Pro'}
+                : 'Send for Lipsync'}
           </button>
           {showRejectLipsync ? (
             <button

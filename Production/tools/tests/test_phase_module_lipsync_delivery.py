@@ -45,7 +45,36 @@ def test_adaptive_sacrifice_detects_arlo_probe_subtitle_band():
     assert source == "adaptive_band"
     assert band_top is not None
     assert ratio > 0.12
-    assert ratio <= 0.22
+    assert ratio <= 0.30
+
+
+def test_adaptive_band_active_h_uses_band_top_not_capped_ratio():
+    from phase_module_lipsync_delivery import (
+        PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_EXTRA_SAFETY_PX,
+        PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_PAD_PX,
+        plan_module_lipsync_reframe_v3,
+    )
+
+    raw = Path(
+        "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
+        "Claude Mindfulnest Project Files/Production/Event_3/"
+        "phase_b_lipsync_20260627-175211.mp4"
+    )
+    if not raw.is_file():
+        pytest.skip("Event_3 Phase B lipsync not on disk")
+    plan = plan_module_lipsync_reframe_v3(raw)
+    assert plan.get("sacrifice_source") == "adaptive_band"
+    band_top = plan.get("subtitle_band_top_y")
+    assert band_top is not None
+    expected_active_h = max(
+        1,
+        int(band_top)
+        - PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_PAD_PX
+        - PHASE_MODULE_LIPSYNC_SUBTITLE_BAND_EXTRA_SAFETY_PX,
+    )
+    assert plan["active_h"] == expected_active_h
+    assert plan["active_h"] < band_top
+    assert plan["sacrifice_zone_ratio"] > 0.22
 
 
 def test_adaptive_sacrifice_falls_back_on_clean_cedric_probe():
@@ -113,7 +142,7 @@ def test_finalize_phase_module_lipsync_delivery_invokes_voice_first(tmp_path: Pa
         },
     ), mock.patch(
         "phase_module_lipsync_delivery.plan_module_lipsync_reframe",
-        side_effect=lambda p: {
+        side_effect=lambda p, **kw: {
             "mode": "canonical_v3",
             "frame_w": 1920,
             "frame_h": 1072,
@@ -139,7 +168,10 @@ def test_finalize_phase_module_lipsync_delivery_invokes_voice_first(tmp_path: Pa
         "video_delivery._has_audio",
         return_value=True,
     ):
-        meta = finalize_phase_module_lipsync_delivery(raw)
+        meta = finalize_phase_module_lipsync_delivery(
+            raw,
+            delivery_recipe=PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V3,
+        )
 
     enc.assert_called_once()
     assert raw.read_bytes() == b"encoded"
@@ -160,7 +192,26 @@ def test_stitch_bake_core_calls_phase_b_delivery_preflight():
     ).read_text(encoding="utf-8")
 
 
-@pytest.mark.integration
+def test_plan_module_lipsync_reframe_v2_letterbox_on_pillarbox():
+    from phase_module_lipsync_delivery import (
+        PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+        plan_module_lipsync_reframe,
+    )
+
+    with mock.patch(
+        "phase_module_lipsync_delivery._probe_video_size",
+        return_value=(720, 544),
+    ), mock.patch(
+        "phase_module_lipsync_delivery.probe_avatar_pro_content_crop",
+        return_value=(544, 544, 88, 0),
+    ):
+        plan = plan_module_lipsync_reframe(
+            Path("/fake/pillarbox.mp4"),
+            delivery_recipe=PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+        )
+    assert plan["mode"] == "letterbox"
+
+
 def test_finalize_real_tiny_mp4(tmp_path: Path):
     """Integration: ffmpeg round-trip on a minimal synthetic clip."""
     src = tmp_path / "tiny_src.mp4"
