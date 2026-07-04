@@ -4866,7 +4866,7 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
 
 function BgOptionTile({
   beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh, onPatchOptionTile,
-  cutStartS: _cutStartS, cutEndS: _cutEndS, trimStartS = 0, trimBackS = 0, onApplyO3Cut, trimStart, trimBack, onApplyO3Trim,
+  cutStartS: _cutStartS, cutEndS: _cutEndS, trimStartS = 0, trimBackS = 0, onApplyO3Cut, trimStart, trimBack, onApplyO3Trim: _onApplyO3Trim,
   replaceSelected, onSetReplaceSlot, showReplaceOnRegen,
   overrideVideoUrl, stillInsert, klingO3Status, videoCacheKey, onApproveStill,
 }: BgOptionTilePropsExt) {
