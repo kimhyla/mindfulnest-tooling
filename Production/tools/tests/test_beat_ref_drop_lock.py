@@ -931,7 +931,7 @@ def test_materialize_char_ref_abs_path_prefers_body_then_sidecar(tmp_path: Path)
     assert owc.materialize_char_ref_abs_path(beat, "") == str(sidecar_path.resolve())
 
 
-def test_try_register_locked_drop_promotes_when_path_not_frontal(
+def test_try_register_locked_drop_adds_pose_without_changing_frontal(
     tmp_path: Path, monkeypatch,
 ):
     from tools import kling_character_registry as reg
@@ -960,8 +960,8 @@ def test_try_register_locked_drop_promotes_when_path_not_frontal(
 
     calls: list[dict] = []
 
-    def fake_add(speaker, path, key, *, promote_frontal=False):
-        calls.append({"speaker": speaker, "path": path, "promote_frontal": promote_frontal})
+    def fake_add(speaker, path, key):
+        calls.append({"speaker": speaker, "path": path})
         return {"ok": True, "pose_rel": "Benson/poses/new_pose.png", "action": "added"}
 
     monkeypatch.setattr(reg, "add_element_pose", fake_add)
@@ -985,10 +985,13 @@ def test_try_register_locked_drop_promotes_when_path_not_frontal(
     monkeypatch.setattr(bg, "resolve_beat_char_ref_path", lambda _b: str(drop))
     out = bg.try_register_dropped_char_ref_on_element(beat, "ws-key")
     assert out["ok"] is True
-    assert calls[0]["promote_frontal"] is True
+    assert calls[0]["speaker"] == "Benson"
+    assert calls[0]["path"] == str(drop)
+    saved = json.loads((tmp_path / "character_subjects.json").read_text(encoding="utf-8"))
+    assert saved["characters"]["Benson"]["frontal_image"] == "Benson/poses/benson_pose_neutral.png"
 
 
-def test_add_element_pose_promote_frontal_overwrites_existing(tmp_path: Path, monkeypatch):
+def test_add_element_pose_does_not_change_frontal(tmp_path: Path, monkeypatch):
     from tools import kling_character_registry as reg
 
     poses = tmp_path / "Benson" / "poses"
@@ -1018,7 +1021,6 @@ def test_add_element_pose_promote_frontal_overwrites_existing(tmp_path: Path, mo
         lambda *_a, **_k: ("new_el", "pred"),
     )
 
-    result = reg.add_element_pose("Benson", source, "ws-key", promote_frontal=True)
+    reg.add_element_pose("Benson", source, "ws-key")
     saved = json.loads((tmp_path / "character_subjects.json").read_text(encoding="utf-8"))
-    assert saved["characters"]["Benson"]["frontal_image"] == result["pose_rel"]
-    assert result["pose_rel"] != "Benson/poses/benson_pose_neutral.png"
+    assert saved["characters"]["Benson"]["frontal_image"] == "Benson/poses/benson_pose_neutral.png"

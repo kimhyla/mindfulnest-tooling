@@ -3837,9 +3837,6 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
     beat_id = body.get("beat_id")
     speaker = (body.get("speaker") or "").strip()
     abs_path = (body.get("abs_path") or "").strip()
-    promote_frontal = body.get("promote_frontal", True)
-    if isinstance(promote_frontal, str):
-        promote_frontal = promote_frontal.strip().lower() not in ("0", "false", "no")
     bg = _bg_module()
 
     sidecar_probe = bg._load_sidecar_migrated()
@@ -3894,9 +3891,7 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
         from server_handlers.milestone_scope import rebind_bg_paths_from_app
 
         rebind_bg_paths_from_app(h.app)
-        result = reg.add_element_pose(
-            speaker, abs_path, wavespeed_key, promote_frontal=bool(promote_frontal),
-        )
+        result = reg.add_element_pose(speaker, abs_path, wavespeed_key)
     except Exception as exc:
         return h._send_error_v59(
             500,
@@ -3925,6 +3920,116 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
                         thumb_b64 = _t
 
         bg.update_beat_locked(beat_id, _pose_patch)
+
+    payload = dict(result)
+    if element_char_ref_ok is not None:
+        payload["element_char_ref_ok"] = element_char_ref_ok
+    if thumb_b64:
+        payload["thumb_b64"] = thumb_b64
+    return h._send_json(200, payload)
+
+
+def handle_bg_set_element_identity(h, body: dict) -> None:
+    """POST /api/bg/set-element-identity — sole path to update Element frontal_image."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    speaker = (body.get("speaker") or "").strip()
+    abs_path = (body.get("abs_path") or "").strip()
+    bg = _bg_module()
+
+    sidecar_probe = bg._load_sidecar_migrated()
+    beat = None
+    if beat_id:
+        _, beat = bg.find_beat(sidecar_probe, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+        if not speaker:
+            speaker = (beat.get("speaker") or "").strip()
+    if beat:
+        from operator_workbench_contract import materialize_char_ref_abs_path
+
+        abs_path = materialize_char_ref_abs_path(beat, abs_path)
+    if not speaker:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_SPEAKER",
+            error_message="speaker or beat_id with speaker required",
+            retry_safe=False,
+        )
+    if not abs_path or not os.path.isfile(abs_path):
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_POSE_SOURCE",
+            error_message="abs_path to pose PNG required (or beat with reference_image)",
+            retry_safe=False,
+        )
+
+    try:
+        from credentials import load_credentials  # type: ignore
+    except ImportError:
+        from tools.credentials_lib.credentials import load_credentials  # type: ignore
+    creds = load_credentials()
+    wavespeed_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+    if not wavespeed_key:
+        return h._send_error_v59(
+            503,
+            error_code="WAVESPEED_NOT_CONFIGURED",
+            error_message="WAVESPEED_API_KEY not configured",
+            retry_safe=False,
+        )
+
+    try:
+        from tools import kling_character_registry as reg
+
+        from server_handlers.milestone_scope import rebind_bg_paths_from_app
+
+        rebind_bg_paths_from_app(h.app)
+        result = reg.set_element_identity(speaker, abs_path, wavespeed_key)
+    except reg.ElementVisualCanonicalError as exc:
+        return h._send_error_v59(
+            409,
+            error_code="ELEMENT_VISUAL_CANONICAL_ERROR",
+            error_message=str(exc),
+            retry_safe=False,
+        )
+    except Exception as exc:
+        return h._send_error_v59(
+            500,
+            error_code="SET_ELEMENT_IDENTITY_FAILED",
+            error_message=str(exc),
+            retry_safe=True,
+        )
+
+    thumb_b64 = None
+    element_char_ref_ok = None
+    if beat_id:
+
+        def _identity_patch(b: dict, _sc: dict) -> None:
+            nonlocal thumb_b64, element_char_ref_ok
+            b["reference_image_locked"] = True
+            ref = b.get("reference_image")
+            if isinstance(ref, dict) and (ref.get("abs_path") or "") == abs_path:
+                bg.ensure_beat_element_char_ref_for_o3(b, wavespeed_key)
+                element_char_ref_ok = b.get("element_char_ref_ok")
+                if not ref.get("thumb_b64"):
+                    from lib.event_library import ref_image_thumb_b64
+
+                    _t = ref_image_thumb_b64(abs_path, h.app._library_root_dirs())
+                    if _t:
+                        b["reference_image"] = dict(ref)
+                        b["reference_image"]["thumb_b64"] = _t
+                        thumb_b64 = _t
+            else:
+                bg.ensure_beat_element_char_ref_for_o3(b, wavespeed_key)
+                element_char_ref_ok = b.get("element_char_ref_ok")
+
+        bg.update_beat_locked(beat_id, _identity_patch)
 
     payload = dict(result)
     if element_char_ref_ok is not None:

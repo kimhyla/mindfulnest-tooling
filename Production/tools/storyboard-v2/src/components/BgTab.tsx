@@ -460,6 +460,7 @@ type BgModalState =
   | { kind: 'extract-overwrite-confirm'; beatCount: number }
   | { kind: 'edit-chip'; beatId: string; oldChipText: string; draftText: string }
   | { kind: 'remove-ref'; beatId: string; refField: 'reference_image' | 'bg_ref_image'; label: string }
+  | { kind: 'set-element-identity'; beatId: string; speaker: string; absPath: string }
   | {
       kind: 'voice-drift-confirm';
       beatId: string;
@@ -1819,7 +1820,6 @@ export function BgTab() {
       beat_id: beatId,
       speaker,
       abs_path: absPath,
-      promote_frontal: true,
     });
     if (!result.ok) {
       if (isBeatNotFoundResult(result)) {
@@ -1850,6 +1850,72 @@ export function BgTab() {
       message: `Pose registered on ${beat?.speaker ?? 'speaker'} Element`
         + (data?.pose_rel ? ` (${data.pose_rel})` : ''),
       source: 'bg-add-element-pose',
+    });
+    await refreshState();
+  };
+
+  const requestSetElementIdentity = (beatId: string) => {
+    const beat = beats.find((b) => b.beat_id === beatId);
+    const charRef = beat ? displayCharRef(beat) : null;
+    const absPath = (charRef?.abs_path ?? '').trim();
+    const speaker = (beat?.speaker ?? '').trim();
+    if (!absPath || !speaker) {
+      pushToast({
+        kind: 'error',
+        message: 'No char ref image — drop a pose in the char ref slot first',
+        source: 'bg-set-element-identity-error',
+      });
+      return;
+    }
+    setModalState({ kind: 'set-element-identity', beatId, speaker, absPath });
+  };
+
+  const executeSetElementIdentity = async () => {
+    if (modalState.kind !== 'set-element-identity') return;
+    const { beatId, speaker, absPath } = modalState;
+    closeModal();
+    const result = await pathappPatch<{
+      ok: boolean;
+      pose_rel?: string;
+      frontal_sha256?: string;
+      element_id?: string;
+      element_char_ref_ok?: boolean;
+      element_char_ref_error?: string | null;
+      thumb_b64?: string;
+    }>(activeScope.value, 'bg_set_element_identity', {
+      beat_id: beatId,
+      speaker,
+      abs_path: absPath,
+    });
+    if (!result.ok) {
+      if (isBeatNotFoundResult(result)) {
+        await handleBeatMissingOnSave(beatId);
+        return;
+      }
+      pushToast({
+        kind: 'error',
+        message: result.error ?? 'Could not set Element identity',
+        source: 'bg-set-element-identity-error',
+      });
+      return;
+    }
+    const data = result.data;
+    const gateOk = data?.element_char_ref_ok;
+    if (typeof gateOk === 'boolean') {
+      updateBgBeats((bs) => bs.map((b): BgBeat => {
+        if (b.beat_id !== beatId) return b;
+        const next: BgBeat = { ...b, element_char_ref_ok: gateOk, reference_image_locked: true };
+        const gateErr = data?.element_char_ref_error ?? null;
+        if (gateErr) next.element_char_ref_error = gateErr;
+        else delete next.element_char_ref_error;
+        return next;
+      }));
+    }
+    pushToast({
+      kind: 'success',
+      message: `Element identity set for ${speaker}`
+        + (data?.frontal_sha256 ? ` (sha ${data.frontal_sha256.slice(0, 8)}…)` : ''),
+      source: 'bg-set-element-identity',
     });
     await refreshState();
   };
@@ -3290,6 +3356,7 @@ export function BgTab() {
               onRemoveRef={(refField, label) => requestRemoveRef(b.beat_id, refField, label)}
               onAlignElementRef={() => onAlignElementRef(b.beat_id)}
               onAddElementPose={() => onAddElementPose(b.beat_id)}
+              onSetElementIdentity={() => requestSetElementIdentity(b.beat_id)}
               onRefresh={() => refreshState()}
               onBeatMissing={handleBeatMissingOnSave}
               // 2026-05-11 Rule 26 fix — optimistic local-state patchers so the
@@ -3450,6 +3517,37 @@ export function BgTab() {
           This removes <strong>only this beat&apos;s</strong> prompt, refs, and options from the sidecar.
           Other beats are unchanged — list order shifts, but each beat keeps its own saved prompt.
         </p>
+      </Modal>
+
+      {/* Element visual canonical lock — explicit identity write */}
+      <Modal
+        id="bg-set-element-identity"
+        title="Set as Element identity?"
+        open={modalState.kind === 'set-element-identity'}
+        onClose={closeModal}
+        footer={
+          <>
+            <button type="button" class="mn-btn" data-testid="bg-set-element-identity-cancel" onClick={closeModal}>
+              Cancel
+            </button>
+            <button
+              type="button"
+              class="mn-btn mn-btn-primary"
+              data-testid="bg-set-element-identity-confirm"
+              onClick={() => { void executeSetElementIdentity(); }}
+            >
+              Set identity
+            </button>
+          </>
+        }
+      >
+        {modalState.kind === 'set-element-identity' ? (
+          <p>
+            This updates <strong>{modalState.speaker}</strong>&apos;s Element frontal image to match
+            the current char ref. Future O3 runs use this identity. Add to Element alone will not
+            change the frontal pose.
+          </p>
+        ) : null}
       </Modal>
 
       {/* Voice bind drift — registry voice_id changed since this beat was last approved */}
@@ -3786,6 +3884,8 @@ interface BeatGenCardProps {
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   onAlignElementRef?: () => void;
   onAddElementPose: () => void;
+  onSetElementIdentity?: () => void;
+  onSetElementIdentity?: () => void;
   // 2026-05-11 fix — parent refreshState() threaded into BgRefSlot + BgOptionTile.
   onRefresh: () => void;
   onBeatMissing: (beatId: string) => void | Promise<void>;
@@ -3814,7 +3914,7 @@ function BeatGenCard({
   onBeginGenerateSubmit, onAbortGenerateSubmit,
   onGenerate, onAccept,
   onSelectO3Video, onApproveStill, onApplyO3Cut, onApplyO3Trim, onSetReplaceSlot, onSubmitNativeLipSyncExperiment,
-  onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onRefresh, onBeatMissing,
+  onEditChip, onInsertAfter, onRemoveRef, onAlignElementRef, onAddElementPose, onSetElementIdentity, onRefresh, onBeatMissing,
   onPatchOptionTile, onPatchRefImage,
   canMoveUp, canMoveDown, reorderBusy, onMoveUp, onMoveDown,
 }: BeatGenCardProps) {
@@ -4171,7 +4271,12 @@ function BeatGenCard({
             }
             : {})}
           {...(showAddElementPose
-            ? { showAddElementPose: true, onAddElementPose }
+            ? {
+              showAddElementPose: true,
+              onAddElementPose,
+              showSetElementIdentity: true,
+              onSetElementIdentity,
+            }
             : {})}
           suppressElementGateUi={generationMode === 'avatar_pro'}
           onRemoveRef={onRemoveRef}
@@ -4429,6 +4534,8 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
   onAlignElementRef?: () => void;
   showAddElementPose?: boolean;
   onAddElementPose?: () => void;
+  showSetElementIdentity?: boolean;
+  onSetElementIdentity?: () => void;
   /** Avatar Pro beats skip Element registration toasts/warnings. */
   suppressElementGateUi?: boolean;
   // BG-18 — visible × button to remove the ref (NOT right-click per Kim 2026-05-06).
@@ -4446,6 +4553,7 @@ interface BgRefSlotPropsExt extends BgRefSlotProps {
 function BgRefSlot({
   label, refImg, testId, beatId, refField, elementRefError, elementRefErrorDetail,
   showAlignElementRef, onAlignElementRef, showAddElementPose, onAddElementPose,
+  showSetElementIdentity, onSetElementIdentity,
   suppressElementGateUi,
   onRemoveRef, onRefresh, onBeatMissing, onPatchRefImage, mutationsLocked,
 }: BgRefSlotPropsExt) {
@@ -4611,18 +4719,35 @@ function BgRefSlot({
           <span class="mn-dim">drop here</span>
         )}
       </div>
-      {showAddElementPose && onAddElementPose && refField === 'reference_image' ? (
-        <button
-          type="button"
-          class="mn-btn mn-btn-small mn-bg-ref-add-element-btn"
-          data-testid={`${testId}-add-element`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onAddElementPose();
-          }}
-        >
-          Add to Element
-        </button>
+      {refField === 'reference_image' && (showAddElementPose || showSetElementIdentity) ? (
+        <div class="mn-bg-ref-element-actions">
+          {showAddElementPose && onAddElementPose ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small mn-bg-ref-add-element-btn"
+              data-testid={`${testId}-add-element`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddElementPose();
+              }}
+            >
+              Add to Element
+            </button>
+          ) : null}
+          {showSetElementIdentity && onSetElementIdentity ? (
+            <button
+              type="button"
+              class="mn-btn mn-btn-small mn-bg-ref-set-identity-btn"
+              data-testid={`${testId}-set-element-identity`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onSetElementIdentity();
+              }}
+            >
+              Set as Element identity
+            </button>
+          ) : null}
+        </div>
       ) : null}
       {elementRefError ? (
         <div

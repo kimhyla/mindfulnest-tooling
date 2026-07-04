@@ -82,6 +82,7 @@ export const MUTATION_ENDPOINTS = {
   bg_update_beat: `${SERVER_BASE}/api/bg/update-beat`,
   bg_align_element_ref: `${SERVER_BASE}/api/bg/align-element-ref`,
   bg_add_element_pose: `${SERVER_BASE}/api/bg/add-element-pose`,
+  bg_set_element_identity: `${SERVER_BASE}/api/bg/set-element-identity`,
   bg_reorder_beats: `${SERVER_BASE}/api/bg/reorder-beats`,
   assign_image: `${SERVER_BASE}/api/assign-image`,
   beat_update_text: `${SERVER_BASE}/api/beat/update_text`,
@@ -230,6 +231,7 @@ export const BG_MUTATION_ENDPOINTS: ReadonlySet<MutationEndpoint> = new Set<Muta
   'bg_update_beat',
   'bg_align_element_ref',
   'bg_add_element_pose',
+  'bg_set_element_identity',
   'bg_reorder_beats',
   // S5.5c Phase B0 — catalog completeness for Beat Generator full UI wiring.
   // All bg_* handlers use _scope_body and read storyboard scope from

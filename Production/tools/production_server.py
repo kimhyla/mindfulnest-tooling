@@ -6517,6 +6517,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._in_beatgen_scope(self._handle_bg_align_element_ref, body)
             if path == "/api/bg/add-element-pose":
                 return self._in_beatgen_scope(self._handle_bg_add_element_pose, body)
+            if path == "/api/bg/set-element-identity":
+                return self._in_beatgen_scope(self._handle_bg_set_element_identity, body)
             if path == "/api/bg/reorder-beats":
                 return self._in_beatgen_scope(self._handle_bg_reorder_beats, body)
             if path == "/api/bg/delete-beat":

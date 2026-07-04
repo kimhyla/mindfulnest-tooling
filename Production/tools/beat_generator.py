@@ -10476,7 +10476,7 @@ def try_register_dropped_char_ref_on_element(
     """Register a dropped library char ref on the speaker's Kling Element when gate fails.
 
     Reconcile when bytes already exist under Production/<Char>/poses/; otherwise
-    copy via add_element_pose (same as library Add to Element).
+    copy via add_element_pose (refer-only — never changes frontal_image).
     """
     speaker = str(beat.get("speaker") or "").strip()
     char_path = resolve_beat_char_ref_path(beat) or ""
@@ -10487,44 +10487,21 @@ def try_register_dropped_char_ref_on_element(
 
         if not reg.is_speaker_voice_ready(speaker):
             return {"ok": False, "reason": "not_voice_ready"}
-        locked_drop = bool(beat.get("reference_image_locked") and beat.get("reference_image"))
-        frontal_abs = reg.resolve_frontal_abs_path(speaker) if locked_drop else None
-        needs_frontal_promote = bool(
-            locked_drop
-            and frontal_abs
-            and os.path.normpath(char_path) != os.path.normpath(frontal_abs),
-        )
         if reg.char_ref_matches_element_images(
             char_path, speaker, allow_pose_dir_fallback=False,
         )[0]:
-            if needs_frontal_promote:
-                out = reg.add_element_pose(
-                    speaker, char_path, wavespeed_key, promote_frontal=True,
-                )
-                out["action"] = "promoted_frontal"
-                return out
             return {"ok": True, "action": "already_matched"}
         try:
             out = reg.reconcile_char_ref_with_element(speaker, char_path, wavespeed_key)
-            if needs_frontal_promote:
-                out = reg.add_element_pose(
-                    speaker, char_path, wavespeed_key, promote_frontal=True,
-                )
-                out["action"] = "promoted_frontal"
-            else:
-                out["action"] = "reconciled"
+            out["action"] = "reconciled"
             return out
         except FileNotFoundError:
-            out = reg.add_element_pose(
-                speaker,
-                char_path,
-                wavespeed_key,
-                promote_frontal=needs_frontal_promote,
-            )
-            out["action"] = "added_promoted" if needs_frontal_promote else "added"
+            out = reg.add_element_pose(speaker, char_path, wavespeed_key)
+            out["action"] = "added"
             return out
     except Exception as exc:
         return {"ok": False, "reason": str(exc)}
+
 
 
 def ensure_beat_element_aligned_reference(beat: dict) -> bool:

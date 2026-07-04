@@ -98,11 +98,74 @@ def audition_manifest_path() -> Path:
     return audition_dir() / "manifest.json"
 
 
-def load_character_subjects() -> dict:
+class ElementVisualCanonicalError(RuntimeError):
+    """frontal_sha256 does not match bytes on disk (ELEMENT_VISUAL_CANONICAL_LOCK_V1)."""
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_character_subjects_legacy_parse() -> dict:
     path = character_subjects_path()
     if not path.is_file():
         return {"characters": {}}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _maybe_stamp_frontal_sha256(cfg: dict, *, char_key: str) -> bool:
+    """Lazy sha migration for active characters — never overwrites frontal_image."""
+    if cfg.get("status") != "active":
+        return False
+    if cfg.get("frontal_sha256"):
+        return False
+    frontal_rel = str(cfg.get("frontal_image") or "").strip()
+    if not frontal_rel:
+        return False
+    frontal_path = prod_root() / frontal_rel
+    if not frontal_path.is_file():
+        return False
+    sha = file_sha256(frontal_path)
+    if not sha:
+        return False
+    cfg["frontal_sha256"] = sha
+    if not cfg.get("visual_canonical_lock_source"):
+        cfg["visual_canonical_lock_source"] = "auto_migrate_v1"
+    return True
+
+
+def load_character_subjects() -> dict:
+    data = load_character_subjects_legacy_parse()
+    chars = data.get("characters") or {}
+    dirty = False
+    for char_key, cfg in list(chars.items()):
+        if not isinstance(cfg, dict):
+            continue
+        if _maybe_stamp_frontal_sha256(cfg, char_key=char_key):
+            chars[char_key] = cfg
+            dirty = True
+    if dirty:
+        data["characters"] = chars
+        save_character_subjects(data)
+    return data
+
+
+def verify_frontal_sha256(cfg: dict) -> tuple[bool, str]:
+    frontal_rel = str(cfg.get("frontal_image") or "").strip()
+    expected = str(cfg.get("frontal_sha256") or "").strip().lower()
+    if not frontal_rel:
+        return False, "missing frontal_image"
+    if not expected:
+        return False, "missing frontal_sha256"
+    frontal_path = prod_root() / frontal_rel
+    if not frontal_path.is_file():
+        return False, f"frontal file missing: {frontal_rel}"
+    actual = (file_sha256(frontal_path) or "").lower()
+    if not actual:
+        return False, "could not hash frontal file"
+    if actual != expected:
+        return False, "frontal_sha256 mismatch with bytes on disk"
+    return True, ""
 
 
 def save_character_subjects(data: dict) -> None:
@@ -683,9 +746,15 @@ def _unique_pose_dest(char_key: str, source: Path) -> tuple[Path, str]:
     return dest.resolve(), rel
 
 
-def resolve_frontal_abs_path(speaker: str) -> str | None:
+def resolve_frontal_abs_path(speaker: str, *, strict: bool = False) -> str | None:
     """Absolute path for the speaker's registered Element frontal_image, if on disk."""
     entry = get_character_entry(speaker) or {}
+    if entry.get("frontal_image") and entry.get("frontal_sha256"):
+        ok, detail = verify_frontal_sha256(entry)
+        if not ok:
+            if strict:
+                raise ElementVisualCanonicalError(detail or "frontal canonical verify failed")
+            return None
     frontal_rel = str(entry.get("frontal_image") or "").strip()
     if not frontal_rel:
         return None
@@ -695,44 +764,22 @@ def resolve_frontal_abs_path(speaker: str) -> str | None:
     return None
 
 
-def add_element_pose(
-    character: str,
-    source_abs_path: str | Path,
-    wavespeed_key: str,
-    *,
-    promote_frontal: bool = False,
-) -> dict[str, Any]:
-    """Copy a pose PNG into Production/<Char>/poses and re-register Element.
-
-    Preserves the locked kling_voice_id (ElevenLabs clone) but re-uploads Element
-    with canonical refer anchors pinned so identity + voice bind stay intact.
-    """
-    from tools.kling_element_voice import register_kling_element
-
-    source = Path(source_abs_path).resolve()
-    if not source.is_file():
-        raise FileNotFoundError(f"Pose source missing: {source}")
-    if source.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
-        raise ValueError(f"Pose source must be an image file: {source.name}")
-
-    data = load_character_subjects()
-    chars = data.get("characters") or {}
+def _resolve_char_key(character: str, chars: dict) -> str:
     char_key = character
     if char_key not in chars:
         matches = [k for k in chars if k.lower() == character.lower()]
         if not matches:
             raise KeyError(f"Unknown character: {character!r}")
         char_key = matches[0]
-    cfg = dict(chars[char_key])
+    return char_key
 
-    if not is_speaker_voice_ready(char_key):
-        raise RuntimeError(
-            f"{char_key!r} is not voice-ready — run setup_character_voice first."
-        )
-    voice_id = cfg.get("kling_voice_id")
-    if not voice_id:
-        raise RuntimeError(f"{char_key!r} has no kling_voice_id — cannot re-register Element.")
 
+def _prepare_element_pose_copy(
+    char_key: str,
+    source: Path,
+    cfg: dict,
+) -> tuple[Path, str]:
+    """Copy pose into Production/<Char>/poses and ensure refer_images includes it."""
     existing_rel = find_pose_rel_by_hash(char_key, str(source))
     if existing_rel and (prod_root() / existing_rel).is_file():
         rel_pose = existing_rel
@@ -757,9 +804,21 @@ def add_element_pose(
         source,
         frontal_rel=str(cfg.get("frontal_image") or "") or None,
     )
-    if promote_frontal or not cfg.get("frontal_image"):
-        cfg["frontal_image"] = rel_pose
+    return dest, rel_pose
 
+
+def _register_element_after_pose_update(
+    char_key: str,
+    cfg: dict,
+    wavespeed_key: str,
+    data: dict,
+    chars: dict,
+) -> str:
+    from tools.kling_element_voice import register_kling_element
+
+    voice_id = cfg.get("kling_voice_id")
+    if not voice_id:
+        raise RuntimeError(f"{char_key!r} has no kling_voice_id — cannot re-register Element.")
     element_id, _prediction_id = register_kling_element(
         char_key, cfg, str(voice_id), wavespeed_key,
     )
@@ -769,6 +828,38 @@ def add_element_pose(
     chars[char_key] = cfg
     data["characters"] = chars
     save_character_subjects(data)
+    return element_id
+
+
+def add_element_pose(
+    character: str,
+    source_abs_path: str | Path,
+    wavespeed_key: str,
+) -> dict[str, Any]:
+    """Copy a pose PNG into Production/<Char>/poses and re-register Element (refer-only).
+
+    Does not change ``frontal_image`` — use ``set_element_identity`` for that.
+    """
+    source = Path(source_abs_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Pose source missing: {source}")
+    if source.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise ValueError(f"Pose source must be an image file: {source.name}")
+
+    data = load_character_subjects()
+    chars = data.get("characters") or {}
+    char_key = _resolve_char_key(character, chars)
+    cfg = dict(chars[char_key])
+
+    if not is_speaker_voice_ready(char_key):
+        raise RuntimeError(
+            f"{char_key!r} is not voice-ready — run setup_character_voice first."
+        )
+    if not cfg.get("kling_voice_id"):
+        raise RuntimeError(f"{char_key!r} has no kling_voice_id — cannot re-register Element.")
+
+    dest, rel_pose = _prepare_element_pose_copy(char_key, source, cfg)
+    element_id = _register_element_after_pose_update(char_key, cfg, wavespeed_key, data, chars)
 
     return {
         "ok": True,
@@ -779,6 +870,56 @@ def add_element_pose(
         "character": char_key,
         "refer_images": list(cfg.get("refer_images") or []),
     }
+
+
+def set_element_identity(
+    character: str,
+    source_abs_path: str | Path,
+    wavespeed_key: str,
+) -> dict[str, Any]:
+    """Sole write path for Element ``frontal_image`` + ``frontal_sha256``."""
+    source = Path(source_abs_path).resolve()
+    if not source.is_file():
+        raise FileNotFoundError(f"Pose source missing: {source}")
+    if source.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise ValueError(f"Pose source must be an image file: {source.name}")
+
+    data = load_character_subjects()
+    chars = data.get("characters") or {}
+    char_key = _resolve_char_key(character, chars)
+    cfg = dict(chars[char_key])
+
+    if not is_speaker_voice_ready(char_key):
+        raise RuntimeError(
+            f"{char_key!r} is not voice-ready — run setup_character_voice first."
+        )
+    if not cfg.get("kling_voice_id"):
+        raise RuntimeError(f"{char_key!r} has no kling_voice_id — cannot re-register Element.")
+
+    dest, rel_pose = _prepare_element_pose_copy(char_key, source, cfg)
+    sha = file_sha256(dest)
+    if not sha:
+        raise ElementVisualCanonicalError("could not stamp frontal_sha256 from pose bytes")
+
+    cfg["frontal_image"] = rel_pose
+    cfg["frontal_sha256"] = sha
+    cfg["visual_canonical_locked"] = True
+    cfg["visual_canonical_lock_source"] = "set_element_identity"
+    cfg["visual_canonical_locked_at"] = _utc_now_iso()
+
+    element_id = _register_element_after_pose_update(char_key, cfg, wavespeed_key, data, chars)
+
+    return {
+        "ok": True,
+        "pose_rel": rel_pose,
+        "pose_abs_path": str(dest),
+        "frontal_sha256": sha,
+        "element_id": element_id,
+        "kling_voice_id": cfg.get("kling_voice_id"),
+        "character": char_key,
+        "refer_images": list(cfg.get("refer_images") or []),
+    }
+
 
 
 def build_audition_manifest() -> dict[str, Any]:
