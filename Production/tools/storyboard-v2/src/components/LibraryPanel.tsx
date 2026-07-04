@@ -43,9 +43,12 @@ import {
 } from '../utils/libraryCropSave';
 import {
   invalidateLibrarySessionCache,
+  itemsForLibrarySessionPersist,
   libraryItemsStorageKey,
+  markLibraryOptimistic,
   mergeLibraryRefetchWithOptimistic,
 } from '../utils/libraryCachePolicy';
+import { libraryItemFromUpload } from '../utils/libraryUpload';
 
 // ----------------------------------------------------------------
 // Types
@@ -80,6 +83,8 @@ interface LibItem {
   /** Element pose tier / character_master — from cr_library. */
   speaker?: string;
   element_pose_contaminated?: boolean;
+  /** LIBRARY_CLIENT_CACHE_COHERENCE_V2 — client overlay until server confirms key. */
+  _libraryOptimistic?: boolean;
 }
 
 interface StitchLibraryAudioItem {
@@ -237,7 +242,10 @@ function persistLibraryItems(eventId: string, items: LibItem[]): void {
   try {
     sessionStorage.setItem(
       libraryItemsStorageKey(eventId),
-      JSON.stringify({ items, savedAt: Date.now() }),
+      JSON.stringify({
+        items: itemsForLibrarySessionPersist(items),
+        savedAt: Date.now(),
+      }),
     );
   } catch {
     /* quota — best effort */
@@ -530,7 +538,7 @@ export function LibraryPanel() {
       const detail = (ev as CustomEvent<LibraryCropSavedDetail>).detail;
       if (!detail?.item?.key) return;
       setItems((prev) => {
-        const cropRow = detail.item as LibItem;
+        const cropRow = markLibraryOptimistic(detail.item as LibItem);
         const merged = prependCropLibraryItem(prev, cropRow, detail.parent_library_key);
         persistLibraryItems(eventId, merged);
         return merged;
@@ -741,7 +749,7 @@ export function LibraryPanel() {
           reader.readAsDataURL(file);
         });
         const file_b64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : dataUrl;
-        const result = await pathappPatch(activeScope.value, 'cr_upload', {
+        const result = await pathappPatch<Record<string, unknown>>(activeScope.value, 'cr_upload', {
           filename: file.name,
           ...(audioTier
             ? { file_b64, tier: audioTier }
@@ -749,6 +757,16 @@ export function LibraryPanel() {
         }, { skipSnapshot: true });
         if (result.ok) {
           added++;
+          if (result.data && typeof result.data === 'object') {
+            const uploadRow = markLibraryOptimistic(
+              libraryItemFromUpload(result.data as Record<string, unknown>) as LibItem,
+            );
+            setItems((prev) => {
+              const merged = prependCropLibraryItem(prev, uploadRow);
+              persistLibraryItems(eventId, merged);
+              return merged;
+            });
+          }
           pushToast({ kind: 'success', message: `Uploaded ${file.name}`, source: 'library-upload' });
         } else {
           pushToast({
