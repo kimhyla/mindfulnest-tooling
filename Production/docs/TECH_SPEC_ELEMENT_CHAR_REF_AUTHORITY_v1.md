@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-04  
 **Status:** Implemented  
-**Branch:** `fix/extract-dialogue-only-beat-types`  
+**Branch:** `fix/element-char-ref-authority-v1`  
 **Primary repro:** Event_5 `:5115`, Benson Beat 1
 
 ## Problem

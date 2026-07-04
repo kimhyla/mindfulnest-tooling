@@ -469,7 +469,7 @@ SPECIES_DESC = {
     "Tessa":   "cartoon turtle with a warm orange shell and gentle eyes, Pixar 3D animated style",
     "Luna":    "cartoon owl with big round scholarly eyes and ruffled feathers, Pixar 3D animated style",
     "Lorelai": "cartoon raccoon scholar with bright eyes, soft fur, and scholarly glasses, Pixar 3D animated style",
-    "Benson":  "cartoon bunny with soft grey fur and a kind anxious expression, Pixar 3D animated style",
+    "Benson":  "cartoon bunny with warm brown fur and a kind anxious expression, Pixar 3D animated style",
     "Ember":   "cartoon fox with bright auburn fur and a lively curious expression, Pixar 3D animated style",
     "Bork":    "cartoon firefly with bioluminescent glow and tiny insect wings, Pixar 3D animated style",
     "Bramble": "cartoon bear with mossy brown fur and a gentle giant presence, Pixar 3D animated style",
