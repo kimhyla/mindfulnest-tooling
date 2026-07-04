@@ -12,13 +12,13 @@ if str(TOOLS) not in sys.path:
 from server_handlers import stitch_editor as se  # noqa: E402
 
 
-def test_default_stitch_transitions_dissolve_3800ms() -> None:
+def test_default_stitch_transitions_late_fade_budgets() -> None:
     trans = se.default_stitch_transitions()
     assert len(trans) == 3
     for i, t in enumerate(trans):
         assert t["after_slot"] == i
         assert t["kind"] == "dissolve"
-        assert t["fade_ms"] == 3800
+        assert t["fade_ms"] == se.STITCH_MODULE_BOUNDARY_PAIR_FADE_MS[i]
         assert t["audio_xfade_ms"] == 0
 
 
