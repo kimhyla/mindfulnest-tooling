@@ -87,32 +87,39 @@ def test_assign_kling_o3_option_heals_stale_trim(tmp_path: Path):
     assert "kling_o3_trim_back" not in beat
 
 
-def test_trim_scratch_token_changes_when_front_trim_changes():
+def test_trim_scratch_token_changes_when_front_trim_changes(tmp_path: Path):
+    clip = tmp_path / "clip.mp4"
+    clip.write_bytes(b"x")
     beat = {
         "kling_o3_generation": 9,
         "kling_o3_trim_start": 1.0,
         "kling_o3_trim_back": 2.0,
+        "kling_o3_video_path": str(clip),
     }
-    t1 = bg.kling_o3_trim_scratch_token(beat)
+    t1 = bg.kling_o3_trim_scratch_token(beat, video_path=str(clip))
     beat["kling_o3_trim_start"] = 2.5
-    t2 = bg.kling_o3_trim_scratch_token(beat)
+    t2 = bg.kling_o3_trim_scratch_token(beat, video_path=str(clip))
     assert t1 != t2
-    assert t1 == "s1.0_b2.0"
-    assert t2 == "s2.5_b2.0"
+    assert t1.endswith("_s1.0_b2.0")
+    assert t2.endswith("_s2.5_b2.0")
 
 
 def test_ui_trim_preview_path_unique_per_front_trim(tmp_path: Path):
     beat_id = "bg_arc1_event2_pre_beat_10"
+    clip = tmp_path / "source.mp4"
+    clip.write_bytes(b"x")
     beat_a = {
         "kling_o3_generation": 3,
         "kling_o3_trim_start": 1.0,
         "kling_o3_trim_back": 0.0,
+        "kling_o3_video_path": str(clip),
     }
     beat_b = {**beat_a, "kling_o3_trim_start": 2.0}
     path_a = bg.kling_o3_ui_trim_preview_path(beat_id, tmp_path, beat_a)
     path_b = bg.kling_o3_ui_trim_preview_path(beat_id, tmp_path, beat_b)
     assert path_a != path_b
-    assert path_a.name == f"{beat_id}_g3_s1.0_b0.0_ui_preview.mp4"
+    token_a = bg.kling_o3_trim_scratch_token(beat_a, video_path=str(clip))
+    assert path_a.name == f"{beat_id}_g3_{token_a}_ui_preview.mp4"
 
 
 def test_export_trim_path_includes_trim_token(tmp_path: Path):
@@ -131,7 +138,8 @@ def test_export_trim_path_includes_trim_token(tmp_path: Path):
         with patch.object(bg, "materialize_kling_o3_trimmed_clip") as mat:
             mat.side_effect = lambda beat, dest, **kw: dest
             dest = bg._kling_o3_export_clip_path(beat, tmp_path, scratch)
-    assert dest.name == "bg_arc1_event2_pre_beat_10_g3_s1.5_b0.5_export_trim.mp4"
+    token = bg.kling_o3_trim_scratch_token(beat, video_path=str(clip))
+    assert dest.name == f"bg_arc1_event2_pre_beat_10_g3_{token}_export_trim.mp4"
 
 
 def test_invalidate_kling_o3_trim_scratch_removes_preview_and_export(tmp_path: Path):
@@ -155,12 +163,19 @@ def test_prune_stale_kling_o3_trim_scratch_keeps_current_token(tmp_path: Path):
     beat_id = "bg_arc1_event2_pre_beat_10"
     scratch = tmp_path / "assembled" / "_kling_o3_trim_scratch"
     scratch.mkdir(parents=True)
+    clip = tmp_path / "source.mp4"
+    clip.write_bytes(b"x")
     beat = {
         "kling_o3_generation": 3,
         "kling_o3_trim_start": 2.0,
         "kling_o3_trim_back": 1.0,
+        "kling_o3_video_path": str(clip),
     }
-    old = scratch / f"{beat_id}_g3_s1.0_b1.0_ui_preview.mp4"
+    old_token = bg.kling_o3_trim_scratch_token(
+        {"kling_o3_trim_start": 1.0, "kling_o3_trim_back": 1.0},
+        video_path=str(clip),
+    )
+    old = scratch / f"{beat_id}_g3_{old_token}_ui_preview.mp4"
     legacy = scratch / f"{beat_id}_ui_trim_preview.mp4"
     current = bg.kling_o3_ui_trim_preview_path(beat_id, tmp_path, beat)
     for p in (old, legacy, current):
@@ -200,8 +215,16 @@ def test_prune_stale_kling_o3_trim_scratch_keeps_inactive_option_trim(tmp_path: 
             },
         ],
     }
-    inactive_preview = scratch / f"{beat_id}_g3_s0.0_b9.05_ui_preview.mp4"
-    active_preview = scratch / f"{beat_id}_g3_s0.0_b3.87_ui_preview.mp4"
+    inactive_token = bg.kling_o3_trim_scratch_token(
+        {"kling_o3_trim_start": 0.0, "kling_o3_trim_back": 9.05},
+        video_path=inactive_vp,
+    )
+    active_token = bg.kling_o3_trim_scratch_token(
+        {"kling_o3_trim_start": 0.0, "kling_o3_trim_back": 3.87},
+        video_path=active_vp,
+    )
+    inactive_preview = scratch / f"{beat_id}_g3_{inactive_token}_ui_preview.mp4"
+    active_preview = scratch / f"{beat_id}_g3_{active_token}_ui_preview.mp4"
     stale = scratch / f"{beat_id}_g3_s1.0_b1.0_ui_preview.mp4"
     for p in (inactive_preview, active_preview, stale):
         p.write_bytes(b"x")

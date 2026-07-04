@@ -1554,7 +1554,7 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "kling_o3_still_stitch_approved", "kling_o3_still_stitch_approved_at",
     "kling_o3_task_id", "kling_o3_trim_start", "kling_o3_trim_back",
     "kling_o3_cut_start_s", "kling_o3_cut_end_s",
-    "kling_o3_baked_path", "kling_o3_baked_token",
+    "kling_o3_baked_path", "kling_o3_baked_token", "kling_o3_baked_source_path",
     "kling_o3_actual_duration_s", "kling_o3_completed_at",
     "reference_image", "bg_ref_image", "reference_image_locked",
     "bg_ref_image_locked", "start_frame_image_locked", "end_frame_image_locked",
@@ -6731,6 +6731,22 @@ def build_fixed_o3_ui_slots(
     return slots
 
 
+O3_UI_SLOT_MIN = 0
+O3_UI_SLOT_MAX = 2
+
+
+def normalize_o3_ui_slot_index(slot_index: int | str) -> int:
+    """UI container slot — distinct from O3 generation number (g1, g2, …)."""
+    si = int(slot_index)
+    if O3_UI_SLOT_MIN <= si <= O3_UI_SLOT_MAX:
+        return si
+    raise ValueError(
+        f"slot_index must be {O3_UI_SLOT_MIN}–{O3_UI_SLOT_MAX} (UI container slot), "
+        f"got {slot_index}. Generation numbers (g6) are not slot_index — pass "
+        f"video_path to target a clip by path."
+    )
+
+
 def find_o3_option_by_slot_index(
     beat: dict,
     slot_index: int,
@@ -6738,19 +6754,25 @@ def find_o3_option_by_slot_index(
     video_path: str | None = None,
 ) -> dict | None:
     """Resolve UI container 0–2 using pin-slot layout (``slot_index`` on each option)."""
+    vp = str(video_path or "").strip()
+    if vp:
+        direct = find_o3_option_by_video_path(beat, vp)
+        if direct is not None:
+            return direct
+    try:
+        idx = normalize_o3_ui_slot_index(slot_index)
+    except ValueError:
+        if vp:
+            raise ValueError(f"video_path not in beat O3 options: {vp}") from None
+        raise
     slots = build_fixed_o3_ui_slots(beat)
-    idx = max(0, min(2, int(slot_index)))
     slot_opt = slots[idx]
-    if video_path:
-        vp = str(video_path).strip()
+    if vp:
         slot_vp = str((slot_opt or {}).get("video_path") or "").strip()
-        if vp and slot_vp != vp:
-            direct = find_o3_option_by_video_path(beat, vp)
-            if direct is not None:
-                return direct
+        if slot_vp and slot_vp != vp:
             # After still-insert Apply Cut bake, sidecar points at *_trimmed.mp4 while
             # the client may still send the pre-bake path — trust the slot container.
-            if slot_vp and _o3_option_paths_same_clip_family(vp, slot_vp):
+            if _o3_option_paths_same_clip_family(vp, slot_vp):
                 return slot_opt if isinstance(slot_opt, dict) else None
             raise ValueError(f"video_path not in beat O3 options: {vp}")
     return slot_opt if isinstance(slot_opt, dict) else None
@@ -6941,9 +6963,37 @@ def hydrate_beat_baked_export_from_active_option(beat: dict) -> None:
         return
     baked_path = str(opt.get("kling_o3_baked_path") or "").strip()
     baked_token = str(opt.get("kling_o3_baked_token") or "").strip()
+    baked_src = str(opt.get("kling_o3_baked_source_path") or "").strip()
     if baked_path and baked_token:
         beat["kling_o3_baked_path"] = baked_path
         beat["kling_o3_baked_token"] = baked_token
+        if baked_src:
+            beat["kling_o3_baked_source_path"] = baked_src
+
+
+def _o3_baked_cache_matches_source(
+    beat: dict,
+    opt: dict | None,
+    src: Path,
+    *,
+    expected_token: str,
+    baked_token: str | None,
+) -> bool:
+    """Reject stale bakes when token matches but source clip differs."""
+    if not baked_token or baked_token != expected_token:
+        return False
+    baked_src = ""
+    if isinstance(opt, dict):
+        baked_src = str(opt.get("kling_o3_baked_source_path") or "").strip()
+    if not baked_src:
+        baked_src = str(beat.get("kling_o3_baked_source_path") or "").strip()
+    if baked_src:
+        try:
+            return Path(baked_src).resolve() == src.resolve()
+        except OSError:
+            return False
+    # Legacy tokens (pre clip-id) cannot prove source identity — force re-materialize.
+    return False
 
 
 def hydrate_beat_trim_from_active_option(beat: dict) -> None:
@@ -7050,6 +7100,7 @@ def migrate_segment_o3_trims_for_export(beats: list[dict]) -> bool:
 def clear_o3_baked_fields(target: dict) -> None:
     target.pop("kling_o3_baked_path", None)
     target.pop("kling_o3_baked_token", None)
+    target.pop("kling_o3_baked_source_path", None)
 
 
 def o3_baked_export_token(beat: dict, *, video_path: str | Path | None = None) -> str:
@@ -7061,7 +7112,7 @@ def o3_baked_export_token(beat: dict, *, video_path: str | Path | None = None) -
         cut_token = kling_o3_cut_scratch_token(beat, video_path=vp)
         return f"g{gen}_{cut_token}_baked"
     if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
-        return f"g{gen}_{kling_o3_trim_scratch_token(beat)}_baked"
+        return f"g{gen}_{kling_o3_trim_scratch_token(beat, video_path=vp)}_baked"
     return f"g{gen}_full"
 
 
@@ -7107,15 +7158,19 @@ def bake_o3_active_export_clip(
             beat, dest, source_path=src, event_dir=event_dir,
         )
     baked_path = dest
+    src_resolved = str(src.resolve())
     beat["kling_o3_baked_path"] = str(baked_path.resolve())
     beat["kling_o3_baked_token"] = token
+    beat["kling_o3_baked_source_path"] = src_resolved
     if isinstance(opt, dict):
         opt["kling_o3_baked_path"] = beat["kling_o3_baked_path"]
         opt["kling_o3_baked_token"] = token
+        opt["kling_o3_baked_source_path"] = src_resolved
     return {
         "baked": True,
         "baked_path": beat["kling_o3_baked_path"],
         "baked_token": token,
+        "baked_source_path": src_resolved,
         "effective_duration_s": round(_ffprobe_duration(baked_path), 3),
     }
 
@@ -7518,12 +7573,14 @@ def kling_o3_cut_scratch_token(beat: dict, *, video_path: str | None = None) -> 
     return f"g{gen}_{clip_id}_c{start}_{end}"
 
 
-def kling_o3_trim_scratch_token(beat: dict) -> str:
-    """Stable filename token for trim scratch files (gen + front/back window)."""
+def kling_o3_trim_scratch_token(beat: dict, *, video_path: str | None = None) -> str:
+    """Stable filename token for trim scratch files (source clip + front/back window)."""
     start = round(float(beat.get("kling_o3_trim_start") or 0.0), 2)
     back = beat.get("kling_o3_trim_back")
     back_val = round(float(back), 2) if back is not None and float(back) > 0 else 0.0
-    return f"s{start}_b{back_val}"
+    vp = str(video_path or beat.get("kling_o3_video_path") or "")
+    clip_id = hashlib.sha1(vp.encode("utf-8")).hexdigest()[:8] if vp else "noclip"
+    return f"{clip_id}_s{start}_b{back_val}"
 
 
 def kling_o3_ui_trim_preview_path(
@@ -7537,7 +7594,7 @@ def kling_o3_ui_trim_preview_path(
         token = kling_o3_cut_scratch_token(beat)
         return scratch / f"{beat_id}_{token}_ui_preview.mp4"
     gen = int(beat.get("kling_o3_generation") or 0)
-    token = kling_o3_trim_scratch_token(beat)
+    token = kling_o3_trim_scratch_token(beat, video_path=beat.get("kling_o3_video_path"))
     return scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4"
 
 
@@ -7597,14 +7654,19 @@ def _trim_window_scratch_paths(
     beat: dict,
     trim_start: float,
     trim_back: float | None,
+    *,
+    video_path: str | None = None,
 ) -> set[Path]:
     """Preview/export scratch paths for one front/back trim window."""
     scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
     gen = int(beat.get("kling_o3_generation") or 0)
-    token = kling_o3_trim_scratch_token({
-        "kling_o3_trim_start": trim_start,
-        "kling_o3_trim_back": trim_back,
-    })
+    token = kling_o3_trim_scratch_token(
+        {
+            "kling_o3_trim_start": trim_start,
+            "kling_o3_trim_back": trim_back,
+        },
+        video_path=video_path or beat.get("kling_o3_video_path"),
+    )
     return {
         (scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4").resolve(),
         (scratch / f"{beat_id}_g{gen}_{token}_export_trim.mp4").resolve(),
@@ -7650,6 +7712,7 @@ def _kling_o3_trim_scratch_keep_paths(
             beat,
             float(opt.get("trim_start_s") or 0.0),
             opt.get("trim_back_s"),
+            video_path=str(opt.get("video_path") or ""),
         )
     return keep
 
@@ -7985,20 +8048,32 @@ def _kling_o3_export_clip_path(
     if isinstance(opt, dict):
         opt_baked = opt.get("kling_o3_baked_path")
         opt_token = opt.get("kling_o3_baked_token")
-        if opt_baked and opt_token == expected_token:
+        if opt_baked and _o3_baked_cache_matches_source(
+            beat,
+            opt,
+            src,
+            expected_token=expected_token,
+            baked_token=str(opt_token or "") or None,
+        ):
             bp = Path(str(opt_baked))
             if bp.is_file():
                 return bp.resolve()
 
     baked_path = beat.get("kling_o3_baked_path")
     baked_token = beat.get("kling_o3_baked_token")
-    if baked_path and baked_token == expected_token:
+    if baked_path and _o3_baked_cache_matches_source(
+        beat,
+        opt if isinstance(opt, dict) else None,
+        src,
+        expected_token=expected_token,
+        baked_token=str(baked_token or "") or None,
+    ):
         bp = Path(str(baked_path))
         if bp.is_file():
             return bp.resolve()
 
     if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
-        token = kling_o3_trim_scratch_token(beat)
+        token = kling_o3_trim_scratch_token(beat, video_path=str(src))
         dest = scratch_dir / f"{beat_id}_g{gen}_{token}_export_trim.mp4"
         return materialize_kling_o3_trimmed_clip(
             beat, dest, source_path=src, event_dir=event_dir,
