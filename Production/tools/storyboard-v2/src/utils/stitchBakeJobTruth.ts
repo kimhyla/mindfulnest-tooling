@@ -96,3 +96,12 @@ export function stitchBakeSuccessPaths(payload: StitchBakePollResult | undefined
     assetId: typeof result.asset_id === 'number' ? result.asset_id : undefined,
   };
 }
+
+/** Human-readable terminal bake failure for status line + empty preview hint. */
+export function stitchBakeTerminalErrorLine(payload: StitchBakePollResult | undefined): string | null {
+  if (!payload || !isStitchBakeStatusTerminal(payload.status)) return null;
+  if (payload.status === 'done') return null;
+  const err = payload.error ?? payload.message ?? payload.result?.error_message ?? 'Bake failed';
+  if (payload.status === 'interrupted') return `Bake interrupted: ${err}`;
+  return `Bake failed: ${err}`;
+}

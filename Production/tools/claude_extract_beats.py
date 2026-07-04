@@ -155,7 +155,8 @@ _BEAT_PLAN_TOOL = {
                         "beat_index": {"type": "integer"},
                         "beat_type": {
                             "type": "string",
-                            "enum": ["dialogue", "stage_still", "stage_direction"],
+                            "enum": ["dialogue", "stage_still"],
+                            "description": "dialogue = Kling O3 clip; stage_still = GPT still insert. Legacy stage_direction coerces to dialogue on normalize.",
                         },
                         "speaker": {"type": "string"},
                         "dialogue_text": {"type": "string"},

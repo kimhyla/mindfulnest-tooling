@@ -32,6 +32,25 @@ def test_expand_inserts_black_between_clips(tmp_path: Path) -> None:
     assert out[1].name.startswith("black_pause_")
 
 
+def test_expand_accepts_string_clip_paths(tmp_path: Path) -> None:
+    """Stitch pipeline passes str paths from _stitch_resolve_path — must not .stem crash."""
+    clips = []
+    for i in range(2):
+        p = tmp_path / f"clip_{i}.mp4"
+        fs.render_black_pause_clip(2.0, p)
+        clips.append(str(p))
+    out = fs.expand_clips_with_black_pause_boundaries(
+        clips,
+        [2800],
+        str(tmp_path / "scratch"),
+        visual_out_ms=600,
+        visual_in_ms=600,
+        fade_audio=False,
+    )
+    assert len(out) == 3
+    assert all(isinstance(part, Path) for part in out)
+
+
 def test_allocate_pair_fade_budget_manifest_defaults() -> None:
     out_ms, in_ms, black_ms = fs.allocate_pair_fade_budget(1500)
     assert out_ms == 500

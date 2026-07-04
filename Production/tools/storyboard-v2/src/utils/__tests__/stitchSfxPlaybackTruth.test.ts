@@ -26,6 +26,18 @@ describe('STITCH_SFX_PLAYBACK_TRUTH_V1', () => {
     assert.match(url ?? '', /\/files\?path=/);
   });
 
+  it('four-files SFX slot resolves dry_export_path for live client mix (not stale playback bake)', () => {
+    const slot = {
+      video_path: 'Production/Event_3/assembled/resolution_playback_20260703T175619Z.mp4',
+      dry_export_path: 'Production/Event_3/assembled/resolution_kling_o3_20260703T175509Z.mp4',
+      playback_recipe_version: 'STITCH_FOUR_FILES_V1',
+      sfx_cues: [{ id: 'c1', offset_ms: 19000, duration_ms: 3000, source_path: '/x/sfx.mp3' }],
+    };
+    const url = resolveSlotPlaybackPreviewUrl('Event_3', 'resolution', slot, {});
+    assert.match(url ?? '', /resolution_kling_o3_20260703T175509Z\.mp4/);
+    assert.doesNotMatch(url ?? '', /resolution_playback_/);
+  });
+
   it('ambient-only slot resolves dry /files until ambient mix is baked', () => {
     const slot = {
       video_path: 'Production/Milestones/milestone1_arc1/assembled/standalone_kling_o3_test.mp4',

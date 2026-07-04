@@ -133,6 +133,16 @@ def test_find_o3_option_by_video_path_prefers_exact_over_untrimmed():
     assert opt.get("trim_start_s") == 4.31
 
 
+def test_o3_option_paths_same_clip_family_still_insert_tts_sibling_trim():
+    tts = "/clips/bg_arc1_event5_pre_beat_06_still_insert_1783130402_tts.mp4"
+    trimmed = "/clips/bg_arc1_event5_pre_beat_06_still_insert_1783130402_trimmed.mp4"
+    tts_trimmed = "/clips/bg_arc1_event5_pre_beat_06_still_insert_1783130402_tts_trimmed.mp4"
+    other_gen = "/clips/bg_arc1_event5_pre_beat_06_still_insert_1783130246_tts.mp4"
+    assert bg._o3_option_paths_same_clip_family(tts, trimmed)
+    assert bg._o3_option_paths_same_clip_family(tts, tts_trimmed)
+    assert not bg._o3_option_paths_same_clip_family(tts, other_gen)
+
+
 def test_find_o3_option_by_slot_index_accepts_pre_bake_path_after_trim(tmp_path: Path):
     full = tmp_path / "bg_test_still_insert_7300_s0_kling_idle_tts.mp4"
     trimmed = tmp_path / "bg_test_still_insert_7300_s0_kling_idle_tts_trimmed.mp4"

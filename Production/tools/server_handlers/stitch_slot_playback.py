@@ -70,7 +70,12 @@ def playback_recipe_is_dry_authority_client_mix(slot: dict | None) -> bool:
 
 def slot_requires_client_preview_mix(slot: dict | None) -> bool:
     """True when Stitcher should layer ambient and/or SFX via client Web Audio."""
-    if not isinstance(slot, dict) or not playback_recipe_is_dry_authority_client_mix(slot):
+    if not isinstance(slot, dict):
+        return False
+    if not (
+        playback_recipe_is_dry_authority_client_mix(slot)
+        or playback_recipe_is_four_files(slot)
+    ):
         return False
     return slot_has_playback_mix_layers(slot)
 
@@ -481,12 +486,30 @@ def bake_and_persist_slot_playback_mp4(
     result: dict[str, Any] = {"ok": True, "code": STITCH_FOUR_FILES_V1}
 
     def upsert(state: dict) -> None:
-        job = (state.get("jobs") or {}).get(job_name)
+        from server_handlers.stitch_editor import stitch_migrate_legacy_to_canonical  # noqa: PLC0415
+
+        jobs = state.setdefault("jobs", {})
+        job = jobs.get(job_name)
         if not isinstance(job, dict):
-            raise ValueError(f"job missing during playback bake: {job_name!r}")
+            event_id = (
+                job_name[: -len("_stitch")]
+                if job_name.endswith("_stitch")
+                else h.app.event_dir.name
+            )
+            stitch_migrate_legacy_to_canonical(state, event_id)
+            job = jobs.get(job_name)
+        if not isinstance(job, dict):
+            jobs[job_name] = {
+                "created_at": now_iso,
+                "updated_at": now_iso,
+                "slots": {},
+                "transitions": [],
+            }
+            job = jobs[job_name]
         slots = job.get("slots")
         if not isinstance(slots, dict):
-            raise ValueError(f"job slots missing: {job_name!r}")
+            job["slots"] = {}
+            slots = job["slots"]
         slot = slots.setdefault(slot_key, {})
         old_video = (slot.get("video_path") or "").strip()
         slot.update(slot_patch)

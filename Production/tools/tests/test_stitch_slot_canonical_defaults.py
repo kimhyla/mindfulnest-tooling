@@ -17,7 +17,7 @@ class TestStitchSlotCanonicalDefaults(unittest.TestCase):
         assert se.STITCH_CANONICAL_DEFAULTS_PERSIST_V1
         assert se.STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1
         assert se.STITCH_RESOLUTION_HEAD_WHOOSH_V1
-        assert se.STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1
+        assert se.STITCH_MODULE_BOUNDARY_SYMMETRIC_FADE_V1
         assert "intro" in se.STITCH_SLOT_DEFAULT_TAIL_SFX
         assert "phase_a" not in se.STITCH_SLOT_CANONICAL_DEFAULT_SFX
         assert "phase_b" not in se.STITCH_SLOT_CANONICAL_DEFAULT_SFX

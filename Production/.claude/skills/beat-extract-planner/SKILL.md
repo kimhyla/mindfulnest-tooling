@@ -32,9 +32,10 @@ Never output Luna or Chipper in `story_summary` or `beats_plan`. **Lemur Peace P
 
 | beat_type | When |
 |-----------|------|
-| `dialogue` | Lorelai, Tessa, Arlo — Kling O3 Element clip |
+| `dialogue` | Lorelai, Tessa, Arlo, **Benson**, Oliver — Kling O3 Element clip. Action gags and physical comedy use a **named character** + `scene_notes` (e.g. `Benson [comedic, startled]: (hiccup — dives back into burrow)`). |
 | `stage_still` | Inscription close-up, runestone glow, MindfulNest still — **GPT still insert**, empty or minimal `dialogue_text` |
-| `stage_direction` | Non-still transitions (rare) |
+
+**Do not emit `stage_direction` or `[Stage Direction]` speaker** for Kling clips. There is no separate stage-direction beat lane — action beats are dialogue beats with a named speaker.
 
 ## scene_notes (Kling-safe staging)
 

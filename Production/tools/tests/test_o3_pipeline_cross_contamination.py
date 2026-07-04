@@ -55,6 +55,22 @@ def _event2_sidecar_beat4(*, o3_generate_mode: str = "voice_first") -> tuple[dic
     return sidecar, beat
 
 
+def test_infer_real_voice_harvest_delivery_is_element_native():
+    """Beat 10 g2_delivery — harvest remux must not classify as still_insert."""
+    opt = {
+        "source": "kling_real_voice_harvest",
+        "video_path": "/Event_3/kling_o3_clips/bg_arc1_event3_pre_beat_10_g2_delivery.mp4",
+    }
+    assert bg.infer_o3_option_pipeline_mode(opt) == bg.O3_GENERATE_MODE_ELEMENT_NATIVE
+
+
+def test_ui_infer_does_not_map_bare_delivery_to_still_insert():
+    src = Path(__file__).resolve().parents[1] / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
+    text = src.read_text(encoding="utf-8")
+    assert "kling_real_voice_harvest" in text
+    assert "if (path.includes('_delivery')) return 'still_insert'" not in text
+
+
 def test_infer_pov_motion_source_beats_still_insert_path():
     """O3 i2v animation imported onto still_insert beat must not classify as still."""
     opt = {
@@ -159,6 +175,22 @@ def test_sync_sets_element_mode_on_element_selection():
     bg.sync_o3_selection_pipeline_fields(beat, sidecar, option=element)
     assert beat.get("kling_o3_mode") == bg.KLING_O3_MODE_ELEMENT_NATIVE
     assert not beat.get("kling_o3_selection_pipeline_mismatch")
+
+
+def test_infer_harvest_remux_as_element_native():
+    opt = {
+        "source": "kling_real_voice_harvest",
+        "video_path": "/Event_3/kling_o3_clips/bg_arc1_event3_pre_beat_10_g2_delivery.mp4",
+    }
+    assert bg.infer_o3_option_pipeline_mode(opt) == bg.O3_GENERATE_MODE_ELEMENT_NATIVE
+    sidecar = {"arcs": {}}
+    beat = {
+        "beat_id": "bg_arc1_event3_pre_beat_10",
+        "o3_generate_mode": "element_native",
+        "kling_o3_video_path": opt["video_path"],
+        "kling_o3_options": [{**opt, "active": True, "key": "k1"}],
+    }
+    assert bg.compute_o3_selection_pipeline_mismatch(beat, sidecar) is False
 
 
 def test_select_handler_returns_pipeline_mismatch_warning():

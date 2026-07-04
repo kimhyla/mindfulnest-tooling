@@ -12,6 +12,7 @@ from pathlib import Path
 O3_GALLERY_OPTION_IDENTITY_V1 = "O3_GALLERY_OPTION_IDENTITY_V1"
 O3_CLIP_AUDIO_CONTRACT_V1 = "O3_CLIP_AUDIO_CONTRACT_V1"
 O3_GALLERY_KEY_COLLISION_HEAL = "O3_GALLERY_KEY_COLLISION_HEAL"
+O3_STILL_INSERT_SILENT_SIBLING_PRUNE = "O3_STILL_INSERT_SILENT_SIBLING_PRUNE"
 
 AUDIO_CONTRACT_VIDEO_ONLY = "video_only"
 AUDIO_CONTRACT_EMBEDDED_VOICE = "embedded_voice"
@@ -47,12 +48,104 @@ def is_still_insert_gallery_option(beat_id: str, option: dict, *, video_path: st
     return bool(beat_id and key.startswith(beat_id) and "_still_insert_" in key)
 
 
+def is_still_insert_silent_ken_burns_preview(video_path: str) -> bool:
+    """True for ken-burns preview clips (``*_still_insert_<ts>.mp4``) without real TTS audio.
+
+    Ken-burns builds mux a near-silent AAC track onto the preview file; the audible clip is
+    the ``*_tts.mp4`` sibling. Disk reconcile must not fill UI slots with these when TTS exists.
+    """
+    path = Path(str(video_path or "").strip())
+    name = path.name.lower()
+    if "_still_insert_" not in name or not name.endswith(".mp4"):
+        return False
+    if "_tts" in name or "_trimmed" in name or "_kling_idle" in name:
+        return False
+    if not path.is_file():
+        return False
+    if clip_has_embedded_voice(path):
+        return False
+    parent = path.parent
+    tts = parent / f"{path.stem}_tts.mp4"
+    return tts.is_file()
+
+
+def still_insert_audible_sibling_path(video_path: str | Path) -> Path | None:
+    """Return ``*_tts.mp4`` sibling when ``video_path`` is a silent ken-burns preview."""
+    path = Path(str(video_path or "").strip())
+    if not is_still_insert_silent_ken_burns_preview(str(path)):
+        return None
+    tts = path.parent / f"{path.stem}_tts.mp4"
+    return tts if tts.is_file() else None
+
+
+def filter_still_insert_disk_paths_for_gallery(paths: list[Path]) -> list[Path]:
+    """Drop silent ken-burns previews when an audible ``*_tts`` sibling is in the batch."""
+    resolved = {str(p.resolve()) for p in paths if p.is_file()}
+    kept: list[Path] = []
+    for path in paths:
+        if not path.is_file():
+            continue
+        sibling = still_insert_audible_sibling_path(path)
+        if sibling is not None and str(sibling.resolve()) in resolved:
+            continue
+        kept.append(path)
+    return kept
+
+
+def prune_still_insert_silent_sibling_options(beat: dict) -> list[str]:
+    """Remove silent ken-burns rows from ``kling_o3_options`` when ``*_tts`` sibling is listed."""
+    options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
+    if not options:
+        return []
+    paths = {
+        str(o.get("video_path") or "").strip()
+        for o in options
+        if str(o.get("video_path") or "").strip()
+    }
+    logs: list[str] = []
+    kept: list[dict] = []
+    active_vp = str(beat.get("kling_o3_video_path") or "").strip()
+    for opt in options:
+        vp = str(opt.get("video_path") or "").strip()
+        if not vp:
+            kept.append(opt)
+            continue
+        if not is_still_insert_silent_ken_burns_preview(vp):
+            kept.append(opt)
+            continue
+        sibling = still_insert_audible_sibling_path(vp)
+        if sibling is None:
+            kept.append(opt)
+            continue
+        sib_str = str(sibling.resolve())
+        if sib_str not in paths and sib_str != active_vp:
+            kept.append(opt)
+            continue
+        logs.append(
+            f"{O3_STILL_INSERT_SILENT_SIBLING_PRUNE}: dropped silent preview "
+            f"{Path(vp).name} (audible sibling on gallery)",
+        )
+    if len(kept) != len(options):
+        beat["kling_o3_options"] = kept
+        if active_vp and is_still_insert_silent_ken_burns_preview(active_vp):
+            rep = still_insert_audible_sibling_path(active_vp)
+            if rep is not None:
+                beat["kling_o3_video_path"] = str(rep.resolve())
+                logs.append(
+                    f"{O3_STILL_INSERT_SILENT_SIBLING_PRUNE}: active pointer "
+                    f"→ {rep.name}",
+                )
+    return logs
+
+
 def still_insert_gallery_option_key(beat_id: str, video_path: str) -> str:
-    """Stable gallery key for still-insert clips (matches Approve still + select-o3)."""
-    stem = Path(str(video_path).strip()).stem
-    if stem.endswith("_tts"):
-        return stem[:-4]
-    return stem
+    """Stable gallery key for still-insert clips — one key per distinct file stem.
+
+    Ken-burns still builds produce silent (``*.mp4``) and TTS (``*_tts.mp4``)
+    siblings on disk. Collapsing ``_tts`` into the silent stem caused duplicate
+    gallery keys, ``_dup*`` demotion, and select-o3 ``key/path mismatch`` failures.
+    """
+    return Path(str(video_path).strip()).stem
 
 
 def gallery_option_key_for_path(beat_id: str, video_path: str, option: dict | None = None) -> str:
@@ -96,6 +189,10 @@ def probe_o3_clip_audio_contract(
     if not _has_audio_stream(path):
         return AUDIO_CONTRACT_VIDEO_ONLY
     if "_still_insert_" in path.name.lower() and "_kling_idle_tts" in path.name.lower():
+        return AUDIO_CONTRACT_VIDEO_ONLY
+    if is_still_insert_silent_ken_burns_preview(str(path)):
+        return AUDIO_CONTRACT_VIDEO_ONLY
+    if "_still_insert_" in path.name.lower() and not clip_has_embedded_voice(path):
         return AUDIO_CONTRACT_VIDEO_ONLY
     return AUDIO_CONTRACT_EMBEDDED_VOICE
 
@@ -185,8 +282,18 @@ def normalize_o3_gallery_options(beat: dict) -> list[str]:
     for key, rows in by_key.items():
         if len(rows) <= 1:
             continue
+        active_vp = str(beat.get("kling_o3_video_path") or "").strip()
+        active_rows = [
+            r for r in rows
+            if active_vp and str(r.get("video_path") or "").strip() == active_vp
+        ]
         canonical_rows = [r for r in rows if option_key_matches_path(beat_id, r)]
-        keep = canonical_rows[0] if canonical_rows else rows[0]
+        if active_rows:
+            keep = active_rows[0]
+        elif canonical_rows:
+            keep = canonical_rows[0]
+        else:
+            keep = rows[0]
         used_keys = {str(r.get("key") or "") for r in options if isinstance(r, dict)}
         for row in rows:
             if row is keep:
@@ -231,6 +338,7 @@ def normalize_o3_gallery_options(beat: dict) -> list[str]:
     options = collapsed
 
     beat["kling_o3_options"] = options
+    logs.extend(prune_still_insert_silent_sibling_options(beat))
     _sync_selected_option_key_from_active_path(beat)
     return logs
 
@@ -241,14 +349,7 @@ def _sync_selected_option_key_from_active_path(beat: dict) -> None:
     active_vp = str(beat.get("kling_o3_video_path") or "").strip()
     if not beat_id or not active_vp:
         return
-    selected = str(beat.get("kling_o3_selected_option_key") or "").strip()
     options = [o for o in (beat.get("kling_o3_options") or []) if isinstance(o, dict)]
-    if selected:
-        try:
-            resolve_o3_gallery_option(beat, selected)
-            return
-        except O3GalleryOptionAmbiguousError:
-            pass
     for opt in options:
         vp = str(opt.get("video_path") or "").strip()
         if vp != active_vp:
@@ -256,7 +357,16 @@ def _sync_selected_option_key_from_active_path(beat: dict) -> None:
         key = str(opt.get("key") or "").strip()
         if key:
             beat["kling_o3_selected_option_key"] = key
-            return
+        return
+    selected = str(beat.get("kling_o3_selected_option_key") or "").strip()
+    if selected:
+        try:
+            opt = resolve_o3_gallery_option(beat, selected)
+            if str(opt.get("video_path") or "").strip() == active_vp:
+                return
+        except O3GalleryOptionAmbiguousError:
+            pass
+        beat.pop("kling_o3_selected_option_key", None)
 
 
 def _duplicate_keys_after_normalize(beat: dict) -> list[str]:

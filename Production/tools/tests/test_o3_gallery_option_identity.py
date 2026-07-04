@@ -8,11 +8,15 @@ import pytest
 
 from o3_gallery_option_identity import (
     AUDIO_CONTRACT_EMBEDDED_VOICE,
+    AUDIO_CONTRACT_TTS_MUXED,
     AUDIO_CONTRACT_VIDEO_ONLY,
     O3GalleryExportAuthorityError,
     O3GalleryOptionAmbiguousError,
+    O3_STILL_INSERT_SILENT_SIBLING_PRUNE,
     assert_beat_export_gallery_authority,
     canonical_o3_option_key,
+    filter_still_insert_disk_paths_for_gallery,
+    gallery_option_key_for_path,
     normalize_o3_gallery_options,
     probe_o3_clip_audio_contract,
     resolve_o3_gallery_option,
@@ -62,7 +66,7 @@ def test_still_insert_key_preserved_through_normalize(tmp_path: Path) -> None:
     clip = tmp_path / "bg_arc1_event4_post_beat_01_still_insert_1782856229_tts.mp4"
     _make_silent_mp4(clip)
     beat_id = "bg_arc1_event4_post_beat_01"
-    stable_key = "bg_arc1_event4_post_beat_01_still_insert_1782856229"
+    stable_key = "bg_arc1_event4_post_beat_01_still_insert_1782856229_tts"
     beat = {
         "beat_id": beat_id,
         "kling_o3_video_path": str(clip),
@@ -77,10 +81,109 @@ def test_still_insert_key_preserved_through_normalize(tmp_path: Path) -> None:
         ],
     }
     logs = normalize_o3_gallery_options(beat)
-    assert not any("still_insert" in line and "re-key" in line for line in logs)
+    assert not any("duplicate key" in line for line in logs)
     assert beat["kling_o3_options"][0]["key"] == stable_key
     assert resolve_o3_gallery_option(beat, stable_key)
     assert_beat_export_gallery_authority(beat)
+
+
+def test_still_insert_tts_trimmed_export_authority(tmp_path: Path) -> None:
+    """Trimmed still-insert row keeps its own key; selected follows active path."""
+    base = tmp_path / "bg_arc1_event3_pre_beat_06_still_insert_1782532197"
+    raw = base.with_suffix(".mp4")
+    trimmed = Path(str(base) + "_tts_trimmed.mp4")
+    _make_tone_mp4(raw)
+    _make_tone_mp4(trimmed)
+    beat_id = "bg_arc1_event3_pre_beat_06"
+    raw_key = gallery_option_key_for_path(beat_id, str(raw), {"source": "still_insert_ken_burns"})
+    trimmed_key = gallery_option_key_for_path(
+        beat_id, str(trimmed), {"source": "still_insert_ken_burns"},
+    )
+    beat = {
+        "beat_id": beat_id,
+        "kling_o3_video_path": str(trimmed),
+        "kling_o3_selected_option_key": trimmed_key,
+        "kling_o3_options": [
+            {
+                "key": raw_key,
+                "video_path": str(raw),
+                "label": "raw still",
+                "source": "still_insert_ken_burns",
+            },
+            {
+                "key": trimmed_key,
+                "video_path": str(trimmed),
+                "label": "trimmed still",
+                "source": "still_insert_ken_burns",
+                "active": True,
+            },
+        ],
+    }
+    normalize_o3_gallery_options(beat)
+    assert raw_key != trimmed_key
+    assert beat["kling_o3_selected_option_key"] == trimmed_key
+    assert_beat_export_gallery_authority(beat)
+
+
+def test_still_insert_tts_and_silent_siblings_distinct_keys(tmp_path: Path) -> None:
+    """Event_5 beat_06 class — silent + TTS still inserts must not share one gallery key."""
+    beat_id = "bg_arc1_event5_pre_beat_06"
+    silent = tmp_path / f"{beat_id}_still_insert_1783130246.mp4"
+    tts = tmp_path / f"{beat_id}_still_insert_1783130246_tts.mp4"
+    _make_silent_mp4(silent)
+    _make_tone_mp4(tts)
+    silent_key = gallery_option_key_for_path(
+        beat_id, str(silent), {"source": "still_insert_ken_burns"},
+    )
+    tts_key = gallery_option_key_for_path(
+        beat_id, str(tts), {"source": "still_insert_ken_burns"},
+    )
+    assert silent_key != tts_key
+    beat = {
+        "beat_id": beat_id,
+        "kling_o3_video_path": str(tts),
+        "kling_o3_selected_option_key": tts_key,
+        "kling_o3_options": [
+            {
+                "key": silent_key,
+                "video_path": str(silent),
+                "source": "kling_o3_disk_reconcile",
+                "slot_index": 1,
+            },
+            {
+                "key": tts_key,
+                "video_path": str(tts),
+                "source": "still_insert_ken_burns",
+                "slot_index": 0,
+            },
+        ],
+    }
+    logs = normalize_o3_gallery_options(beat)
+    assert not any("duplicate key" in line for line in logs)
+    assert resolve_o3_gallery_option(beat, tts_key)["video_path"] == str(tts)
+    assert any(O3_STILL_INSERT_SILENT_SIBLING_PRUNE in line for line in logs)
+    assert len(beat["kling_o3_options"]) == 1
+    assert beat["kling_o3_options"][0]["video_path"] == str(tts)
+
+
+def test_filter_still_insert_disk_paths_drops_silent_when_tts_present(tmp_path: Path) -> None:
+    beat_id = "bg_arc1_event5_pre_beat_06"
+    silent = tmp_path / f"{beat_id}_still_insert_1783130246.mp4"
+    tts = tmp_path / f"{beat_id}_still_insert_1783130246_tts.mp4"
+    _make_silent_mp4(silent)
+    _make_tone_mp4(tts)
+    filtered = filter_still_insert_disk_paths_for_gallery([silent, tts])
+    assert filtered == [tts]
+
+
+def test_probe_still_insert_silent_preview_is_video_only(tmp_path: Path) -> None:
+    beat_id = "bg_arc1_event5_pre_beat_06"
+    silent = tmp_path / f"{beat_id}_still_insert_1783130246.mp4"
+    tts = tmp_path / f"{beat_id}_still_insert_1783130246_tts.mp4"
+    _make_silent_mp4(silent)
+    _make_tone_mp4(tts)
+    assert probe_o3_clip_audio_contract(str(silent)) == AUDIO_CONTRACT_VIDEO_ONLY
+    assert probe_o3_clip_audio_contract(str(tts)) == AUDIO_CONTRACT_TTS_MUXED
 
 
 def test_normalize_heals_key_path_mismatch(tmp_path: Path) -> None:
@@ -102,8 +205,7 @@ def test_normalize_heals_key_path_mismatch(tmp_path: Path) -> None:
     logs = normalize_o3_gallery_options(beat)
     assert logs
     assert resolve_o3_gallery_option(beat, canonical_o3_option_key(beat_id, str(silent)))
-    with pytest.raises(O3GalleryExportAuthorityError):
-        assert_beat_export_gallery_authority(beat)
+    assert_beat_export_gallery_authority(beat)
 
 
 def test_resolve_fails_on_duplicate_keys_after_normalize(tmp_path: Path) -> None:

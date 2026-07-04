@@ -88,7 +88,7 @@ def test_normalize_beats_plan_reindexes_and_casts():
     assert rows[1]["speaker"] == "Arlo"
 
 
-def test_build_beats_stage_still_vs_stage_direction():
+def test_build_beats_stage_still_vs_dialogue_action():
     still_plan = [{
         "beat_index": 1,
         "beat_type": "stage_still",
@@ -97,24 +97,25 @@ def test_build_beats_stage_still_vs_stage_direction():
         "scene_notes": "Inscription still insert",
         "emotion": "neutral",
     }]
-    direction_plan = [{
+    action_plan = [{
         "beat_index": 1,
-        "beat_type": "stage_direction",
-        "speaker": "[Stage Direction]",
-        "dialogue_text": "ambient wind",
-        "scene_notes": "ruins ambience",
-        "emotion": "neutral",
+        "beat_type": "dialogue",
+        "speaker": "Benson",
+        "dialogue_text": "(hiccup — dives back into burrow)",
+        "scene_notes": "Baby bunny at burrow lip.",
+        "emotion": "comedic, startled",
     }]
     still_beats = bg.build_beats_from_approved_plan(
         still_plan, {}, arc_number=1, event_id="2", phase="pre",
     )
-    direction_beats = bg.build_beats_from_approved_plan(
-        direction_plan, {}, arc_number=1, event_id="2", phase="pre",
+    action_beats = bg.build_beats_from_approved_plan(
+        action_plan, {}, arc_number=1, event_id="5", phase="pre",
     )
     assert still_beats[0]["pipeline"] == "still_insert"
     assert still_beats[0]["beat_render_mode"] == "still_insert"
-    assert direction_beats[0]["pipeline"] == "kling_o3_omni"
-    assert direction_beats[0].get("beat_render_mode") != "still_insert"
+    assert action_beats[0]["pipeline"] == "kling_o3_omni"
+    assert action_beats[0]["beat_type"] == "dialogue"
+    assert action_beats[0]["speaker"] == "Benson"
 
 
 def test_parse_claude_json_trailing_comma_and_preamble():

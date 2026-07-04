@@ -35,11 +35,11 @@ grep -q 'slice_technique_inventory_for_module' "$BG" \
 grep -q 'format_therapeutic_brief_for_script_prompt' "$PHASES" \
   || fail "phases must inject therapeutic brief into script prompt"
 
-export PYTHONPATH="${REPO_ROOT}/Production/tools:${REPO_ROOT}/Production:${PYTHONPATH:-}"
+export PYTHONPATH="${REPO_ROOT}/Production/tools:${REPO_ROOT}/Production/lib:${PYTHONPATH:-}"
 
-python3 -m unittest Production.tools.tests.test_module_event_id_suggest_script -v \
+(cd "${REPO_ROOT}/Production" && python3 -m pytest \
+  tools/tests/test_module_event_id_suggest_script.py \
+  tools/tests/test_phase_b_suggest_sources.py -q) \
   || fail "unit tests failed"
-python3 -m unittest Production.tools.tests.test_phase_b_suggest_sources -v \
-  || fail "phase b suggest source tests failed"
 
 echo "[module-event-id-suggest] OK — Arc Skeleton play-order → m_number + suggest script guards"

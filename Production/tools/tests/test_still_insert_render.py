@@ -460,6 +460,35 @@ def test_bake_still_insert_trim_into_clip(tmp_path: Path, monkeypatch):
     assert "kling_o3_trim_start" not in beat
 
 
+def test_bake_still_insert_trim_uses_tts_sibling_not_silent_preview(tmp_path: Path, monkeypatch):
+    beat_id = "bg_arc1_event5_pre_beat_06"
+    silent = tmp_path / f"{beat_id}_still_insert_1783130402.mp4"
+    tts = tmp_path / f"{beat_id}_still_insert_1783130402_tts.mp4"
+    silent.write_bytes(b"silent")
+    tts.write_bytes(b"tts")
+    used: list[str] = []
+
+    def _fake_materialize(beat, dest, *, source_path=None):
+        used.append(str(source_path))
+        dest.write_bytes(b"trimmed")
+        return dest
+
+    monkeypatch.setattr(bg, "_ffprobe_duration", lambda _p: 13.0)
+    monkeypatch.setattr(bg, "kling_o3_trim_is_active", lambda beat, raw_dur=None: True)
+    monkeypatch.setattr(bg, "materialize_kling_o3_trimmed_clip", _fake_materialize)
+
+    beat = {
+        "beat_id": beat_id,
+        "pipeline": "still_insert",
+        "kling_o3_video_path": str(silent),
+        "kling_o3_trim_start": 7.71,
+        "kling_o3_options": [{"key": "a", "video_path": str(silent), "source": "kling_o3_disk_reconcile"}],
+    }
+    bg.bake_still_insert_trim_into_clip(beat, source_path=silent)
+    assert used
+    assert str(tts.resolve()) in used[0]
+
+
 def test_production_server_registers_render_still_clip_route():
     text = (Path(__file__).resolve().parent.parent / "production_server.py").read_text(
         encoding="utf-8",

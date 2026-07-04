@@ -115,8 +115,8 @@ STITCH_SLOT_CANONICAL_DEFAULTS_V1 = "STITCH_SLOT_CANONICAL_DEFAULTS_V1"
 STITCH_CANONICAL_DEFAULTS_PERSIST_V1 = "STITCH_CANONICAL_DEFAULTS_PERSIST_V1"
 # STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1 — phase_a/b boundary SFX span fades in bake pipeline only.
 STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1 = "STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1"
-# STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1 — phase_b→resolution: no outgoing clip dim (black hold only).
-STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1 = "STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1"
+# STITCH_MODULE_BOUNDARY_SYMMETRIC_FADE_V1 — all module boundaries use symmetric outgoing/incoming visual fades.
+STITCH_MODULE_BOUNDARY_SYMMETRIC_FADE_V1 = "STITCH_MODULE_BOUNDARY_SYMMETRIC_FADE_V1"
 STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX = 2
 STITCH_SLOT_DEFAULT_TAIL_SFX_MAX_MS = 8000
 # Boundary dissolve SFX filenames owned by _stitch_apply_canonical_boundary_sfx (not slot tail cues).
@@ -3707,7 +3707,7 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
 
 
 _STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
-_DEFAULT_PHASE_TRANSITION_FADE_MS = 2800
+_DEFAULT_PHASE_TRANSITION_FADE_MS = 3800
 
 # STITCH_CANONICAL_TRANSITIONS_V1 — module boundaries always fade-through-black like intro.
 STITCH_CANONICAL_TRANSITIONS_V1 = "STITCH_CANONICAL_TRANSITIONS_V1"
@@ -3725,11 +3725,8 @@ STITCH_CANONICAL_BOUNDARY_SFX: dict[int, str] = {
 
 
 def module_boundary_visual_out_ms_by_pair(pair_count: int, default_out_ms: int) -> list[int]:
-    """Per-boundary outgoing visual fade. Phase B→resolution uses 0 — no tail dimming."""
-    return [
-        0 if i == STITCH_PHASE_B_TO_RESOLUTION_PAIR_INDEX else int(default_out_ms)
-        for i in range(max(0, pair_count))
-    ]
+    """Per-boundary outgoing visual fade — symmetric dissolve tails at every phase join."""
+    return [int(default_out_ms) for _ in range(max(0, pair_count))]
 
 
 def boundary_sfx_overlay_plan(
@@ -3827,7 +3824,7 @@ def default_stitch_transitions() -> list[dict]:
 
 
 def canonical_stitch_transitions_for_pipeline(_existing=None) -> list[dict]:
-    """Preview/bake always use dissolve / 2800ms / hard audio cut — ignore UI drift."""
+    """Preview/bake always use dissolve / 3800ms / hard audio cut — ignore UI drift."""
     return default_stitch_transitions()
 
 
@@ -4403,6 +4400,98 @@ def _canonical_milestone_standalone_final_path(h, milestone_id: str) -> str | No
     return None
 
 
+STITCH_MODULE_BAKE_AUDIT_V1 = "STITCH_MODULE_BAKE_AUDIT_V1"
+STITCH_CLIENT_PREVIEW_AUDIT_V1 = "STITCH_CLIENT_PREVIEW_AUDIT_V1"
+
+
+def _stitch_client_preview_audit(h, audit_event: str, **fields: object) -> None:
+    """Read-only Stitcher slot-review playback audit — stdout + event-dir JSONL."""
+    row: dict[str, object] = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event": audit_event,
+        "code": STITCH_CLIENT_PREVIEW_AUDIT_V1,
+    }
+    try:
+        row["scope_event_id"] = Path(h.app.event_dir).name
+    except Exception:
+        pass
+    for key, val in fields.items():
+        if val is not None and val != "":
+            row[key] = val
+    line = json.dumps(row, default=str)
+    print(f"[stitch_client_preview_audit] {line}", flush=True)
+    try:
+        event_dir = Path(h.app.event_dir)
+        log_path = event_dir / "_stitch_client_preview_audit.jsonl"
+        with open(log_path, "a", encoding="utf-8") as audit_f:
+            audit_f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def handle_stitch_client_preview_audit(h, body: dict) -> None:
+    """POST /api/stitch_editor/client_preview_audit — client playback forensics (no state writes)."""
+    event = str(body.get("event") or "CLIENT")
+    fields = {k: v for k, v in body.items() if k not in ("event", "code")}
+    _stitch_client_preview_audit(h, event, **fields)
+    return h._send_json(200, {"ok": True, "code": STITCH_CLIENT_PREVIEW_AUDIT_V1})
+
+
+def _stitch_module_bake_audit(
+    h,
+    audit_event: str,
+    *,
+    job_id: str | None = None,
+    stitch_job_name: str | None = None,
+    **fields: object,
+) -> None:
+    """Read-only Stitcher final-bake audit — stdout + event-dir JSONL (no sidecar writes)."""
+    row: dict[str, object] = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event": audit_event,
+        "code": STITCH_MODULE_BAKE_AUDIT_V1,
+    }
+    if job_id:
+        row["job_id"] = job_id
+    if stitch_job_name:
+        row["stitch_job_name"] = stitch_job_name
+    try:
+        row["scope_event_id"] = Path(h.app.event_dir).name
+    except Exception:
+        pass
+    for key, val in fields.items():
+        if val is not None and val != "":
+            row[key] = val
+    line = json.dumps(row, default=str)
+    print(f"[stitch_module_bake_audit] {line}", flush=True)
+    try:
+        event_dir = Path(h.app.event_dir)
+        log_path = event_dir / "_stitch_module_bake_audit.jsonl"
+        with open(log_path, "a", encoding="utf-8") as audit_f:
+            audit_f.write(line + "\n")
+    except OSError:
+        pass
+
+
+def _stitch_module_bake_slot_context(slot: dict | None) -> dict[str, object]:
+    """Snapshot stitch slot inputs for bake forensics (read-only)."""
+    if not isinstance(slot, dict):
+        return {}
+    vp = str(slot.get("video_path") or "").strip()
+    dry = str(slot.get("dry_export_path") or "").strip()
+    pb = str(slot.get("playback_file") or "").strip()
+    return {
+        "slot_key": slot.get("slot_key"),
+        "video": Path(vp).name if vp else None,
+        "dry_export": Path(dry).name if dry else None,
+        "playback_file": Path(pb).name if pb else None,
+        "has_ambient": bool((slot.get("ambient_bed") or "").strip()),
+        "sfx_cue_count": len(slot.get("sfx_cues") or []),
+        "trim_in_ms": slot.get("trim_in_ms"),
+        "trim_out_ms": slot.get("trim_out_ms"),
+    }
+
+
 def _run_stitch_bake_core(
     h,
     body: dict,
@@ -4419,11 +4508,27 @@ def _run_stitch_bake_core(
     from server_handlers.phases import ensure_phase_b_stitch_slot_for_bake  # noqa: PLC0415
 
     job_name = (body.get("name") or "untitled").strip()
+    job_id = str(pin.get("_bake_job_id") or "").strip() or None
     milestone_bake = is_milestone_stitch_job_name(job_name)
+    _stitch_module_bake_audit(
+        h,
+        "BAKE_CORE_START",
+        job_id=job_id,
+        stitch_job_name=job_name,
+        milestone_bake=milestone_bake,
+        scope_video_role=(body.get("scope_video_role") or pin.get("pinned_video_role")),
+    )
     if not milestone_bake:
         _progress("Refreshing Phase B delivery slot…", phase="encode")
         preflight = ensure_phase_b_stitch_slot_for_bake(h)
         if not preflight.get("ok", True):
+            _stitch_module_bake_audit(
+                h,
+                "PHASE_B_PREFLIGHT_FAILED",
+                job_id=job_id,
+                stitch_job_name=job_name,
+                error=preflight.get("error"),
+            )
             return {
                 "ok": False,
                 "error_code": "PHASE_B_BAKE_PREFLIGHT_FAILED",
@@ -4441,6 +4546,12 @@ def _run_stitch_bake_core(
         _body["module_pipeline"] = True
         tag_stitch_pipeline_scope(_body)
         if not _body.get("slots"):
+            _stitch_module_bake_audit(
+                h,
+                "PIPELINE_NO_SLOTS",
+                job_id=job_id,
+                stitch_job_name=job_name,
+            )
             return {
                 "ok": False,
                 "error_code": "STITCH_NO_SLOTS",
@@ -4448,9 +4559,42 @@ def _run_stitch_bake_core(
                 "retry_safe": False,
             }
 
+        for i, slot in enumerate(_body.get("slots") or []):
+            if isinstance(slot, dict):
+                _stitch_module_bake_audit(
+                    h,
+                    "SLOT_CONTEXT",
+                    job_id=job_id,
+                    stitch_job_name=job_name,
+                    slot_index=i,
+                    **_stitch_module_bake_slot_context(slot),
+                )
+        transitions = _body.get("transitions") or []
+        _stitch_module_bake_audit(
+            h,
+            "PIPELINE_START",
+            job_id=job_id,
+            stitch_job_name=job_name,
+            slot_count=len(_body.get("slots") or []),
+            transition_count=len(transitions),
+            pair_fade_kinds=[
+                (t.get("kind") or "dissolve") if isinstance(t, dict) else "?"
+                for t in transitions
+            ],
+        )
+
         try:
             out_path, _durations, _slot_starts = h._stitch_build_pipeline(_body)
         except (ValueError, PermissionError) as exc:
+            _stitch_module_bake_audit(
+                h,
+                "PIPELINE_FAIL",
+                job_id=job_id,
+                stitch_job_name=job_name,
+                error_code="GENERIC_ERROR",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
             return {
                 "ok": False,
                 "error_code": "GENERIC_ERROR",
@@ -4458,6 +4602,15 @@ def _run_stitch_bake_core(
                 "retry_safe": False,
             }
         except FileNotFoundError as exc:
+            _stitch_module_bake_audit(
+                h,
+                "PIPELINE_FAIL",
+                job_id=job_id,
+                stitch_job_name=job_name,
+                error_code="GENERIC_ERROR",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
             return {
                 "ok": False,
                 "error_code": "GENERIC_ERROR",
@@ -4465,12 +4618,41 @@ def _run_stitch_bake_core(
                 "retry_safe": False,
             }
         except RuntimeError as exc:
+            _stitch_module_bake_audit(
+                h,
+                "PIPELINE_FAIL",
+                job_id=job_id,
+                stitch_job_name=job_name,
+                error_code="GENERIC_ERROR",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
             return {
                 "ok": False,
                 "error_code": "GENERIC_ERROR",
                 "error_message": str(exc),
                 "retry_safe": True,
             }
+        except Exception as exc:
+            _stitch_module_bake_audit(
+                h,
+                "PIPELINE_FAIL",
+                job_id=job_id,
+                stitch_job_name=job_name,
+                error_code="STITCH_BAKE_EXCEPTION",
+                error=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            raise
+
+        _stitch_module_bake_audit(
+            h,
+            "PIPELINE_OK",
+            job_id=job_id,
+            stitch_job_name=job_name,
+            master_path=Path(str(out_path)).name if out_path else None,
+            slot_durations_ms=_durations,
+        )
 
         from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415
             STITCH_EXPORT_AV_MAX_DRIFT_S,
@@ -4501,10 +4683,25 @@ def _run_stitch_bake_core(
         )
 
         _progress("Final delivery encode (VIDEO_QUALITY_V1)…", phase="encode")
+        _stitch_module_bake_audit(
+            h,
+            "ENCODE_START",
+            job_id=job_id,
+            stitch_job_name=job_name,
+            master_path=Path(str(out_path)).name if out_path else None,
+        )
         try:
             encode_module_final_lean(out_path, bake_path)
         except Exception as exc:
             bake_path.unlink(missing_ok=True)
+            _stitch_module_bake_audit(
+                h,
+                "ENCODE_FAIL",
+                job_id=job_id,
+                stitch_job_name=job_name,
+                error_code="MODULE_FINAL_LEAN_DELIVERY_FAILED",
+                error=str(exc),
+            )
             return {
                 "ok": False,
                 "error_code": "MODULE_FINAL_LEAN_DELIVERY_FAILED",
@@ -4623,6 +4820,15 @@ def _run_stitch_bake_core(
                 )
         except Exception as reg_exc:
             print(f"[stitch-bake] canonical finalize failed: {reg_exc}", flush=True)
+            _stitch_module_bake_audit(
+                h,
+                "BAKE_FAIL",
+                job_id=job_id,
+                stitch_job_name=job_name,
+                error_code="STITCH_BAKE_CANONICAL_FAILED",
+                error=str(reg_exc),
+                export_bake_path=str(bake_path),
+            )
             return {
                 "ok": False,
                 "error_code": "STITCH_BAKE_CANONICAL_FAILED",
@@ -4641,6 +4847,19 @@ def _run_stitch_bake_core(
             j.pop("active_bake_job_id", None)
 
         stitch_store.mutate_state(mutate)
+
+        _stitch_module_bake_audit(
+            h,
+            "BAKE_OK",
+            job_id=job_id,
+            stitch_job_name=job_name,
+            bake_name=bake_name,
+            canonical_name=finalize_result.get("canonical_name"),
+            canonical_path=canonical_path,
+            file_size_bytes=file_size,
+            bitrate_bps=bitrate,
+            asset_id=asset_id,
+        )
 
         return {
             "ok": True,
@@ -4697,6 +4916,13 @@ def _execute_stitch_bake_job(
             phase="encode",
             message="Encoding final module MP4…",
         )
+        _stitch_module_bake_audit(
+            h,
+            "BAKE_JOB_START",
+            job_id=job_id,
+            stitch_job_name=stitch_job_name,
+            scope_video_role=pin.get("pinned_video_role"),
+        )
 
         def _job_progress(message: str, *, phase: str | None = None) -> None:
             update_job_progress(
@@ -4718,6 +4944,14 @@ def _execute_stitch_bake_job(
             _persist_stitch_bake_job_pointer(h, stitch_job_name, None)
             return
 
+        _stitch_module_bake_audit(
+            h,
+            "BAKE_FAIL",
+            job_id=job_id,
+            stitch_job_name=stitch_job_name,
+            error_code=result.get("error_code"),
+            error=result.get("error_message"),
+        )
         finalize_job(
             h.app.event_dir,
             job_id,
@@ -4728,6 +4962,15 @@ def _execute_stitch_bake_job(
         _persist_stitch_bake_job_pointer(h, stitch_job_name, None)
     except Exception as exc:
         traceback.print_exc()
+        _stitch_module_bake_audit(
+            h,
+            "BAKE_EXCEPTION",
+            job_id=job_id,
+            stitch_job_name=stitch_job_name,
+            error_code="STITCH_BAKE_EXCEPTION",
+            error=str(exc),
+            exc_type=type(exc).__name__,
+        )
         finalize_job(
             h.app.event_dir,
             job_id,
@@ -4777,6 +5020,13 @@ def handle_stitch_bake(h, body: dict)-> None:
             retry_safe=False,
             extra={"code": STITCH_BAKE_JOB_TRUTH_V1},
         )
+
+    _stitch_module_bake_audit(
+        h,
+        "BAKE_REQUEST",
+        stitch_job_name=stitch_job_name,
+        scope_video_role=(body.get("scope_video_role") or h._scope_body(body).get("scope_video_role")),
+    )
 
     # LD-460 ASYNC_JOB_GENERATION_PIN_V1 — capture pin at entry; worker asserts at finalize.
     _pin = {

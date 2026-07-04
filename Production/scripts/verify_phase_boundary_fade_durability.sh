@@ -18,14 +18,18 @@ grep -q 'PHASE_B_WHITEOUT_ENABLED: bool = False' "$PHASES" || \
   fail "Phase B in-clip whiteout must stay disabled (stitch handles boundaries)"
 grep -q 'PHASE_B_WHITEOUT_FADE_AUDIO: bool = False' "$PHASES" || \
   fail "Phase B whiteout must not afade audio when re-enabled"
-grep -q 'TRAILING_SPEECH_HOLD_S = 1.0' "$PHASE_A" || \
-  fail "Phase A trailing speech hold must be >= 1.0s"
+grep -q 'TRAILING_SPEECH_HOLD_S = 1.5' "$PHASE_A" || \
+  fail "Phase A trailing speech hold must be >= 1.5s"
+grep -q '_DEFAULT_PHASE_TRANSITION_FADE_MS = 3800' "$STITCH" || \
+  fail "default stitch transitions must use 3800ms pair fade budget"
 grep -q '"audio_xfade_ms": 0' "$STITCH" || \
   fail "default stitch transitions must use audio_xfade_ms=0"
 grep -q 'module_slot_start_offsets_ms' "$FFMPEG" || \
   fail "ffmpeg_stitch must export module_slot_start_offsets_ms"
-grep -q '\-c:a", "copy"' "$FFMPEG" || \
-  fail "trim_body_with_fade must support audio copy when fade_audio=False"
+grep -q 'STITCH_EXPORT_TIMELINE_AUTHORITY_V1' "$FFMPEG" || \
+  fail "ffmpeg_stitch must export STITCH_EXPORT_TIMELINE_AUTHORITY_V1"
+grep -q 'remux_mp4_video_timeline_authority' "$FFMPEG" || \
+  fail "trim_body_with_fade dissolve path must heal A/V via timeline authority"
 grep -q 'expand_clips_with_black_pause_boundaries' "$FFMPEG" || \
   fail "missing black-pause boundary helper"
 

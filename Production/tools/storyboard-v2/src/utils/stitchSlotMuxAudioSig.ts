@@ -101,10 +101,17 @@ export function stitchSlotUsesDryAuthorityClientMix(
 export function stitchSlotRequiresClientPreviewMix(
   slot: StitchSlotMuxSigInput | null | undefined,
 ): boolean {
-  if (!slot || !stitchSlotUsesDryAuthorityClientMix(slot)) return false;
+  if (!slot) return false;
   const hasAmbient = Boolean((slot.ambient_bed_path || slot.ambient_bed || '').trim());
   const hasSfx = (slot.sfx_cues ?? []).some((c) => Boolean(c && typeof c === 'object'));
-  return hasAmbient || hasSfx;
+  if (stitchSlotUsesDryAuthorityClientMix(slot)) {
+    return hasAmbient || hasSfx;
+  }
+  // Four-files slots: slot review layers ambient + SFX on dry speech (not stale *_playback_* bake).
+  if (stitchSlotUsesFourFilesPlayback(slot)) {
+    return hasAmbient || hasSfx;
+  }
+  return false;
 }
 
 /** STITCH_FOUR_FILES_LEGACY_PURGE_V1 — client mirror of server load_job purge. */

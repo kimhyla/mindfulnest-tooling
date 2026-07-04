@@ -772,7 +772,14 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         ),
         slotKey,
       );
-      notifyStitchSlotExportApplied(activeScope.value.event_id, slotKey);
+      notifyStitchSlotExportApplied(
+        stitchJobSessionKey(
+          activeScope.value.event_id,
+          activeProjectType.value,
+          activeMilestoneId.value,
+        ),
+        slotKey,
+      );
       stitcherRefreshTick.value += 1;
       const baked = res.data?.overlay_baked ? ' (overlays baked in)' : '';
       setStatusMsg(`✓ Exported to Stitcher → ${slotKey} slot${baked} (open Stitcher tab to preview/bake)`);

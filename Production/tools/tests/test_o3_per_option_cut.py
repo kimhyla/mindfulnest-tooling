@@ -182,12 +182,19 @@ def test_bg_cut_overlay_defers_persist_until_apply_cut_button():
     assert "onKeepDraftChange" in bg_tab
     apply_block = bg_tab.split("applyDraftCut")[1].split("BgO3TrimNumericControls")[0]
     assert "previewOnly: true" not in apply_block
-    assert "applyCutPreview" in bg_tab
+    assert "STITCH_NO_AUTO_CUT_PREVIEW_V1" in bg_tab
+    assert "cutReadyForApply" in bg_tab
+    assert "pendingCutValid" in bg_tab
+    assert "_delivery')) return 'still_insert'" not in bg_tab
+    assert "onKeepStartCommitted" in bg_tab
+    assert "onKeepEndCommitted" in bg_tab
+    assert "bg-o3-preview-cut-" not in bg_tab
+    assert "applyCutPreview" not in bg_tab
     assert "hasSavedCut && !cutDraftDirty" not in bg_tab
     assert "refreshSavedCutPreview" in bg_tab
     apply_persist_block = bg_tab.split("applyDraftCut")[1].split("const clearCut")[0]
     assert "refreshSavedCutPreview" in apply_persist_block
-    assert "lastAutoPreviewRef.current === sig && previewUrl" in bg_tab
+    assert "lastAutoPreviewRef.current === sig && previewUrl" not in bg_tab
     assert "normalizeO3KeepWindow" in overlay
     assert "resolveO3PlaybackDurationS" in overlay
     assert "resolveO3OverlayDurationS" in overlay

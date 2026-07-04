@@ -3426,6 +3426,29 @@ def _phase_ensure_overlay_mp4(
             pass
 
 
+def _phase_export_stitcher_audit(h, audit_event: str, *, phase: str | None = None, **fields: object) -> None:
+    """Read-only Phase A/B export → Stitcher audit — stdout + event-dir JSONL."""
+    row: dict[str, object] = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event": audit_event,
+        "code": "PHASE_EXPORT_STITCHER_AUDIT_V1",
+    }
+    if phase:
+        row["phase"] = phase
+    for key, val in fields.items():
+        if val is not None and val != "":
+            row[key] = val
+    line = json.dumps(row, default=str)
+    print(f"[phase_export_stitcher_audit] {line}", flush=True)
+    try:
+        event_dir = Path(h.app.event_dir)
+        log_path = event_dir / "_phase_export_stitcher_audit.jsonl"
+        with open(log_path, "a", encoding="utf-8") as audit_f:
+            audit_f.write(line + "\n")
+    except OSError:
+        pass
+
+
 def handle_phase_export_stitcher(h, body: dict) -> None:
     """POST /api/phase/export_stitcher — bake watercolors and upsert stitch slot."""
     from server_handlers.core import server_mutation_gate_reason  # noqa: PLC0415
@@ -3447,10 +3470,15 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             },
         )
 
-    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+    if not h._assert_event_scope(
+        h._scope_body(body),
+        allow_missing=False,
+        allow_missing_video_role=True,
+    ):
         return
 
     phase = (body.get("phase") or "").strip().lower()
+    _phase_export_stitcher_audit(h, "REQUEST", phase=phase, scope_video_role=body.get("scope_video_role"))
     err = h._phase_check(phase)
     if err:
         return h._send_error_v59(
@@ -3568,6 +3596,9 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             operator_export=True,
         )
     except ValueError as exc:
+        _phase_export_stitcher_audit(
+            h, "SLOT_UPSERT_BLOCKED", phase=phase, error=str(exc), dry_video_rel=video_rel,
+        )
         return h._send_error_v59(
             409,
             error_code="STITCH_SLOT_EXPORT_MEDIA_BLOCKED",
@@ -3602,6 +3633,14 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             playback_artifacts=playback_artifacts or {},
         )
     except RuntimeError as exc:
+        _phase_export_stitcher_audit(
+            h,
+            "SLOT_VERIFY_FAILED",
+            phase=phase,
+            error=str(exc),
+            dry_video_rel=video_rel,
+            playback_artifacts=playback_artifacts,
+        )
         return h._send_error_v59(
             500,
             error_code="STITCH_EXPORT_SLOT_NOT_APPLIED",
@@ -3614,6 +3653,9 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
         )
 
     if any("kept existing export" in (w or "") for w in (export_warnings or [])):
+        _phase_export_stitcher_audit(
+            h, "NOT_APPLIED", phase=phase, warnings=export_warnings, dry_video_rel=video_rel,
+        )
         return h._send_error_v59(
             409,
             error_code="STITCH_EXPORT_NOT_APPLIED",
@@ -3629,11 +3671,32 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             },
         )
 
+    playback_rel = ""
+    if isinstance(playback_artifacts, dict):
+        playback_rel = (playback_artifacts.get("video_path") or "").strip()
+    state_after = h.app.stitch_state.read_state() or {}
+    slot_after = (
+        ((state_after.get("jobs") or {}).get(job_name) or {}).get("slots") or {}
+    ).get(slot_key) or {}
+    _phase_export_stitcher_audit(
+        h,
+        "OK",
+        phase=phase,
+        job_name=job_name,
+        slot_key=slot_key,
+        dry_video_rel=video_rel,
+        playback_video_rel=playback_rel or slot_after.get("video_path"),
+        video_dur_ms=export_dur_ms,
+        slot_video_path=slot_after.get("video_path"),
+        slot_dry_export_path=slot_after.get("dry_export_path"),
+    )
+
     return h._send_json(200, {
         "ok": True,
         "job_name": job_name,
         "slot_key": slot_key,
-        "video_path": video_rel,
+        "video_path": playback_rel or slot_after.get("video_path") or video_rel,
+        "dry_export_path": video_rel,
         "overlay_baked": overlay_baked,
         "video_dur_ms": export_dur_ms,
         "warnings": export_warnings,

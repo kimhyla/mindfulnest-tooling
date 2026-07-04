@@ -49,7 +49,7 @@ def _make_test_clip(path: Path, duration: float, *, with_audio: bool = False) ->
 
 def test_trailing_speech_hold_avoids_aggressive_clip() -> None:
     """Hold after last speech must leave room for final syllable (intro fade parity)."""
-    assert TRAILING_SPEECH_HOLD_S >= 0.5
+    assert TRAILING_SPEECH_HOLD_S >= 1.5
 
 
 def test_crossfade_loop_extends_duration(tmp_path: Path) -> None:

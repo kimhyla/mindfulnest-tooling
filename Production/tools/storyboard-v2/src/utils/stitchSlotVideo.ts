@@ -10,7 +10,7 @@ export function resolveServerMediaUrl(url: string): string {
   return url;
 }
 
-function normalizeProductionRelativePath(videoPath: string): string | undefined {
+export function normalizeProductionRelativePath(videoPath: string): string | undefined {
   if (videoPath.startsWith('Production/')) return videoPath;
   if (videoPath.startsWith('/')) {
     const marker = '/Production/';
@@ -18,6 +18,13 @@ function normalizeProductionRelativePath(videoPath: string): string | undefined 
     if (idx >= 0) return videoPath.slice(idx + 1);
   }
   return undefined;
+}
+
+/** SFX cue source_path may be absolute Dropbox or Production/ relative — normalize for /files fetch. */
+export function resolveStitchSfxFetchUrl(sourcePath: string): string {
+  const trimmed = sourcePath.trim();
+  const rel = normalizeProductionRelativePath(trimmed) ?? trimmed;
+  return resolveServerMediaUrl(`/files?path=${encodeURIComponent(rel)}`);
 }
 
 /** Instant roadmap playback — serve the slot's on-disk source via /files (Beat Gen parity). */

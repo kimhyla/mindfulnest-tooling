@@ -141,6 +141,8 @@ export function applyO3GalleryFieldsFromPoll<T extends {
   kling_o3_voice_fix_phase?: string | null;
   o3_current_job_id?: string | null;
   status?: string | null;
+  kling_o3_still_stitch_approved?: boolean | null;
+  kling_o3_still_stitch_approved_at?: string | null;
   _derived?: { option_slots?: unknown };
 }>(local: T, patch: T): T {
   const merged = preserveLockedRefsOnO3PollMerge(local, patch);
@@ -158,6 +160,8 @@ export function applyO3GalleryFieldsFromPoll<T extends {
     'kling_o3_voice_fix_phase',
     'o3_current_job_id',
     'status',
+    'kling_o3_still_stitch_approved',
+    'kling_o3_still_stitch_approved_at',
   ] as const;
   for (const key of keys) {
     if (patch[key] !== undefined) {

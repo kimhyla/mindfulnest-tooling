@@ -7,6 +7,7 @@ import {
   shouldToastStitchBakeRefreshFailure,
   stitchBakeStatusMessage,
   stitchBakeSuccessPaths,
+  stitchBakeTerminalErrorLine,
 } from '../stitchBakeJobTruth.ts';
 
 describe('stitchBakeJobTruth', () => {
@@ -32,5 +33,13 @@ describe('stitchBakeJobTruth', () => {
     });
     assert.equal(paths.canonical, '/a/b/final.mp4');
     assert.equal(paths.assetId, 42);
+  });
+
+  it('formats terminal bake failure lines', () => {
+    assert.equal(
+      stitchBakeTerminalErrorLine({ status: 'failed', error: "'str' object has no attribute 'stem'" }),
+      "Bake failed: 'str' object has no attribute 'stem'",
+    );
+    assert.equal(stitchBakeTerminalErrorLine({ status: 'done' }), null);
   });
 });

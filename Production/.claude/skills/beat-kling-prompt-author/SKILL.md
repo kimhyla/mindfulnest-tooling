@@ -10,7 +10,8 @@ Convert approved **dialogue** beats into Event-1-quality `kling_o3_prompt` strin
 ## Skip (handled by tooling)
 
 - `beat_type: stage_still` — pre-built still-insert prompt; do not call author.
-- Empty dialogue stage_direction rows.
+
+All other approved beats (including action-only / physical-comedy beats with parenthetical dialogue) are **dialogue** beats — author every `beat_index` in the batch.
 
 ## Required structure (dialogue beats) — KLING_O3_CANONICAL_PROMPT_SHAPE_V2
 

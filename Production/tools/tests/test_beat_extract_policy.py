@@ -51,6 +51,48 @@ def test_classify_beat_type_inscription_is_stage_still():
     assert classify_beat_type(row) == "stage_still"
 
 
+def test_classify_legacy_stage_direction_action_is_dialogue():
+    row = {
+        "beat_type": "stage_direction",
+        "speaker": "[Stage Direction]",
+        "dialogue_text": "[Cold open: baby bunny nose pokes from burrow — HICCUP]",
+        "scene_notes": "",
+    }
+    assert classify_beat_type(row) == "dialogue"
+
+
+def test_normalize_event5_legacy_beat1_coerces_to_benson_dialogue():
+    row, _warnings = normalize_plan_row({
+        "beat_index": 1,
+        "beat_type": "stage_direction",
+        "speaker": "[Stage Direction]",
+        "dialogue_text": (
+            "[Cold open: baby bunny nose pokes from burrow — HICCUP — eyes wide, "
+            "ears shoot up, dives back. Repeats once. Physical comedy, no dialogue.]"
+        ),
+        "emotion": "neutral",
+        "scene_notes": "",
+    }, beat_index=1)
+    assert row["beat_type"] == "dialogue"
+    assert row["speaker"] == "Benson"
+    assert "hiccup" in row["dialogue_text"].lower()
+    assert "baby bunny" in row["scene_notes"].lower() or "burrow" in row["scene_notes"].lower()
+
+
+def test_normalize_benson_action_script_format():
+    row, _warnings = normalize_plan_row({
+        "beat_index": 1,
+        "beat_type": "dialogue",
+        "speaker": "Benson",
+        "dialogue_text": "(hiccup — nose pokes from burrow, eyes wide, dives back; repeats)",
+        "emotion": "comedic, startled",
+        "scene_notes": "Baby bunny at burrow lip, ears trembling.",
+    }, beat_index=1)
+    assert row["beat_type"] == "dialogue"
+    assert row["speaker"] == "Benson"
+    assert row["emotion"] == "comedic, startled"
+
+
 def test_classify_beat_type_dialogue_stays_dialogue():
     row = {
         "beat_type": "dialogue",

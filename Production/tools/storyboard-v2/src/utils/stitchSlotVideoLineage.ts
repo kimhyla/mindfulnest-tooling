@@ -20,14 +20,22 @@ export function stitchSlotVideoPathChanged(
   return Boolean(prev && next && prev !== next);
 }
 
+function slotExportLineagePath(
+  slot: { video_path?: string; dry_export_path?: string } | null | undefined,
+): string {
+  const dry = (slot?.dry_export_path ?? '').trim();
+  if (dry) return dry;
+  return (slot?.video_path ?? '').trim();
+}
+
 export function slotsWithVideoPathChanges(
-  prevSlots: Partial<Record<StitchSessionSlotKey, { video_path?: string } | undefined>> | undefined,
-  nextSlots: Partial<Record<StitchSessionSlotKey, { video_path?: string } | undefined>> | undefined,
+  prevSlots: Partial<Record<StitchSessionSlotKey, { video_path?: string; dry_export_path?: string } | undefined>> | undefined,
+  nextSlots: Partial<Record<StitchSessionSlotKey, { video_path?: string; dry_export_path?: string } | undefined>> | undefined,
 ): StitchSessionSlotKey[] {
   const changed: StitchSessionSlotKey[] = [];
   for (const slotKey of SLOT_KEYS) {
-    const prevPath = prevSlots?.[slotKey]?.video_path;
-    const nextPath = nextSlots?.[slotKey]?.video_path;
+    const prevPath = slotExportLineagePath(prevSlots?.[slotKey]);
+    const nextPath = slotExportLineagePath(nextSlots?.[slotKey]);
     if (stitchSlotVideoPathChanged(prevPath, nextPath)) {
       changed.push(slotKey);
     }
@@ -48,10 +56,10 @@ export function invalidateStitchSlotPlaybackCaches(
 
 /** Operator export succeeded — invalidate playback caches before Stitcher refetch. */
 export function notifyStitchSlotExportApplied(
-  eventId: string,
+  sessionKey: string,
   slotKey: StitchSessionSlotKey,
 ): void {
-  invalidateStitchSlotPlaybackCaches(eventId, [slotKey]);
+  invalidateStitchSlotPlaybackCaches(sessionKey, [slotKey]);
 }
 
 /** Never preserve stale previewUrls for slots whose video lineage changed. */

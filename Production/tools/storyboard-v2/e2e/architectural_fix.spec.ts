@@ -32,9 +32,9 @@ const FIXTURE_EVENT = 'Event_e2e_fixture';
 const CANONICAL_STITCH_JOB = `${FIXTURE_EVENT}_stitch`;
 
 const DEFAULT_CANONICAL_TRANSITIONS = [
-  { after_slot: 0, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
-  { after_slot: 1, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
-  { after_slot: 2, kind: 'dissolve', fade_ms: 2800, audio_xfade_ms: 0 },
+  { after_slot: 0, kind: 'dissolve', fade_ms: 3800, audio_xfade_ms: 0 },
+  { after_slot: 1, kind: 'dissolve', fade_ms: 3800, audio_xfade_ms: 0 },
+  { after_slot: 2, kind: 'dissolve', fade_ms: 3800, audio_xfade_ms: 0 },
 ];
 
 // Mock the stitcher /jobs (list) and /job/<name> (detail) so StitcherTab

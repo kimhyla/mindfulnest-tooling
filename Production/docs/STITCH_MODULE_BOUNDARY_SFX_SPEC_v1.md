@@ -30,7 +30,7 @@ For each module boundary (`after_slot` 0..2):
 **Pipeline** (`_stitch_apply_canonical_boundary_sfx`) overlays SFX across:
 
 ```
-pre-roll (500ms) + outgoing visual fade (~600ms) + black hold (~1600ms) + incoming visual fade (~600ms) + post-roll (500ms)
+pre-roll (500ms) + outgoing visual fade (~600ms) + black hold (~2600ms) + incoming visual fade (~600ms) + post-roll (500ms)
 ```
 
 Slot dialogue audio **hard-cuts** at clip end (`audio_xfade_ms=0`). SFX carries across the dissolve.
@@ -58,9 +58,9 @@ Markers: `STITCH_BOUNDARY_SFX_PIPELINE_ONLY_V1`, `STITCH_RESOLUTION_HEAD_WHOOSH_
 
 ## 3. Visual boundaries
 
-- `expand_clips_with_black_pause_boundaries` with `pair_ms=2800`
-- Budget: ~600ms fade-out + ~1600ms black insert + ~600ms fade-in (`allocate_pair_fade_budget`)
-- **Phase B → resolution:** outgoing visual fade **0ms** (`STITCH_PHASE_B_NO_OUTGOING_VISUAL_FADE_V1`) — hard cut to black hold; no tail dimming on phase B lipsync
+- `expand_clips_with_black_pause_boundaries` with `pair_ms=3800`
+- Budget: ~600ms fade-out + ~2600ms black insert + ~600ms fade-in (`allocate_pair_fade_budget`)
+- **All boundaries:** symmetric outgoing/incoming visual fades (`STITCH_MODULE_BOUNDARY_SYMMETRIC_FADE_V1`)
 - Phase B in-clip whiteout export **never runs** (`PHASE_B_WHITEOUT_ENABLED=False`; lipsync write path does not invoke `_apply_whiteout_fade`)
 - **QuickTime playback:** all kid-facing exports pass `ensure_mp4_playback_timestamps()` (`STITCH_MP4_PLAYBACK_TIMESTAMPS_V1`)
 - Module bake sets `module_pipeline=true` → boundaries always apply when ≥2 slots

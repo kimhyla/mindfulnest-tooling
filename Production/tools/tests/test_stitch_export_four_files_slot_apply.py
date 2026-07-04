@@ -131,6 +131,8 @@ class ExportSourceGuards(unittest.TestCase):
         self.assertIn("STITCH_PLAYBACK_BAKE_FAILED", block)
         self.assertIn("STITCH_EXPORT_SLOT_NOT_APPLIED", block)
         self.assertIn("server_mutation_gate_reason", block)
+        self.assertIn("_phase_export_stitcher_audit", block)
+        self.assertIn("allow_missing_video_role=True", block)
 
     def test_phase_b_bake_refresh_calls_shared_slot_apply_gate(self) -> None:
         src = (TOOLS / "server_handlers/phases.py").read_text(encoding="utf-8")
