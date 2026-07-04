@@ -125,23 +125,45 @@
       "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
     },
     "Benson": {
-      "element_id": null,
-      "status": "pending",
+      "element_id": "315102203955304",
+      "status": "active",
       "element_name": "Benson",
       "description": "Cartoon 3D Pixar-style bunny, warm brown fur, long floppy ears, kind gentle face",
       "frontal_image": "Benson/poses/benson_pose_neutral.png",
       "refer_images": [
-        "Benson/poses/benson_pose_happy.png",
-        "Benson/poses/benson_pose_crouching_fear.png"
+        "Benson/poses/benson_pose_neutral.png",
+        "Benson/poses/benson_pose_crouching_fear.png",
+        "Benson/poses/baseline_char_rabbit_gardener.png"
       ],
-      "audition_line": "It's going to be all right, little one. [pause] You're safe here with us now. [pause] Take a deep breath — we'll figure this out together.",
-      "audition_speed": 0.95,
-      "kling_voice_id": null,
-      "kling_voice_label": null,
-      "created_at": null,
-      "wavespeed_prediction_id": null,
+      "audition_line": "It's going to be all right, little one.",
+      "audition_speed": 1.0,
+      "kling_voice_id": "902201456638427175",
+      "kling_voice_label": "ElevenLabs Gigi (create-voice)",
+      "created_at": "2026-07-04T01:55:33.534178+00:00",
+      "wavespeed_prediction_id": "dd0c22876b54489da237e179bd1f8eca",
       "elevenlabs_voice_id": "n7Wi4g1bhpw4Bs8HK5ph",
-      "elevenlabs_voice_name": "Gigi"
+      "elevenlabs_voice_name": "Gigi",
+      "element_sample_lines": [
+        "[warm, gentle] It's going to be all right, little one.",
+        "[soft, nurturing] You're safe here with us now.",
+        "[calm, reassuring] Take a deep breath — we'll figure this out together."
+      ],
+      "element_sample_text": "[warm, gentle] It's going to be all right, little one. ... [soft, nurturing] You're safe here with us now. ... [calm, reassuring] Take a deep breath — we'll figure this out together.",
+      "voice_sample_lock": {
+        "schema_version": 1,
+        "session_id": "speed_compare_20260703",
+        "audition_line": "It's going to be all right, little one.",
+        "element_sample_lines": [
+          "[warm, gentle] It's going to be all right, little one.",
+          "[soft, nurturing] You're safe here with us now.",
+          "[calm, reassuring] Take a deep breath — we'll figure this out together."
+        ],
+        "element_sample_text": "[warm, gentle] It's going to be all right, little one. ... [soft, nurturing] You're safe here with us now. ... [calm, reassuring] Take a deep breath — we'll figure this out together.",
+        "locked_speed": 1.0,
+        "locked_at": "2026-07-04T01:54:44.360490+00:00",
+        "sample_text_fingerprint": "0f45c288e0a1b995"
+      },
+      "elevenlabs_voice_sample_path": "kling_voice_samples/benson.mp3"
     },
     "Ember": {
       "element_id": "314503771592524",
