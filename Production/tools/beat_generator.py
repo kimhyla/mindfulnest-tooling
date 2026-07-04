@@ -10280,6 +10280,43 @@ def heal_speaker_char_ref_mismatch(beat: dict) -> bool:
     return align_beat_reference_to_element(beat)
 
 
+def heal_event_beats_to_canonical_frontal(
+    sidecar: dict,
+    speaker: str,
+    frontal_abs_path: str,
+    *,
+    pose_rel: str = "",
+    wavespeed_key: str | None = None,
+) -> list[str]:
+    """Patch every beat for speaker to canonical frontal char ref after set_element_identity."""
+    try:
+        from tools import kling_character_registry as reg
+    except Exception:
+        return []
+    speaker_key = reg.normalize_beat_speaker_for_sidecar(speaker) or str(speaker or "").strip()
+    frontal_abs = str(frontal_abs_path or "").strip()
+    if not speaker_key or not frontal_abs or not os.path.isfile(frontal_abs):
+        return []
+    healed: list[str] = []
+    for b in sidecar.get("beats") or []:
+        if not isinstance(b, dict):
+            continue
+        beat_speaker = reg.normalize_beat_speaker_for_sidecar(str(b.get("speaker") or ""))
+        if beat_speaker != speaker_key:
+            continue
+        b["reference_image"] = {
+            "abs_path": frontal_abs,
+            **({"key": pose_rel} if pose_rel else {}),
+        }
+        b["reference_image_locked"] = True
+        if wavespeed_key:
+            ensure_beat_element_char_ref_for_o3(b, wavespeed_key)
+        bid = str(b.get("beat_id") or "")
+        if bid:
+            healed.append(bid)
+    return healed
+
+
 def align_beat_reference_to_element(beat: dict) -> bool:
     """Point beat reference_image at the speaker's Element image set.
 

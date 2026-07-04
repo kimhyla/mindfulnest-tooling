@@ -16,6 +16,10 @@ grep -q 'ELEMENT_VISUAL_CANONICAL_LOCK_V1' "$DOC" || fail "spec missing marker"
 grep -q 'set_element_identity' "$REG" || fail "registry missing set_element_identity"
 grep -q 'verify_frontal_sha256' "$REG" || fail "registry missing verify_frontal_sha256"
 grep -q 'ElementVisualCanonicalError' "$REG" || fail "registry missing ElementVisualCanonicalError"
+grep -q 'pin_proven_o3_bind_for_visual_canonical' "$REG"   || fail "registry missing pin_proven_o3_bind_for_visual_canonical"
+grep -q 'scrub_refer_images_for_canonical_identity' "$REG"   || fail "registry missing scrub_refer_images_for_canonical_identity"
+grep -q 'heal_event_beats_to_canonical_frontal' "$TOOLS/beat_generator.py"   || fail "beat_generator missing fleet frontal heal"
+grep -q 'char_ref_aligned_for_intent_commit' "$TOOLS/o3_generation_intent.py"   || fail "intent commit must use char_ref_aligned_for_intent_commit"
 
 echo "[element-visual-canonical-lock] pass 2/6 — no promote_frontal in category paths"
 if grep -q 'promote_frontal' "$REG"; then

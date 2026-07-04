@@ -1395,18 +1395,14 @@ def build_generation_intent(
     element_entry: dict[str, Any] = {}
     proven_bind: dict[str, Any] = {}
     if element_o3_path:
-        aligned, gate_detail = reg.char_ref_matches_element_images(
-            char_path, speaker, allow_pose_dir_fallback=False,
-        )
+        aligned, gate_detail = reg.char_ref_aligned_for_intent_commit(char_path, speaker)
     else:
         aligned = True
     if element_o3_path and not aligned:
         if ref_locked and wavespeed_key:
             reg_result = bg.try_register_dropped_char_ref_on_element(work_beat, wavespeed_key)
             if reg_result.get("ok") and reg_result.get("action") == "already_matched":
-                aligned, gate_detail = reg.char_ref_matches_element_images(
-                    char_path, speaker, allow_pose_dir_fallback=False,
-                )
+                aligned, gate_detail = reg.char_ref_aligned_for_intent_commit(char_path, speaker)
                 if not aligned:
                     try:
                         reg_result = reg.reconcile_char_ref_with_element(
@@ -1426,9 +1422,7 @@ def build_generation_intent(
                     },
                 )
             registration_action = str(reg_result.get("action") or "registered")
-            aligned, gate_detail = reg.char_ref_matches_element_images(
-                char_path, speaker, allow_pose_dir_fallback=False,
-            )
+            aligned, gate_detail = reg.char_ref_aligned_for_intent_commit(char_path, speaker)
         if not aligned:
             raise IntentCommitError(
                 "ELEMENT_REGISTRATION_FAILED" if registration_action != "already_matched" else "ELEMENT_VISUAL_MISMATCH",

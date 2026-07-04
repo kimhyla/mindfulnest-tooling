@@ -411,8 +411,69 @@ def element_image_paths(speaker: str) -> list[Path]:
     return out
 
 
+def _is_legacy_baseline_refer_rel(rel: str) -> bool:
+    low = str(rel or "").lower().replace("\\", "/")
+    return "baseline_char_" in low or "assets/image_library/baseline/" in low
+
+
+def scrub_refer_images_for_canonical_identity(
+    cfg: dict,
+    char_key: str,
+    frontal_rel: str,
+) -> list[str]:
+    """Evict legacy baseline paths from refer set; keep frontal + emotion anchors only."""
+    pin = pinned_refer_paths(cfg, char_key) | {frontal_rel}
+    refer: list[str] = [frontal_rel]
+    for rel in cfg.get("refer_images") or []:
+        rel_s = str(rel)
+        if not rel_s or rel_s == frontal_rel or _is_legacy_baseline_refer_rel(rel_s):
+            continue
+        if rel_s in pin or rel_s in (CHARACTER_REFER_ANCHORS.get(char_key) or ()):
+            if rel_s not in refer:
+                refer.append(rel_s)
+    trimmed = trim_refer_images_for_element(refer, keep=frontal_rel, pin=pin)
+    cfg["refer_images"] = trimmed
+    return trimmed
+
+
+def pin_proven_o3_bind_for_visual_canonical(
+    cfg: dict,
+    *,
+    element_id: str,
+    proven_from_beat_id: str | None = None,
+) -> None:
+    """Lock registry element_id after explicit Set as Element identity (ELEMENT_VISUAL_CANONICAL_LOCK_V1)."""
+    voice_id = str(cfg.get("kling_voice_id") or "").strip()
+    if not voice_id:
+        raise RuntimeError("cannot pin proven_o3_bind without kling_voice_id")
+    proven: dict[str, str | bool] = {
+        "element_id": str(element_id),
+        "kling_voice_id": voice_id,
+        "lock_element_id": True,
+        "locked_at": _utc_now_iso(),
+        "note": "ELEMENT_VISUAL_CANONICAL_LOCK_V1 — pinned at set_element_identity",
+    }
+    if proven_from_beat_id:
+        proven["proven_from_beat_id"] = str(proven_from_beat_id)
+    cfg["proven_o3_bind"] = proven
+    cfg["proven_o3_bind_applied_at"] = _utc_now_iso()
+
+
 def char_ref_aligned_for_intent_commit(char_path: str, speaker: str) -> tuple[bool, str]:
-    """Strict alignment for generation-intent commit (no poses-dir false positive)."""
+    """Strict alignment for O3 submit — canonical frontal bytes when identity is locked."""
+    entry = get_character_entry(speaker) or {}
+    if entry.get("visual_canonical_locked") and entry.get("frontal_sha256"):
+        char_hash = (file_sha256(char_path) or "").lower()
+        expected = str(entry.get("frontal_sha256") or "").strip().lower()
+        if not char_hash:
+            return False, "could not hash character reference"
+        if char_hash != expected:
+            frontal_rel = entry.get("frontal_image") or "canonical frontal"
+            return False, (
+                f"@Image1 bytes do not match canonical Element identity ({frontal_rel}). "
+                "Use Set as Element identity on the desired pose, or align char ref to frontal."
+            )
+        return True, ""
     return char_ref_matches_element_images(
         char_path, speaker, allow_pose_dir_fallback=False,
     )
@@ -906,8 +967,13 @@ def set_element_identity(
     cfg["visual_canonical_locked"] = True
     cfg["visual_canonical_lock_source"] = "set_element_identity"
     cfg["visual_canonical_locked_at"] = _utc_now_iso()
+    scrub_refer_images_for_canonical_identity(cfg, char_key, rel_pose)
 
     element_id = _register_element_after_pose_update(char_key, cfg, wavespeed_key, data, chars)
+    pin_proven_o3_bind_for_visual_canonical(cfg, element_id=element_id)
+    chars[char_key] = cfg
+    data["characters"] = chars
+    save_character_subjects(data)
 
     return {
         "ok": True,
@@ -918,6 +984,7 @@ def set_element_identity(
         "kling_voice_id": cfg.get("kling_voice_id"),
         "character": char_key,
         "refer_images": list(cfg.get("refer_images") or []),
+        "proven_o3_bind": dict(cfg.get("proven_o3_bind") or {}),
     }
 
 

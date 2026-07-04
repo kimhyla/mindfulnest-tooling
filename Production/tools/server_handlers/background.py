@@ -4006,6 +4006,26 @@ def handle_bg_set_element_identity(h, body: dict) -> None:
             retry_safe=True,
         )
 
+    healed_beat_ids: list[str] = []
+
+    def _fleet_heal(sc: dict) -> None:
+        nonlocal healed_beat_ids
+        healed_beat_ids = bg.heal_event_beats_to_canonical_frontal(
+            sc,
+            str(result.get("character") or speaker),
+            str(result.get("pose_abs_path") or abs_path),
+            pose_rel=str(result.get("pose_rel") or ""),
+            wavespeed_key=wavespeed_key,
+        )
+
+    try:
+        bg.mutate_sidecar_locked(
+            _fleet_heal,
+            caller="handle_bg_set_element_identity_fleet_heal",
+        )
+    except Exception:
+        healed_beat_ids = []
+
     thumb_b64 = None
     element_char_ref_ok = None
     if beat_id:
@@ -4032,6 +4052,8 @@ def handle_bg_set_element_identity(h, body: dict) -> None:
         bg.update_beat_locked(beat_id, _identity_patch)
 
     payload = dict(result)
+    if healed_beat_ids:
+        payload["healed_beat_ids"] = healed_beat_ids
     if element_char_ref_ok is not None:
         payload["element_char_ref_ok"] = element_char_ref_ok
     if thumb_b64:

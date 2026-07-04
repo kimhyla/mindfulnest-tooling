@@ -135,3 +135,86 @@ def test_resolve_frontal_strict_raises_on_mismatch(prod_root: Path):
 def test_no_promote_frontal_in_registry_module():
     text = Path(__file__).resolve().parent.parent / "kling_character_registry.py"
     assert "promote_frontal" not in text.read_text(encoding="utf-8")
+
+
+def test_char_ref_aligned_rejects_baseline_when_canonical_locked(prod_root: Path):
+    from tools import kling_character_registry as reg
+
+    frontal_rel = "Benson/poses/chatgpt_front.png"
+    baseline_rel = "assets/image_library/baseline/baseline_char_rabbit_gardener.png"
+    _write_png(prod_root / frontal_rel, b"canonical-front")
+    _write_png(prod_root / baseline_rel, b"legacy-baseline")
+    frontal_sha = reg.file_sha256(prod_root / frontal_rel)
+    registry = _benson_registry(frontal_rel, sha=frontal_sha)
+    registry["characters"]["Benson"]["visual_canonical_locked"] = True
+    registry["characters"]["Benson"]["refer_images"] = [frontal_rel, baseline_rel]
+    (prod_root / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+
+    ok, detail = reg.char_ref_aligned_for_intent_commit(str(prod_root / baseline_rel), "Benson")
+    assert ok is False
+    assert "canonical Element identity" in detail
+
+    ok2, _ = reg.char_ref_aligned_for_intent_commit(str(prod_root / frontal_rel), "Benson")
+    assert ok2 is True
+
+
+def test_set_element_identity_pins_proven_o3_bind_and_scrubs_baseline(prod_root: Path):
+    from tools import kling_character_registry as reg
+
+    frontal_rel = "Benson/poses/benson_pose_neutral.png"
+    baseline_rel = "assets/image_library/baseline/baseline_char_rabbit_gardener.png"
+    _write_png(prod_root / frontal_rel, b"old-front")
+    _write_png(prod_root / baseline_rel, b"legacy-baseline")
+    registry = _benson_registry(frontal_rel)
+    registry["characters"]["Benson"]["refer_images"] = [frontal_rel, baseline_rel]
+    (prod_root / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+    source = prod_root / "library" / "new_front.png"
+    _write_png(source, b"tan-gardener-bytes")
+
+    out = reg.set_element_identity("Benson", source, "ws-key")
+    saved = json.loads((prod_root / "character_subjects.json").read_text(encoding="utf-8"))
+    cfg = saved["characters"]["Benson"]
+    proven = cfg.get("proven_o3_bind") or {}
+    assert proven.get("lock_element_id") is True
+    assert proven.get("element_id") == out["element_id"]
+    assert not any("baseline_char_" in str(r) for r in (cfg.get("refer_images") or []))
+
+
+def test_heal_event_beats_to_canonical_frontal(prod_root: Path):
+    from tools import beat_generator as bg
+    from tools import kling_character_registry as reg
+
+    reg.set_prod_root(prod_root)
+    frontal = prod_root / "Benson/poses/front.png"
+    baseline = prod_root / "library/baseline.png"
+    _write_png(frontal, b"front")
+    _write_png(baseline, b"base")
+    sidecar = {
+        "beats": [
+            {
+                "beat_id": "bg_arc1_event5_pre_beat_01",
+                "speaker": "Benson",
+                "reference_image": {"abs_path": str(baseline)},
+            },
+            {
+                "beat_id": "bg_arc1_event5_pre_beat_03",
+                "speaker": "Benson",
+                "reference_image": {"abs_path": str(baseline)},
+            },
+            {
+                "beat_id": "bg_arc1_event5_pre_beat_02",
+                "speaker": "Arlo",
+                "reference_image": {"abs_path": str(baseline)},
+            },
+        ],
+    }
+    healed = bg.heal_event_beats_to_canonical_frontal(
+        sidecar,
+        "Benson",
+        str(frontal),
+        pose_rel="Benson/poses/front.png",
+    )
+    assert healed == ["bg_arc1_event5_pre_beat_01", "bg_arc1_event5_pre_beat_03"]
+    assert sidecar["beats"][0]["reference_image"]["abs_path"] == str(frontal)
+    assert sidecar["beats"][0]["reference_image_locked"] is True
+    assert sidecar["beats"][2]["reference_image"]["abs_path"] == str(baseline)
