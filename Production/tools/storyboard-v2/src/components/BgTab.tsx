@@ -328,17 +328,21 @@ function inferO3OptionPipelineMode(opt?: GptOption | null): BeatGenerationMode |
   if (!opt) return '';
   const source = (opt.source ?? '').trim().toLowerCase();
   const path = (opt.video_path ?? '').toLowerCase();
+  if (
+    source === 'kling_real_voice_harvest'
+    || source === 'kling_o3_element_native_voice'
+  ) {
+    return 'element_native';
+  }
   if (source === 'o3_pov_motion_i2v' || path.includes('_o3_i2v') || path.includes('_pov_')) {
     return 'element_native';
   }
   if (source.includes('still_insert') || path.includes('still_insert')) return 'still_insert';
-  if (path.includes('_delivery')) return 'still_insert';
   if (path.includes('_avatar_pro') || source === 'kling_o3_avatar_pro') return 'avatar_pro';
   if (path.includes('_voice_lipsync')) return 'voice_first';
   if (path.includes('_element_o3') || (path.includes('_element_') && !path.includes('_voice_lipsync'))) {
     return 'element_native';
   }
-  if (source === 'kling_o3_element_native_voice') return 'element_native';
   if (source === 'kling_o3_voice_video') return 'voice_first';
   return '';
 }
@@ -5115,11 +5119,17 @@ function BgOptionTile({
     }
   };
 
+  const pendingCutValid = pendingKeep != null
+    && trimAuthorityDurationS > 0
+    && isValidO3CutWindow(trimAuthorityDurationS, pendingKeep.startS, pendingKeep.endS);
+
   const applyDraftCut = async () => {
-    if (cutDraftDirty && !cutReadyForApply) {
+    if (cutDraftDirty && !pendingCutValid) {
       pushToast({
         kind: 'info',
-        message: 'Drag both start and end handles — then press Apply Cut',
+        message: cutReadyForApply
+          ? 'Trim window too small — drag handles farther apart (need ≥0.25s kept)'
+          : 'Drag start and end handles to set the keep region — then press Apply Cut',
         source: 'bg-o3-cut-both-handles-required',
       });
       return;
@@ -5520,7 +5530,7 @@ function BgOptionTile({
                   type="button"
                   class="mn-btn mn-btn-small mn-btn-primary"
                   data-testid={`bg-o3-apply-cut-${beatIndex}-${optionIndex}`}
-                  disabled={cutBusy || !hasActiveCut || !cutReadyForApply}
+                  disabled={cutBusy || !hasActiveCut || (cutDraftDirty && !pendingCutValid)}
                   title="Save cut region for stitch export (Phase A/B Apply Cut parity)"
                   onClick={(e) => {
                     e.stopPropagation();

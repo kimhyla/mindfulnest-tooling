@@ -184,6 +184,8 @@ def test_bg_cut_overlay_defers_persist_until_apply_cut_button():
     assert "previewOnly: true" not in apply_block
     assert "STITCH_NO_AUTO_CUT_PREVIEW_V1" in bg_tab
     assert "cutReadyForApply" in bg_tab
+    assert "pendingCutValid" in bg_tab
+    assert "_delivery')) return 'still_insert'" not in bg_tab
     assert "onKeepStartCommitted" in bg_tab
     assert "onKeepEndCommitted" in bg_tab
     assert "bg-o3-preview-cut-" not in bg_tab

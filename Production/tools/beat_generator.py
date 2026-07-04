@@ -4730,6 +4730,8 @@ def infer_o3_option_pipeline_mode(option: dict | None) -> str:
         return ""
     source = str(option.get("source") or "").strip().lower()
     path = str(option.get("video_path") or "").lower()
+    if source in ("kling_real_voice_harvest", O3_OPTION_SOURCE_ELEMENT):
+        return O3_GENERATE_MODE_ELEMENT_NATIVE
     if source == O3_OPTION_SOURCE_POV_MOTION or "_o3_i2v" in path or "_pov_" in path:
         return O3_GENERATE_MODE_ELEMENT_NATIVE
     if source in O3_OPTION_SOURCE_STILL or (
