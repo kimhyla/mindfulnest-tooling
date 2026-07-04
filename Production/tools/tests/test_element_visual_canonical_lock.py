@@ -180,6 +180,29 @@ def test_set_element_identity_pins_proven_o3_bind_and_scrubs_baseline(prod_root:
     assert not any("baseline_char_" in str(r) for r in (cfg.get("refer_images") or []))
 
 
+def test_set_element_identity_persists_registry_once(prod_root: Path, monkeypatch):
+    from tools import kling_character_registry as reg
+
+    frontal_rel = "Benson/poses/benson_pose_neutral.png"
+    front_path = prod_root / frontal_rel
+    _write_png(front_path, b"old-front")
+    frontal_sha = reg.file_sha256(front_path)
+    (prod_root / "character_subjects.json").write_text(
+        json.dumps(_benson_registry(frontal_rel, sha=frontal_sha)), encoding="utf-8",
+    )
+    source = prod_root / "library" / "new_front.png"
+    _write_png(source, b"tan-gardener-bytes")
+    saves: list[dict] = []
+    monkeypatch.setattr(reg, "save_character_subjects", lambda data: saves.append(dict(data)))
+
+    reg.set_element_identity("Benson", source, "ws-key")
+
+    assert len(saves) == 1
+    cfg = saves[0]["characters"]["Benson"]
+    assert cfg.get("proven_o3_bind", {}).get("lock_element_id") is True
+    assert cfg.get("frontal_sha256")
+
+
 def test_heal_event_beats_to_canonical_frontal(prod_root: Path):
     from tools import beat_generator as bg
     from tools import kling_character_registry as reg

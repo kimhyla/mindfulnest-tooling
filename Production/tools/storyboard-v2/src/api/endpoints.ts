@@ -201,6 +201,8 @@ export const MUTATION_ENDPOINTS = {
   // Cross-event source requires server start with --source-event flag.
   beat_graft: `${SERVER_BASE}/api/beat/graft`,
   beat_done_toggle: `${SERVER_BASE}/api/beat/done_toggle`,
+  storyboard_clear_magic_still: `${SERVER_BASE}/api/storyboard/clear_magic_still`,
+  storyboard_clear_magic_video: `${SERVER_BASE}/api/storyboard/clear_magic_video`,
 } as const;
 
 export type ReadEndpoint = keyof typeof READ_ENDPOINTS;

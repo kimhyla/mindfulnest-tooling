@@ -4428,7 +4428,7 @@ function BeatGenCard({
               ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
           });
         } : undefined}
-        onMagicStillCleared={() => {
+        onMagicCleared={() => {
           setMagicPreviewMode(null);
           setStillPreviewAutoplay(false);
           onRefresh();
@@ -4851,6 +4851,8 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
     previewUrl?: string;
     rawDurationS?: number;
     effectiveDurationS?: number | null;
+    trimBaked?: boolean;
+    videoPath?: string;
   } | undefined>;
   replaceSelected: boolean;
   onSetReplaceSlot: () => void;
@@ -4888,12 +4890,15 @@ function BgOptionTile({
   const [videoLoadError, setVideoLoadError] = useState(false);
   const [loadedDuration, setLoadedDuration] = useState<number | null>(null);
   const [sourceDurationS, setSourceDurationS] = useState<number | null>(null);
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [materializedCut, setMaterializedCut] = useState<{
+    url: string;
+    anchoredPath: string;
+  } | null>(null);
+  const previewUrl = materializedCut?.url ?? null;
   const [playbackUrl, setPlaybackUrl] = useState<string | null>(null);
   const [cutBusy, setCutBusy] = useState(false);
   const lastAutoPreviewRef = useRef<string | null>(null);
-  /** Skip one sourceVideoPath reset after Apply Cut sets materialized preview (export_baked path churn). */
-  const skipPreviewClearRef = useRef(false);
+  const clearMaterializedCut = () => setMaterializedCut(null);
   /** STITCH_NO_AUTO_CUT_PREVIEW_V1 — Apply Cut only after operator commits both handles. */
   const [cutHandlesAdjusted, setCutHandlesAdjusted] = useState({ start: false, end: false });
   const resetCutHandleFlags = () => setCutHandlesAdjusted({ start: false, end: false });
@@ -5136,14 +5141,16 @@ function BgOptionTile({
   });
 
   useEffect(() => {
-    // Only drop materialized preview when the underlying source clip changes —
-    // NOT when cache-bust query params change on session refresh.
-    if (skipPreviewClearRef.current) {
-      skipPreviewClearRef.current = false;
-    } else {
-      setPreviewUrl(null);
-      lastAutoPreviewRef.current = null;
-    }
+    setMaterializedCut(null);
+  }, [beatId, optionIndex]);
+
+  useEffect(() => {
+    // Drop materialized trim preview only when the underlying clip path changes to a different file.
+    setMaterializedCut((prev) => {
+      if (!prev) return null;
+      if (!sourceVideoPath || sourceVideoPath === prev.anchoredPath) return prev;
+      return null;
+    });
     setPendingCut(null);
     resetCutHandleFlags();
     setLoadedDuration(null);
@@ -5168,11 +5175,14 @@ function BgOptionTile({
     }
   }, [activeVideoUrl]);
 
-  const swapVideoToPreview = async (url: string, opts?: { autoplay?: boolean }) => {
+  const swapVideoToPreview = async (
+    url: string,
+    opts?: { autoplay?: boolean; anchorPath?: string },
+  ) => {
     const autoplay = opts?.autoplay === true;
-    skipPreviewClearRef.current = true;
+    const anchoredPath = opts?.anchorPath ?? sourceVideoPath ?? '';
     setVideoLoadError(false);
-    setPreviewUrl(url);
+    setMaterializedCut({ url, anchoredPath });
     const video = videoRef.current;
     if (!video) return;
     video.src = url;
@@ -5290,7 +5300,7 @@ function BgOptionTile({
     if (cached) {
       rememberCutPreviewUrl(beatId, optionIndex, option.video_path, startS, trimBack, cached);
       lastAutoPreviewRef.current = sig;
-      await swapVideoToPreview(cached, { autoplay: false });
+      await swapVideoToPreview(cached, { autoplay: false, anchorPath: option.video_path });
       return;
     }
     setCutBusy(true);
@@ -5304,7 +5314,10 @@ function BgOptionTile({
       if (!applied?.previewUrl) return;
       rememberCutPreviewUrl(beatId, optionIndex, option.video_path, startS, trimBack, applied.previewUrl);
       lastAutoPreviewRef.current = sig;
-      await swapVideoToPreview(applied.previewUrl, { autoplay: false });
+      await swapVideoToPreview(applied.previewUrl, {
+        autoplay: false,
+        anchorPath: applied.videoPath ?? option.video_path,
+      });
     } finally {
       setCutBusy(false);
     }
@@ -5357,12 +5370,13 @@ function BgOptionTile({
     if (saved.previewUrl) {
       rememberCutPreviewUrl(beatId, optionIndex, option.video_path!, startS, trimBack, saved.previewUrl);
       lastAutoPreviewRef.current = `${option.video_path}|${startS.toFixed(2)}|${trimBack.toFixed(2)}`;
-      await swapVideoToPreview(saved.previewUrl);
+      await swapVideoToPreview(saved.previewUrl, {
+        anchorPath: saved.videoPath ?? sourceVideoPath,
+      });
       return;
     }
     if (saved.trimBaked && saved.videoPath) {
-      skipPreviewClearRef.current = true;
-      setPreviewUrl(null);
+      clearMaterializedCut();
       lastAutoPreviewRef.current = null;
       forgetCutPreviewsForBeat(beatId);
       const truth = await resolveClipPlaybackTruth(saved.videoPath);
@@ -5390,7 +5404,7 @@ function BgOptionTile({
     try {
       clearPendingCut();
       resetCutHandleFlags();
-      setPreviewUrl(null);
+      clearMaterializedCut();
       lastAutoPreviewRef.current = null;
       forgetCutPreviewsForBeat(beatId);
       await onApplyO3Cut(optionIndex, 0, null, { clear: true, ...cutTargetOpts });
@@ -5405,7 +5419,7 @@ function BgOptionTile({
   };
 
   const returnToCutEdit = async () => {
-    setPreviewUrl(null);
+    clearMaterializedCut();
     await resetVideoToCanonical();
   };
 
@@ -5488,7 +5502,7 @@ function BgOptionTile({
     const video = videoRef.current;
     if (!video || !canonicalVideoUrl) return null;
     clearTrimPlaybackListener(video);
-    setPreviewUrl(null);
+    clearMaterializedCut();
     if (video.src !== canonicalVideoUrl) {
       video.src = canonicalVideoUrl;
       video.load();
@@ -5526,7 +5540,7 @@ function BgOptionTile({
     const video = videoRef.current;
     if (!video || !canonicalVideoUrl) return;
     try {
-      setPreviewUrl(null);
+      clearMaterializedCut();
       if (video.src !== canonicalVideoUrl) {
         video.src = canonicalVideoUrl;
         video.load();
@@ -5581,12 +5595,14 @@ function BgOptionTile({
     }
     clearDirtyAfterSave();
     if (applied?.previewUrl) {
-      await swapVideoToPreview(applied.previewUrl);
+      await swapVideoToPreview(applied.previewUrl, {
+        anchorPath: applied.videoPath ?? sourceVideoPath,
+      });
       return;
     }
     const video = videoRef.current;
     if (video && canonicalVideoUrl) {
-      setPreviewUrl(null);
+      clearMaterializedCut();
       if (video.src !== canonicalVideoUrl) {
         video.src = canonicalVideoUrl;
       }
@@ -5608,7 +5624,7 @@ function BgOptionTile({
     const video = videoRef.current;
     if (video && canonicalVideoUrl) {
       clearTrimPlaybackListener(video);
-      setPreviewUrl(null);
+      clearMaterializedCut();
       video.src = canonicalVideoUrl;
       video.load();
     }

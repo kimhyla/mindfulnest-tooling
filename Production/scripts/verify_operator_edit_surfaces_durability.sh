@@ -71,6 +71,12 @@ grep -q 'o3TrimApplyIsBaked' "$SB/components/BgTab.tsx" \
   || fail "BgTab must use o3TrimApplyIsBaked (export_baked + trim_baked contract)"
 grep -q 'o3TrimApplyContract' "$SB/components/BgTab.tsx" \
   || fail "BgTab must import o3TrimApplyContract"
+grep -q 'materializedCut' "$SB/components/BgTab.tsx" \
+  || fail "BgTab O3 tile must use materializedCut playback anchor (no skipPreviewClearRef)"
+grep -q 'pathappPatch' "$SB/components/BeatMagicButtons.tsx" \
+  || fail "BeatMagicButtons must clear magic via pathappPatch"
+grep -q 'storyboard_clear_magic_video' "$SB/components/BeatMagicButtons.tsx" \
+  || fail "BeatMagicButtons must use storyboard_clear_magic_video catalog endpoint"
 grep -q 'export_baked' "$SB/utils/o3TrimApplyContract.ts" \
   || fail "o3TrimApplyContract must handle export_baked"
 grep -q 'shouldPreserveBgO3CutDraft' "$SB/components/bg/BgO3CutOverlay.tsx" \

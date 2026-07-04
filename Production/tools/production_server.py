@@ -8075,6 +8075,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_bg_add_element_pose
         return handle_bg_add_element_pose(self, body)
 
+    @with_pin_and_drain('_handle_bg_set_element_identity', track_sync=True)
     def _handle_bg_set_element_identity(self, body: dict) -> None:
         from server_handlers.background import handle_bg_set_element_identity
         return handle_bg_set_element_identity(self, body)
