@@ -2,7 +2,7 @@
 """Generate Phase B Cedric lipsync base clip from a wizard-desk still PNG.
 
 Submits Kling single-image idle (no Cedric Element — human wizard not in registry),
-normalizes to 1280×960, writes assets/lipsync_bases/<clip_id>.mp4.
+normalizes to 1280×720 (16:9 module playback), writes assets/lipsync_bases/<clip_id>.mp4.
 """
 from __future__ import annotations
 
@@ -28,21 +28,28 @@ from kling_startend_pipeline import (  # noqa: E402
 )
 
 CEDRIC_STILL_PROMPT = (
-    "Cedric the elderly wizard faces the camera at a wooden desk in a firelit cozy "
-    "stone study. Deep green robe with gold embroidery, round glasses, long white curly "
-    "beard and hair. Wooden mug in one hand, welcoming gesture. Books, herbs, fireplace "
-    "glow. Mouth closed, lips sealed. "
-    "STATIC CAMERA — locked frame, zero zoom, zero dolly, zero pan, zero Ken Burns. "
-    "Only soft blinks and tiny breathing. No pacing, no large gestures."
+    "Cedric the elderly wizard sits at a wooden desk in a firelit cozy stone study, "
+    "facing the camera. Deep green robe with gold embroidery, round glasses, long white "
+    "curly beard and hair, wooden coffee mug in hand. "
+    "MOUTH COMPLETELY FROZEN for the entire clip — lips sealed shut, jaw still, "
+    "no talking, no lip movement, no speech motion whatsoever. "
+    "Environment animation: gentle wispy steam rising from the coffee mug and soft smoke "
+    "curling from the fireplace; warm firelight flicker on the stone walls. "
+    "Natural idle body motion only: soft blinks, subtle breathing, relaxed shoulders. "
+    "He may slowly and gently reposition his mug on the desk — small, natural hand "
+    "movements only. No waving, no large gestures, no pacing. "
+    "STATIC CAMERA — locked frame, zero zoom, zero dolly, zero pan, zero Ken Burns."
 )
 
 NEGATIVE = (
     RULE8_ANTI_LIPSYNC + ", "
-    "teeth, fangs, dental, bird, magpie, beak, wing, flapping, "
-    "extra limbs, zoom in, camera move, pacing, walking, young face"
+    "mouth movement, lip movement, jaw movement, talking, speaking, mumbling, chewing, "
+    "open mouth, lip parting, smile with teeth, teeth, fangs, dental, "
+    "bird, magpie, beak, wing, flapping, extra limbs, zoom in, camera move, "
+    "pacing, walking, young face, head turn away from camera"
 )
 
-DEFAULT_CLIP_ID = "cedric_idle_newstyle_v3"
+DEFAULT_CLIP_ID = "cedric_idle_newstyle_v6"
 PHASE_B_BASE_CLIP_DURATION_S = 10
 PHASE_B_BASE_DURATION_CHOICES = (5, 10, 15)
 
@@ -71,8 +78,8 @@ def _normalize(src: Path, dst: Path) -> None:
     from video_encode_policy import BASE_CLIP_FFMPEG_VIDEO_ARGS, VIDEO_QUALITY_GRADFUN_VF  # noqa: E402
 
     vf = (
-        "scale=1280:960:force_original_aspect_ratio=decrease,"
-        "pad=1280:960:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24,"
+        "scale=1280:720:force_original_aspect_ratio=decrease,"
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24,"
         + VIDEO_QUALITY_GRADFUN_VF
     )
     subprocess.run([
@@ -87,6 +94,8 @@ def _normalize(src: Path, dst: Path) -> None:
 
 def _default_still_candidates(event: Path, prod: Path) -> list[Path]:
     return [
+        prod / "NEW STYLE CHARACTERS" / "CEDRIC"
+        / "ChatGPT Image Jul 4, 2026, 04_04_56 PM.png",
         prod / "NEW STYLE CHARACTERS" / "CEDRIC"
         / "ChatGPT Image Jun 21, 2026, 10_45_20 PM.png",
         event / "cedric_phase_b_canonical_still.png",

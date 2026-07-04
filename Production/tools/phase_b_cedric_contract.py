@@ -1,12 +1,12 @@
 """Phase B Cedric base-clip contract — canonical preset for all events.
 
-Jun 21 2026: ``cedric_idle_newstyle_v3`` from NEW STYLE CHARACTERS Cedric still.
-Deprecated camera/study/placeholder and prior newstyle v1/v2 ids are coerced on
-read/submit so Phase B always defaults to the approved Cedric look.
+Jul 4 2026: ``cedric_idle_newstyle_v6`` — 16:9 (1280×720) wizard-desk idle,
+frozen mouth, mug/fireplace steam. Supersedes v3 (4:3) and interim v5.
+Deprecated camera/study/placeholder and prior newstyle ids coerce on read/submit.
 """
 from __future__ import annotations
 
-PHASE_B_CEDRIC_BASE_CLIP_CANONICAL = "cedric_idle_newstyle_v3"
+PHASE_B_CEDRIC_BASE_CLIP_CANONICAL = "cedric_idle_newstyle_v6"
 
 # Avatar Pro route uses canonical still — not idle base loop (see phase_b_avatar_lipsync.py).
 PHASE_B_LIPSYNC_METHOD_AVATAR = "kling_avatar_pro_v1"
@@ -20,6 +20,9 @@ _DEPRECATED_PREFIXES = (
 _DEPRECATED_EXACT = frozenset({
     "cedric_idle_newstyle_v1",
     "cedric_idle_newstyle_v2",
+    "cedric_idle_newstyle_v3",
+    "cedric_idle_newstyle_v4",
+    "cedric_idle_newstyle_v5",
 })
 
 
