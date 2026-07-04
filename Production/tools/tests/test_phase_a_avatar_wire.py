@@ -32,6 +32,7 @@ def test_phases_handler_uses_bytedance_not_avatar_pro():
     block = block.split("\ndef handle_phase_b_lipsync", 1)[0]
     assert "submit_avatar_pro" not in block
     assert "run_phase_a_base_clip_bytedance_lipsync" in block
+    assert "finalize_phase_module_lipsync_delivery" in block or "_finalize_phase_a_lipsync_delivery" in block
     assert 'lipsync_method = "base_clip_bytedance_tight_v1"' in block or "base_clip_bytedance_tight_v1" in block
 
 
@@ -153,7 +154,7 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
         vs.write_bytes(b"\x00fakevoice\x00")
         bases = self.event_dir.parent / "assets" / "lipsync_bases"
         bases.mkdir(parents=True, exist_ok=True)
-        base_clip = bases / "arlo_idle_wizard_desk_v4.mp4"
+        base_clip = bases / "arlo_idle_wizard_desk_v7.mp4"
         base_clip.write_bytes(b"\x00fakebase\x00")
 
         def _apply(state):
@@ -198,7 +199,7 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
             status, resp, _ = _http_post(
                 self.port,
                 "/api/phase_a/lipsync",
-                {"phase": "a", "base_clip_id": "arlo_idle_wizard_desk_v4"},
+                {"phase": "a", "base_clip_id": "arlo_idle_wizard_desk_v7"},
             )
             self.assertEqual(status, 202, resp)
             self.assertEqual(resp.get("status"), "running")

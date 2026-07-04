@@ -1,5 +1,5 @@
 /** Phase A Arlo base clip — mirrors phase_a_arlo_contract.py */
-export const PHASE_A_ARLO_BASE_CLIP_CANONICAL = 'arlo_idle_wizard_desk_v4';
+export const PHASE_A_ARLO_BASE_CLIP_CANONICAL = 'arlo_idle_wizard_desk_v7';
 export const PHASE_A_ARLO_AVATAR_STILL_LABEL =
   'Arlo still (Avatar Pro) — canonical wizard-desk PNG';
 
@@ -7,6 +7,9 @@ const DEPRECATED_EXACT = new Set([
   'arlo_idle_wizard_desk_v1',
   'arlo_idle_wizard_desk_v2',
   'arlo_idle_wizard_desk_v3',
+  'arlo_idle_wizard_desk_v4',
+  'arlo_idle_wizard_desk_v5',
+  'arlo_idle_wizard_desk_v6',
   'chipper_idle_closeup_v1',
   'chipper_idle_closeup_v2',
 ]);

@@ -28,28 +28,35 @@ from kling_startend_pipeline import (  # noqa: E402
 )
 
 ARLO_STILL_PROMPT = (
-    "CLOSE MEDIUM SHOT — Arlo the red squirrel wizard fills at least half the frame height, "
-    "centered at a wooden desk in a cozy firelit stone study. Blue scarf and green vest visible. "
-    "Both paws resting on the desk. Mouth closed, lips sealed, tooth-free. "
-    "LOCKED CAMERA — perfect static camera hold, absolutely zero zoom, zero pan, "
-    "zero dolly, zero Ken Burns, zero camera motion of any kind. "
-    "Gentle subtle animation only: soft fireplace fire flicker and delicate smoke wisps; "
-    "Arlo with tiny breathing, soft blinks, and minimal squirrel idle motion "
-    "(small ear shifts, subtle posture). No pacing, no large gestures, no tail swish. "
-    "Silent video — no background music, no soundtrack, no score."
+    "Arlo's mouth should remain closed the entire time. "
+    "Arlo the red squirrel wizard stands at a wooden desk in a cozy firelit stone study, "
+    "facing the camera with steady direct eye contact. Blue scarf and green vest visible. "
+    "Arlo's mouth should remain closed the entire time — lips sealed shut, jaw still, "
+    "no talking, no lip movement, no chewing, no speech motion for the full clip. "
+    "Gentle closed-mouth smile, friendly expression, eyes on camera. "
+    "IDLE MOTION (natural only): soft blinks, subtle chest breathing, tiny ear twitches, "
+    "minimal weight shift while staying upright at the desk. "
+    "PAWS: both front paws rest naturally on the desk most of the time — clear squirrel "
+    "paws with distinct digits, relaxed and grounded. At most one slow, small, natural "
+    "gesture in the whole clip — smooth, unhurried, never jerky, never waving. "
+    "Environment animation: soft fireplace fire flicker and delicate smoke wisps. "
+    "STATIC CAMERA — locked frame, zero zoom, zero dolly, zero pan. "
+    "Arlo's mouth should remain closed the entire time."
 )
 
 NEGATIVE = (
     RULE8_ANTI_LIPSYNC + ", "
-    "teeth, fangs, dental, human hands, fingers, bird, magpie, beak, wing, "
-    "flapping, extra limbs, zoom in, zoom out, camera move, pan, tilt, dolly, "
-    "Ken Burns, pacing, walking, music, soundtrack, score, orchestral, humming, "
-    "singing, dialogue audio"
+    "mouth movement, moving mouth, mouth animation, lip movement, jaw movement, "
+    "talking, speaking, mumbling, chewing, open mouth, lip parting, mouth opening, "
+    "animated smile, changing expression, teeth, fangs, dental, "
+    "awkward gestures, jerky motion, flailing, waving, human hands, extra fingers, "
+    "extra limbs, looking away, head turn away from camera, "
+    "zoom in, camera move, pan, dolly, music, soundtrack, dialogue audio"
 )
 
 ARLO_ELEMENT_ID = "313106596591323"
-DEFAULT_CLIP_ID = "arlo_idle_wizard_desk_v4"
-PHASE_A_BASE_CLIP_DURATION_S = 15
+DEFAULT_CLIP_ID = "arlo_idle_wizard_desk_v7"
+PHASE_A_BASE_CLIP_DURATION_S = 10
 PHASE_A_BASE_DURATION_CHOICES = (5, 10, 15)
 
 
@@ -90,8 +97,8 @@ def _normalize(src: Path, dst: Path) -> None:
     from video_encode_policy import BASE_CLIP_FFMPEG_VIDEO_ARGS, VIDEO_QUALITY_GRADFUN_VF  # noqa: E402
 
     vf = (
-        "scale=1280:960:force_original_aspect_ratio=decrease,"
-        "pad=1280:960:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24,"
+        "scale=1280:720:force_original_aspect_ratio=decrease,"
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24,"
         + VIDEO_QUALITY_GRADFUN_VF
     )
     subprocess.run([
@@ -160,7 +167,7 @@ def main() -> int:
             "element_name": arlo.get("element_name", "Arlo"),
         }
 
-    log("Submitting Kling single-image idle (Arlo wizard desk v4, locked camera)")
+    log("Submitting Kling single-image idle (Arlo wizard desk v7, locked camera)")
     task_id = kling_startend_submit(
         start_uri, None,
         prompt=ARLO_STILL_PROMPT, negative_prompt=NEGATIVE,

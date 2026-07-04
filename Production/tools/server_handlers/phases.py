@@ -2763,13 +2763,19 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
             qa_dir = event_dir / f"phase_a_lipsync_qa_{Path(pending_out).stem}"
             extract_qa_frames(out_path, qa_dir)
 
+            delivery_meta = _finalize_phase_a_lipsync_delivery(
+                out_path, method="base_clip_bytedance_tight_v1",
+            )
+
             _m = int(os.path.getmtime(str(out_path)))
 
-            def _apply_done(st):
+            def _apply_done(st, _meta=delivery_meta):
                 st["phase_a_lipsync_file"] = pending_out
                 st["phase_a_lipsync_mtime"] = _m
                 st["phase_a_lipsync_status"] = "needs_manual_visual_review"
                 st["phase_a_lipsync_requires_regen"] = False
+                st["phase_a_lipsync_delivery_profile"] = _meta.get("delivery_profile")
+                st["phase_a_lipsync_delivery_recipe"] = _meta.get("delivery_recipe")
                 st.pop("phase_a_lipsync_started_at", None)
                 st.pop("phase_a_lipsync_pending_output", None)
                 st.pop("phase_a_lipsync_pending_audio", None)
@@ -2779,6 +2785,8 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
                     nested["phase_a_lipsync_mtime"] = _m
                     nested["phase_a_lipsync_status"] = "needs_manual_visual_review"
                     nested["phase_a_lipsync_requires_regen"] = False
+                    nested["phase_a_lipsync_delivery_profile"] = _meta.get("delivery_profile")
+                    nested["phase_a_lipsync_delivery_recipe"] = _meta.get("delivery_recipe")
                     nested.pop("phase_a_lipsync_started_at", None)
                     nested.pop("phase_a_lipsync_pending_output", None)
                     nested.pop("phase_a_lipsync_pending_audio", None)
@@ -3036,6 +3044,8 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             qa_dir = _app.event_dir / f"phase_a_lipsync_qa_{Path(_out_name).stem}"
             extract_qa_frames(_out_path, qa_dir)
 
+            delivery_meta = _finalize_phase_a_lipsync_delivery(_out_path, method=_method)
+
             _cur_gen = getattr(_app, "event_generation", None)
             _pin_gen = _pin_captured.get("pinned_generation")
             _cur_dir = getattr(_app, "event_dir", None)
@@ -3068,7 +3078,7 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
 
             def _apply_done(st,
                            _n=_out_name, _m=mtime, _bid=_base_clip_id, _meth=_method,
-                           _qa=str(qa_dir), _gap=av_gap_s):
+                           _qa=str(qa_dir), _gap=av_gap_s, _meta=delivery_meta):
                 for key, val in (
                     ("phase_a_lipsync_file", _n),
                     ("phase_a_lipsync_mtime", _m),
@@ -3076,6 +3086,8 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
                     ("phase_a_lipsync_method", _meth),
                     ("phase_a_lipsync_qa_dir", _qa),
                     ("phase_a_lipsync_av_gap_s", round(_gap, 3)),
+                    ("phase_a_lipsync_delivery_profile", _meta.get("delivery_profile")),
+                    ("phase_a_lipsync_delivery_recipe", _meta.get("delivery_recipe")),
                 ):
                     st[key] = val
                     nested = st.setdefault("phase_a", {})
@@ -3508,6 +3520,29 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
             "The storyboard will auto-update when done."
         ),
     })
+
+def _finalize_phase_a_lipsync_delivery(out_path: Path, *, method: str) -> dict:
+    """V2 letterbox delivery encode — parity with Phase B module lipsync terminal write."""
+    from phase_module_lipsync_delivery import (  # noqa: PLC0415
+        PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+        finalize_phase_module_lipsync_delivery,
+    )
+
+    meta = finalize_phase_module_lipsync_delivery(
+        out_path,
+        sharpen=True,
+        delivery_recipe=PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+        lipsync_method=method,
+    )
+    print(
+        f"[phase_a_lipsync] delivery encode ✓ "
+        f"{meta.get('raw_width')}x{meta.get('raw_height')} → "
+        f"{meta.get('width')}x{meta.get('height')} "
+        f"({meta.get('delivery_recipe')})",
+        flush=True,
+    )
+    return meta
+
 
 def _write_phase_b_lipsync_complete(
     app,

@@ -27,7 +27,6 @@ from phase_a_av_post import (  # noqa: E402
     pad_video_to_match_audio,
     trim_av_lead_in,
     trim_av_trailing_silence,
-    upscale_lipsync_to_bookend,
 )
 from phase_a_chipper_bytedance_lipsync import (  # noqa: E402
     reconcat_bytedance_segments_with_gaps,
@@ -163,8 +162,9 @@ def run_phase_a_base_clip_bytedance_lipsync(
         resume=resume,
     )
 
-    bd_up = work / f"bytedance_bookend_{tag}.mp4"
-    upscale_lipsync_to_bookend(bd_raw, bd_up)
+    # 16:9 module bases: skip legacy 4:3 bookend (1660×1244) — distorts wide stills.
+    # Terminal delivery encode → 1280×720 runs in handle_phase_a_lipsync after A/V trim.
+    bd_up = bd_raw
 
     padded = work / f"bytedance_padded_{tag}.mp4"
     _, pad_s = pad_video_to_match_audio(bd_up, padded)
@@ -214,8 +214,8 @@ def run_phase_a_base_clip_bytedance_lipsync(
         "output": out_path.name,
         "method": method_key,
         "zoom": False,
-        "upscale_bookend": True,
-        "bookend_resolution": "1660x1244",
+        "upscale_bookend": False,
+        "bookend_resolution": "skipped_for_module_delivery_v2",
         "kling_lipsync": False,
         "note": "Permanent middle — ByteDance face-sync only; no Kling LipSync body regen",
     }
