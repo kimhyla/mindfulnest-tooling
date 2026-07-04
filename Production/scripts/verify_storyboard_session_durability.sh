@@ -59,6 +59,7 @@ run "$SCRIPTS/verify_bg_scope_activation_cold_boot_durability.sh"
 run "$SCRIPTS/verify_bg_session_read_path_durability.sh"
 run "$SCRIPTS/verify_o3_trim_overlay_durability.sh"
 run "$SCRIPTS/verify_kling_stitch_readiness_durability.sh"
+run "$SCRIPTS/verify_bg_stitch_export_preflight_durability.sh"
 run "$SCRIPTS/verify_authority_registry_durability.sh"
 
 export PYTHONPATH="${ROOT}/Production/tools:${ROOT}/Production:${ROOT}${PYTHONPATH:+:${PYTHONPATH}}"

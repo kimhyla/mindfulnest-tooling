@@ -86,6 +86,40 @@ def test_enrich_beat_operator_derived_still_scene(tmp_path: Path):
     assert derived["option_slots"][0]["video_path"] == "/tmp/v1.mp4"
 
 
+def test_enrich_beat_operator_derived_stitch_export(tmp_path: Path):
+    clip = tmp_path / "still.mp4"
+    clip.write_bytes(b"mp4")
+    beat = {
+        "beat_id": "bg_arc1_event5_pre_beat_06",
+        "pipeline": "still_insert",
+        "kling_o3_status": "still_rendered",
+        "kling_o3_video_path": str(clip),
+    }
+    sidecar = {"arcs": {}}
+    derived = owc.enrich_beat_operator_derived(
+        beat,
+        sidecar,
+        event_id="5",
+        phase="pre",
+        event_dir=tmp_path,
+        approved_roots=[],
+    )
+    assert derived["stitch_export_ready"] is False
+    assert derived["stitch_export_block_label"] == "Approve still clip"
+    assert "Approve still for stitch" in (derived["stitch_export_fix_instruction"] or "")
+    beat["kling_o3_still_stitch_approved"] = True
+    derived2 = owc.enrich_beat_operator_derived(
+        beat,
+        sidecar,
+        event_id="5",
+        phase="pre",
+        event_dir=tmp_path,
+        approved_roots=[],
+    )
+    assert derived2["stitch_export_ready"] is True
+    assert derived2["stitch_export_block_label"] is None
+
+
 def test_materialize_o3_submit_refs_uses_char_default(tmp_path: Path, monkeypatch):
     char = tmp_path / "lorelai.png"
     char.write_bytes(b"png")

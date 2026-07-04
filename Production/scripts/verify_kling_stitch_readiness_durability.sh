@@ -30,6 +30,11 @@ fi
 grep -q 'beat_kling_stitch_export_ready' "$TOOLS/beat_generator.py" \
   || fail "beat_has_stitch_export_clip must delegate to contract module"
 
+grep -q 'beat_stitch_export_derived_fields' "$TOOLS/operator_workbench_contract.py" \
+  || fail "operator_workbench_contract missing stitch derived enrich"
+grep -q 'stitch_export_ready' "$TOOLS/kling_stitch_readiness.py" \
+  || fail "kling_stitch_readiness missing stitch_export_ready derived fields"
+
 GUARD="$ROOT/Production/scripts/check_storyboard_critical_features.sh"
 grep -q 'KLING_STITCH_READINESS' "$GUARD" || fail "regression guard missing KLING_STITCH_READINESS marker"
 

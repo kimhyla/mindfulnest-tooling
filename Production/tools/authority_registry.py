@@ -103,10 +103,16 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
                 r"kling_o3_status\s*===?\s*['\"]approved['\"]",
                 "export gate must use beatKlingStitchExportReady only",
             ),
+            ForbiddenClientGate(
+                "storyboard-v2/src/components/BgTab.tsx",
+                r"isStitchApproved\s*=\s*klingO3Status\s*===?\s*['\"]approved['\"]",
+                "option tile stitch approved styling must use stitchExportReady",
+            ),
         ),
         server_delegation=(
             ("beat_generator.py", "beat_kling_stitch_export_ready"),
-            ("server_handlers/kling_o3.py", "beat_has_stitch_export_clip"),
+            ("server_handlers/kling_o3.py", "build_bg_stitch_export_preflight_manifest"),
+            ("bg_stitch_export_preflight.py", "build_bg_stitch_export_preflight_manifest"),
         ),
     ),
     AuthorityConcept(

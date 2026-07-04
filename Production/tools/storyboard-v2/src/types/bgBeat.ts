@@ -30,6 +30,9 @@ export type BgBeatDerived = {
   option_slots?: (GptOption | null)[];
   element_char_ref_ok?: boolean;
   element_char_ref_error?: string;
+  stitch_export_ready?: boolean;
+  stitch_export_block_label?: string | null;
+  stitch_export_fix_instruction?: string | null;
 };
 
 export interface BgBeat {

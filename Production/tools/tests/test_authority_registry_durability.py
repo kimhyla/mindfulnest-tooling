@@ -76,6 +76,7 @@ class AuthorityRegistryDurabilityTests(unittest.TestCase):
         session = SESSION_SH.read_text(encoding="utf-8")
         self.assertIn("verify_authority_registry_durability.sh", session)
         self.assertIn("verify_kling_stitch_readiness_durability.sh", session)
+        self.assertIn("verify_bg_stitch_export_preflight_durability.sh", session)
 
 
     def test_audit_script_wired(self):

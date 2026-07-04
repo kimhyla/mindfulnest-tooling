@@ -76,7 +76,10 @@ import {
 } from './BeatMagicButtons';
 import {
   allBeatsStitchExportReady,
+  beatStitchExportReadyFromBeat,
   stitchExportBlockTooltip,
+  stitchExportPreflightErrorMessage,
+  type BgStitchExportPreflightResult,
 } from '../utils/bgStitchExport';
 import {
   beatHasActiveO3DeliveryClip,
@@ -3054,8 +3057,41 @@ export function BgTab() {
     if (!activeSegment || !allBeatsExportReady || stitcherExportStatus !== 'idle') return;
     const { event_id, phase } = segmentCtx();
     setStitcherExportStatus('submitting');
-    setExportProgressMessage('Submitting export…');
+    setExportProgressMessage('Checking export readiness…');
     try {
+      const preflight = await apiGet<BgStitchExportPreflightResult>(
+        'bg_export_to_stitcher_preflight',
+        {
+          ...activeScopeQueryParams(),
+          scope_phase: phase,
+          scope_arc_number: String(arcNumber),
+          arc_number: String(arcNumber),
+          event_id,
+          phase,
+          slot_key: stitchSlotForSegment,
+        },
+      );
+      if (!preflight.ok || !preflight.data) {
+        pushToast({
+          kind: 'error',
+          message: `Send to Stitcher preflight failed: ${preflight.error ?? `HTTP ${preflight.status}`}`,
+          source: 'bg-kling-export-preflight-error',
+        });
+        setStitcherExportStatus('idle');
+        setExportProgressMessage('');
+        return;
+      }
+      if (!preflight.data.ready) {
+        pushToast({
+          kind: 'error',
+          message: stitchExportPreflightErrorMessage(preflight.data),
+          source: 'bg-kling-export-preflight-blocked',
+        });
+        setStitcherExportStatus('idle');
+        setExportProgressMessage('');
+        return;
+      }
+      setExportProgressMessage('Submitting export…');
       const result = await pathappPatch<BgExportPollResult>(
         activeScope.value,
         'bg_export_to_stitcher',
@@ -4497,7 +4533,8 @@ function BeatGenCard({
             onRefresh={onRefresh}
             onPatchOptionTile={onPatchOptionTile}
             stillInsert={stillInsert}
-            klingO3Status={beat.kling_o3_status ?? null}
+            stitchExportReady={beatStitchExportReadyFromBeat(beat)}
+            stillStitchApproved={!!beat.kling_o3_still_stitch_approved}
             videoCacheKey={`${opt?.key ?? i}|${opt?.video_path ?? ''}|${beat.kling_o3_selected_at ?? beat.beat_id}`}
             onApproveStill={(optionKey) => onApproveStill(optionKey)}
             cutStartS={opt?.cut_start_s ?? 0}
@@ -4859,16 +4896,18 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
   showReplaceOnRegen: boolean;
   overrideVideoUrl?: string | null;
   stillInsert?: boolean;
-  klingO3Status?: string | null;
+  stitchExportReady?: boolean;
+  stillStitchApproved?: boolean;
   videoCacheKey?: string;
   onApproveStill?: (optionKey: string) => void;
 }
 
 function BgOptionTile({
   beatIndex, optionIndex, option, selected, onClick, beatId, onRefresh, onPatchOptionTile,
-  cutStartS: _cutStartS, cutEndS: _cutEndS, trimStartS = 0, trimBackS = 0, onApplyO3Cut, trimStart, trimBack, onApplyO3Trim: _onApplyO3Trim,
+  cutStartS: _cutStartS, cutEndS: _cutEndS, trimStartS = 0, trimBackS = 0, onApplyO3Cut, trimStart, trimBack, onApplyO3Trim,
   replaceSelected, onSetReplaceSlot, showReplaceOnRegen,
-  overrideVideoUrl, stillInsert, klingO3Status, videoCacheKey, onApproveStill,
+  overrideVideoUrl, stillInsert, stitchExportReady = false, stillStitchApproved = false,
+  videoCacheKey, onApproveStill,
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
@@ -5007,9 +5046,9 @@ function BgOptionTile({
   // Without this gate the click silently no-ops or 400s server-side because
   // bg_accept_option requires option_key on the wire.
   const keyMissing = !option.key;
-  const isStitchApproved = klingO3Status === 'approved';
   const hasClipVideo = !!option.video_path;
-  const isStillDraft = !!stillInsert && hasClipVideo && !isStitchApproved;
+  const isStitchApproved = !!stitchExportReady && hasClipVideo;
+  const isStillDraft = !!stillInsert && hasClipVideo && !stillStitchApproved && !stitchExportReady;
   const optionLabel = displayO3OptionLabel(option)
     || (isStitchApproved
     ? 'approved O3 video'
@@ -5586,11 +5625,9 @@ function BgOptionTile({
       return;
     }
     clearTrimPlaybackListener(videoRef.current);
-    const applied = await onApplyO3Cut(
-      optionIndex,
+    const applied = await onApplyO3Trim(
       trimStartValue(),
       trimBackValue() > 0 ? trimBackValue() : null,
-      cutTargetOpts,
     );
     if (applied?.rawDurationS != null && applied.rawDurationS > 0) {
       rawDurationRef.current = applied.rawDurationS;
@@ -5630,7 +5667,7 @@ function BgOptionTile({
       video.src = canonicalVideoUrl;
       video.load();
     }
-    await onApplyO3Cut(optionIndex, 0, null, { clear: true, ...cutTargetOpts });
+    await onApplyO3Trim(0, null, true);
   };
 
   return (

@@ -316,6 +316,7 @@ def enrich_beat_operator_derived(
     *,
     event_id: str,
     phase: str,
+    event_dir: str | Path | None = None,
     approved_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     """Read-only derived block for session GET — never mutates beat operator fields."""
@@ -330,6 +331,10 @@ def enrich_beat_operator_derived(
         "bg_ref_display": resolve_beat_bg_ref_display(beat, event_id, phase, approved_roots),
         "option_slots": option_slots,
     }
+    if event_dir is not None:
+        from kling_stitch_readiness import beat_stitch_export_derived_fields  # noqa: PLC0415
+
+        derived.update(beat_stitch_export_derived_fields(beat, event_dir))
     return derived
 
 
@@ -357,6 +362,7 @@ def enrich_beats_for_session_response(
             sidecar,
             event_id=event_id,
             phase=phase,
+            event_dir=event_dir,
             approved_roots=approved_roots,
         )
         row["generation_mode"] = row["_derived"]["generation_mode"]

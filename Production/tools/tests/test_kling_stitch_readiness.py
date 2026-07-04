@@ -77,6 +77,38 @@ class KlingStitchReadinessTests(unittest.TestCase):
             self.assertEqual(beat["kling_o3_status"], "approved")
             self.assertEqual(beat["kling_o3_video_path"], str(clip.resolve()))
 
+    def test_finalize_still_preserves_stitch_approve_on_same_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            clip = tmp_path / "still.mp4"
+            clip.write_bytes(b"x")
+            beat = {
+                "beat_id": "bg_still",
+                "pipeline": "still_insert",
+                "kling_o3_video_path": str(clip),
+                "kling_o3_still_stitch_approved": True,
+                "kling_o3_still_stitch_approved_at": "2026-07-04T00:00:00Z",
+            }
+            finalize_kling_delivery_clip(beat, str(clip), still_insert=True)
+            self.assertTrue(beat.get("kling_o3_still_stitch_approved"))
+            self.assertEqual(beat["kling_o3_status"], "still_rendered")
+
+    def test_finalize_still_clears_stitch_approve_on_new_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            old = tmp_path / "old.mp4"
+            new = tmp_path / "new.mp4"
+            old.write_bytes(b"a")
+            new.write_bytes(b"b")
+            beat = {
+                "beat_id": "bg_still",
+                "pipeline": "still_insert",
+                "kling_o3_video_path": str(old),
+                "kling_o3_still_stitch_approved": True,
+            }
+            finalize_kling_delivery_clip(beat, str(new), still_insert=True)
+            self.assertNotIn("kling_o3_still_stitch_approved", beat)
+
     def test_beat_has_stitch_export_clip_delegates(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

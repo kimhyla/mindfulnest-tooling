@@ -6227,6 +6227,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_bg_poll_assemble_status()
             if path == "/api/bg/poll-export-to-stitcher":
                 return self._handle_bg_poll_export_to_stitcher_status()
+            if path == "/api/bg/export-to-stitcher-preflight":
+                return self._handle_bg_export_to_stitcher_preflight()
             if path.startswith("/bg-stills/"):
                 return self._handle_bg_stills(path)
             if path == "/api/bg/crop-preview":
@@ -8157,6 +8159,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_poll_export_to_stitcher_status(self) -> None:
         from server_handlers.kling_o3 import handle_bg_poll_export_to_stitcher_status
         return handle_bg_poll_export_to_stitcher_status(self)
+
+    def _handle_bg_export_to_stitcher_preflight(self) -> None:
+        from server_handlers.kling_o3 import handle_bg_export_to_stitcher_preflight
+        return handle_bg_export_to_stitcher_preflight(self)
 
     def _handle_bg_accept_option(self, body: dict) -> None:
         from server_handlers.background import handle_bg_accept_option

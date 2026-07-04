@@ -60,12 +60,15 @@ grep -q 'STITCH_SINGLE_OWNER_V1' "$TOOLS/server_handlers/stitch_editor.py" \
 echo "[authority-registry-durability] pass 3/7 — server delegation (no parallel stitch gates)"
 grep -q 'return beat_kling_stitch_export_ready' "$TOOLS/beat_generator.py" \
   || fail "beat_has_stitch_export_clip must delegate to kling_stitch_readiness"
-grep -q 'beat_has_stitch_export_clip' "$TOOLS/server_handlers/kling_o3.py" \
-  || fail "kling_o3 export must use beat_has_stitch_export_clip"
+grep -q 'build_bg_stitch_export_preflight_manifest' "$TOOLS/server_handlers/kling_o3.py" \
+  || fail "kling_o3 export must use build_bg_stitch_export_preflight_manifest"
 
 echo "[authority-registry-durability] pass 4/7 — forbidden duplicate client export predicates"
 if grep -E "kling_o3_status\s*===?\s*['\"]approved['\"]" "$SB/utils/bgStitchExport.ts" >/dev/null 2>&1; then
   fail "bgStitchExport.ts must not gate on kling_o3_status === approved (use beatKlingStitchExportReady)"
+fi
+if grep -q "isStitchApproved = klingO3Status === 'approved'" "$TOOLS/storyboard-v2/src/components/BgTab.tsx"; then
+  fail "BgTab option tile must not gate on klingO3Status === approved"
 fi
 if grep -q 'Approve Kling clip' "$TOOLS/storyboard-v2/src/components/BgTab.tsx"; then
   fail "BgTab regressed separate Approve Kling clip gate"

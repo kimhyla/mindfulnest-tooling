@@ -4,7 +4,7 @@
 //   GP.1 — beats visible (not bg-empty) when session has beats
 //   GP.2 — O3 clip tile click → POST /api/bg/select-o3-video via pathappPatch
 //   GP.3 — selection persists after mocked session refresh (poll/rehydrate regression)
-//   GP.4 — all beats approved → Send to Stitcher enabled → POST /api/bg/export-to-stitcher
+//   GP.4 — all beats approved → Send to Stitcher enabled → preflight GET → POST export-to-stitcher
 //
 // Uses mocked BG endpoints (Event_e2e_fixture shape) — no Kling vendor calls.
 
@@ -231,10 +231,27 @@ test.describe('BG_GOLDEN_PATH_V1 — Beat Gen operator chain', () => {
     await installSessionStateMock(page, beatsRef);
 
     const exportReqs: Request[] = [];
+    const preflightReqs: Request[] = [];
     page.on('request', (req) => {
+      if (req.url().includes('/api/bg/export-to-stitcher-preflight') && req.method() === 'GET') {
+        preflightReqs.push(req);
+      }
       if (req.url().includes('/api/bg/export-to-stitcher') && req.method() === 'POST') {
         exportReqs.push(req);
       }
+    });
+
+    await page.route('**/api/bg/export-to-stitcher-preflight**', async (r) => {
+      await r.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          ok: true,
+          ready: true,
+          slot_key: 'intro',
+          beats: [{ beat_id: 'beat_gp_04', ready: true }],
+        }),
+      });
     });
 
     await page.route('**/api/bg/export-to-stitcher', async (r) => {
@@ -264,6 +281,7 @@ test.describe('BG_GOLDEN_PATH_V1 — Beat Gen operator chain', () => {
     await expect(exportBtn).toBeEnabled({ timeout: 5_000 });
     await exportBtn.click();
 
+    await expect.poll(() => preflightReqs.length).toBeGreaterThanOrEqual(1);
     await expect.poll(() => exportReqs.length).toBeGreaterThanOrEqual(1);
     const body = JSON.parse(exportReqs[0]!.postData() ?? '{}');
     expect(body.slot_key).toBe('intro');

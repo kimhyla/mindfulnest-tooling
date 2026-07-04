@@ -91,12 +91,15 @@ export function o3PollResultHasVideo(res: ArloO3PollResponse): boolean {
 export function beatPatchFromO3PollTerminal(
   beatId: string,
   res: ArloO3PollResponse,
+  existing?: Pick<BgBeat, 'pipeline' | 'beat_render_mode'> | null,
 ): BgBeat | null {
   if (res.beat?.beat_id) return res.beat as BgBeat;
   if (res.status !== 'done' && res.status !== 'done_with_warning' && res.status !== 'failed') {
     return null;
   }
   const video = res.result?.video ?? res.terminal?.delivered?.video_path ?? null;
+  const stillInsert = existing?.pipeline === 'still_insert'
+    || existing?.beat_render_mode === 'still_insert';
   const patch: BgBeat = {
     beat_id: beatId,
     job_busy: false,
@@ -106,8 +109,13 @@ export function beatPatchFromO3PollTerminal(
     patch.kling_o3_voice_fix_status = 'failed';
   } else {
     patch.kling_o3_voice_fix_status = 'approved';
-    patch.kling_o3_status = 'approved';
-    patch.status = 'approved';
+    if (stillInsert) {
+      patch.kling_o3_status = 'still_rendered';
+      patch.status = 'draft';
+    } else {
+      patch.kling_o3_status = 'approved';
+      patch.status = 'approved';
+    }
   }
   if (video) {
     patch.kling_o3_video_path = video;

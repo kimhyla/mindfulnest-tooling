@@ -1,5 +1,6 @@
 /** Beat Gen — per-beat readiness for Send to Stitcher (mirrors backend gate). */
 
+import type { BgBeatDerived } from '../types/bgBeat';
 import {
   beatKlingStitchExportReady,
   o3JobBlocksStitchExport,
@@ -7,21 +8,35 @@ import {
   type KlingStitchReadinessBeat,
 } from './klingStitchReadiness';
 
-export type BgBeatStitchFields = KlingStitchReadinessBeat & { beat_id: string };
+export type BgBeatStitchFields = KlingStitchReadinessBeat & {
+  beat_id: string;
+  _derived?: BgBeatDerived;
+};
 
 export function shortBeatLabel(beatId: string): string {
   const m = beatId.match(/beat_(\d+)/);
   return m ? `beat ${m[1]}` : beatId;
 }
 
+/** Prefer server _derived.stitch_export_ready when present (session GET / O3 poll). */
+export function beatStitchExportReadyFromBeat(b: BgBeatStitchFields): boolean {
+  const derived = b._derived;
+  if (typeof derived?.stitch_export_ready === 'boolean') {
+    return derived.stitch_export_ready;
+  }
+  return beatKlingStitchExportReady(b);
+}
+
 /** True when this beat can be included in segment stitch export. */
 export function beatStitchExportReady(b: BgBeatStitchFields): boolean {
-  return beatKlingStitchExportReady(b);
+  return beatStitchExportReadyFromBeat(b);
 }
 
 /** Short UI label for what's blocking this beat, or null when ready. */
 export function beatStitchExportBlockLabel(b: BgBeatStitchFields): string | null {
-  if (beatStitchExportReady(b)) return null;
+  if (beatStitchExportReadyFromBeat(b)) return null;
+  const derived = b._derived?.stitch_export_block_label;
+  if (derived) return derived;
   if (b.magic_still_path && b.magic_still_path_exists === false) {
     return 'Magic still file missing';
   }
@@ -35,7 +50,49 @@ export function beatStitchExportBlockLabel(b: BgBeatStitchFields): string | null
 }
 
 export function allBeatsStitchExportReady(beats: BgBeatStitchFields[]): boolean {
-  return beats.length > 0 && beats.every(beatStitchExportReady);
+  return beats.length > 0 && beats.every(beatStitchExportReadyFromBeat);
+}
+
+export interface BgStitchExportPreflightBeat {
+  beat_id?: string;
+  beat_label?: string;
+  ready?: boolean;
+  block_code?: string;
+  block_label?: string;
+  fix_instruction?: string;
+  resolved_clip_basename?: string | null;
+}
+
+export interface BgStitchExportPreflightResult {
+  code?: string;
+  ok?: boolean;
+  ready?: boolean;
+  slot_key?: string;
+  beats?: BgStitchExportPreflightBeat[];
+  segment_errors?: Array<{
+    code?: string;
+    beat_id?: string;
+    message?: string;
+    fix_instruction?: string;
+  }>;
+}
+
+/** Operator toast text when preflight fails — one fix sentence per blocker. */
+export function stitchExportPreflightErrorMessage(preflight: BgStitchExportPreflightResult): string {
+  const parts: string[] = [];
+  for (const beat of preflight.beats ?? []) {
+    if (beat.ready) continue;
+    const fix = beat.fix_instruction?.trim() || beat.block_label?.trim();
+    if (fix) parts.push(fix);
+  }
+  for (const err of preflight.segment_errors ?? []) {
+    const fix = err.fix_instruction?.trim() || err.message?.trim();
+    if (fix) parts.push(fix);
+  }
+  if (parts.length === 0) {
+    return "Segment isn't ready for Send to Stitcher yet.";
+  }
+  return parts.join(' ');
 }
 
 /** Tooltip for disabled Send to Stitcher — lists blocking beats by name. */
