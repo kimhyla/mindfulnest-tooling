@@ -426,6 +426,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setBaseClips([]);
   }, [activeScope.value.event_id, phase]);
 
+  // Lazy catalog for base-clip <select> — not in refreshAll (OPERATOR_SESSION_PERF_V1).
+  useEffect(() => {
+    void ensureBaseClipsLoaded();
+  }, [activeScope.value.event_id, phase]);
+
   useEffect(() => {
     let cancelled = false;
     (async () => { if (!cancelled) await refreshAll(); })();
@@ -544,8 +549,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const onSendForLipsync = async () => {
     const lipsyncClipId =
       phase === 'a'
-        ? stateSlice.chipper_sitting_clip_id ?? baseClipPicker.selectedClipId
-        : baseClipPicker.selectedClipId ?? stateSlice.cedric_base_clip_id;
+        ? baseClipPicker.selectedClipId || stateSlice.chipper_sitting_clip_id
+        : baseClipPicker.selectedClipId || stateSlice.cedric_base_clip_id;
     if (!lipsyncClipId) {
       setStatusMsg(
         phase === 'a'
@@ -1024,6 +1029,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const showRejectLipsync =
     Boolean(lipsyncFile) &&
     !lipsyncInFlight;
+  const effectiveBaseClipId =
+    phase === 'a'
+      ? baseClipPicker.selectedClipId || stateSlice.chipper_sitting_clip_id || ''
+      : baseClipPicker.selectedClipId || stateSlice.cedric_base_clip_id || '';
   const hasStemCut = stemCut.hasStemCut;
   const terminalLipsyncBanner = phaseLipsyncTerminalBanner(stateSlice.lipsync_status);
   const displayStatusMsg =
@@ -1303,7 +1312,8 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           <select
             id={`phase-${phase}-baseclip`}
             data-testid={`phase-${phase}-baseclip-select`}
-            value={baseClipPicker.selectedClipId}
+            value={effectiveBaseClipId}
+            onFocus={() => { void ensureBaseClipsLoaded(); }}
             onChange={(e: Event) => {
               const clipId = (e.target as HTMLSelectElement).value;
               void baseClipPicker.pickClip(
@@ -1327,7 +1337,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             disabled={
               busyAction !== null ||
               lipsyncInFlight ||
-              !baseClipPicker.selectedClipId ||
+              !effectiveBaseClipId ||
               !stateSlice.voice_stem_file
             }
             title="Kling Sync (Phase B) or ByteDance on base clip (Phase A). Long Phase B stems split at 28s silence chunks."
