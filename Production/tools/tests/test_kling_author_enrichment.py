@@ -472,6 +472,39 @@ def test_audit_skips_emotion_for_stage_direction():
     assert bg.audit_kling_author_enrichment(beats) == []
 
 
+def test_event5_legacy_beat1_normalize_passes_author_audit():
+    """Legacy [Stage Direction] cold-open row coerces to Benson dialogue before approve audit."""
+    from beat_extract_policy import (
+        normalize_plan_row,
+        postprocess_kling_author_results,
+        synthesize_kling_author_prompt_for_plan_row,
+    )
+
+    legacy = {
+        "beat_index": 1,
+        "beat_type": "stage_direction",
+        "speaker": "[Stage Direction]",
+        "dialogue_text": (
+            "[Cold open: baby bunny nose pokes from burrow — HICCUP — eyes wide, "
+            "ears shoot up, dives back. Repeats once. Physical comedy, no dialogue.]"
+        ),
+        "emotion": "neutral",
+        "scene_notes": "",
+    }
+    row, _ = normalize_plan_row(legacy, beat_index=1)
+    assert row["beat_type"] == "dialogue"
+    assert row["speaker"] == "Benson"
+    prompts, enriched, _warnings = postprocess_kling_author_results(
+        [row], {1: synthesize_kling_author_prompt_for_plan_row(row)},
+    )
+    beats = bg.build_beats_from_approved_plan(
+        enriched, prompts, arc_number=1, event_id="5", phase="pre",
+    )
+    bg.resync_kling_author_prompts_pre_audit(beats)
+    scope = bg._beat_ids_for_extract_plan(enriched, arc_number=1, event_id="5", phase="pre")
+    assert bg.audit_kling_author_enrichment(beats, scope_beat_ids=scope) == []
+
+
 def test_emotion_reflected_splits_em_dash_compounds():
     prompt = (
         "@Image1 (Arlo) Arlo — Discovery. Scene from @Image2.\n\n"

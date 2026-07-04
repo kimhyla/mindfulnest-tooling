@@ -206,7 +206,7 @@ flowchart TD
 ```json
 {
   "beat_index": 1,
-  "beat_type": "dialogue | stage_direction",
+  "beat_type": "dialogue | stage_still",
   "speaker": "Guide Bird",
   "dialogue_text": "verbatim or [CLAUDE INVENTED] bridge",
   "emotion": "warm",
@@ -222,7 +222,8 @@ flowchart TD
 - Minimum necessary beats — **soft target 6–15** for intro-type videos; fewer OK when skeleton is thin.
 - **Verbatim skeleton quotes** where used; tag bridges with `[CLAUDE INVENTED]` in `dialogue_text` or `invented: true`.
 - Not every skeleton quote must become a beat — compress/reorder for video pacing.
-- **Stage direction beats allowed** (`beat_type: stage_direction`) — e.g. camera pans, magic disperses, runestone lights.
+- **Action / physical-comedy beats** use `beat_type: dialogue` with a **named character** speaker (e.g. Benson) and action in `scene_notes` or parenthetical `dialogue_text` — not `[Stage Direction]` or `stage_direction`.
+- **`stage_still` only** for inscription / runestone / MindfulNest GPT still inserts.
 - Do **not** emit full `kling_o3_prompt` in Phase A.
 
 ### Phase B — Approve (populate Beat Gen)
@@ -242,7 +243,7 @@ flowchart TD
 
 - Output **rich** multi-line `kling_o3_prompt` matching Event 1 quality: `@Image1 (Speaker) … Scene from @Image2`, camera lock, voice block, storybook style tail.
 - Reuse `prepare_kling_o3_prompt_for_submit` normalization after generation.
-- Stage-direction beats: speaker `Narrator` or `Scene` with action-only prompt body.
+- Action-only dialogue beats: named speaker + `scene_notes` staging; parenthetical performance in `dialogue_text` when there is no spoken line.
 
 ---
 

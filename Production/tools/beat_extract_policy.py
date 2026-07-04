@@ -252,7 +252,7 @@ def _simplify_staging(scene_notes: str, *, beat_type: str) -> tuple[str, list[st
     notes = (scene_notes or "").strip()
     if not notes:
         return notes, warnings
-    if beat_type in ("stage_still", "stage_direction"):
+    if beat_type == "stage_still":
         return apply_cast_text(notes), warnings
     if _BANNED_STAGING_RE.search(notes):
         warnings.append(f"banned staging simplified: {notes[:80]}...")
@@ -321,26 +321,67 @@ def strip_plan_scene_notes_for_editor(
     return notes[:500]
 
 
+_ACTION_CAST_NAME_RE = re.compile(
+    r"\b(Benson|Oliver|Tessa|Lorelai|Loral|Arlo|Ember|Bramble)\b",
+    re.I,
+)
+_COLD_OPEN_PREFIX_RE = re.compile(
+    r"^\[(?:cold open|stage direction|video intro)[:\s-]*",
+    re.I,
+)
+
+
+def _infer_speaker_from_action_text(text: str) -> str | None:
+    m = _ACTION_CAST_NAME_RE.search(text or "")
+    if m:
+        return canon_plan_speaker(m.group(1))
+    return None
+
+
+def _coerce_legacy_action_beat(
+    dialogue: str,
+    scene_notes: str,
+) -> tuple[str, str, str]:
+    """Legacy ``[Stage Direction]`` plan rows → named-character dialogue beats."""
+    d = (dialogue or "").strip()
+    s = (scene_notes or "").strip()
+    if not d and s:
+        d, s = s, ""
+
+    inferred = _infer_speaker_from_action_text(d) or _infer_speaker_from_action_text(s)
+    if inferred:
+        return inferred, d, s
+
+    if not d:
+        return "Character", d, s
+
+    action = _COLD_OPEN_PREFIX_RE.sub("", d).strip("[] ").strip()
+    if action and not s:
+        s = action
+    perf = "(physical comedy — no spoken dialogue)"
+    lower = action.lower()
+    if "hiccup" in lower:
+        perf = "(hiccup — nose pokes from burrow, eyes wide, dives back; repeats)"
+    if re.search(r"\bbaby bunny\b|\bbunny nose\b", action, re.I):
+        return "Benson", perf, s
+    return "Character", perf, s
+
+
 def classify_beat_type(row: dict) -> str:
+    """Plan rows are ``dialogue`` (Kling O3 clip) or ``stage_still`` (GPT still) only."""
     bt = str(row.get("beat_type") or "dialogue").strip().lower()
-    speaker = str(row.get("speaker") or "").strip().lower()
     scene = str(row.get("scene_notes") or "")
     dialogue = str(row.get("dialogue_text") or "").strip()
     combined = f"{scene} {dialogue}".lower()
 
-    if bt in ("stage_still", "stage_direction", "dialogue"):
-        if bt == "stage_direction" and _STILL_INSERT_RE.search(combined):
+    if bt == "stage_still":
+        return "stage_still"
+    if _STILL_INSERT_RE.search(combined):
+        if not dialogue or bt in ("stage_still", "stage_direction"):
             return "stage_still"
-        if bt == "stage_still":
-            return "stage_still"
-        if speaker in ("[stage direction]", "stage direction", "scene"):
-            if _STILL_INSERT_RE.search(combined) or not dialogue:
-                return "stage_still"
-            return "stage_direction"
     if _STILL_INSERT_RE.search(combined) and not dialogue:
         return "stage_still"
-    if speaker in ("[stage direction]", "stage direction"):
-        return "stage_direction"
+    # Legacy stage_direction and [Stage Direction] speaker → dialogue (same Kling lane).
     return "dialogue"
 
 
@@ -349,16 +390,22 @@ def normalize_plan_row(row: dict, *, beat_index: int) -> tuple[dict, list[str]]:
     beat_type = classify_beat_type(row)
     speaker_raw = apply_cast_text(str(row.get("speaker") or "Character").strip())
     speaker = canon_plan_speaker(speaker_raw)
+    dialogue = apply_cast_text(str(row.get("dialogue_text") or "").strip())
+    scene_notes_raw = apply_cast_text(str(row.get("scene_notes") or "").strip())
+
+    if beat_type == "stage_still":
+        speaker = "[Stage Direction]"
+    elif speaker.lower() in ("[stage direction]", "stage direction", "scene"):
+        speaker, dialogue, scene_notes_raw = _coerce_legacy_action_beat(
+            dialogue, scene_notes_raw,
+        )
+
     if speaker == "Character":
-        inferred = infer_speaker_from_dialogue(str(row.get("dialogue_text") or ""))
+        inferred = infer_speaker_from_dialogue(dialogue)
         if inferred:
             speaker = inferred
-    if beat_type in ("stage_still", "stage_direction"):
-        speaker = "[Stage Direction]"
-
-    dialogue = apply_cast_text(str(row.get("dialogue_text") or "").strip())
     emotion = _strip_bracket_emotion(apply_cast_text(str(row.get("emotion") or "neutral").strip()) or "neutral")
-    scene_notes, w = _simplify_staging(str(row.get("scene_notes") or ""), beat_type=beat_type)
+    scene_notes, w = _simplify_staging(scene_notes_raw, beat_type=beat_type)
     warnings.extend(w)
     if beat_type == "dialogue":
         scene_notes = strip_plan_scene_notes_for_editor(
