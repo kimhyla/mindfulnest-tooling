@@ -8068,6 +8068,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_bg_add_element_pose
         return handle_bg_add_element_pose(self, body)
 
+    def _handle_bg_set_element_identity(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_set_element_identity
+        return handle_bg_set_element_identity(self, body)
+
     def _handle_bg_reorder_beats(self, body: dict) -> None:
         from server_handlers.background import handle_bg_reorder_beats
         return handle_bg_reorder_beats(self, body)

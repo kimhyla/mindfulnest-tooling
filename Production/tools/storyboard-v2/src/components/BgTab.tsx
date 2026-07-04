@@ -3884,8 +3884,7 @@ interface BeatGenCardProps {
   onRemoveRef: (refField: 'reference_image' | 'bg_ref_image', label: string) => void;
   onAlignElementRef?: () => void;
   onAddElementPose: () => void;
-  onSetElementIdentity?: () => void;
-  onSetElementIdentity?: () => void;
+  onSetElementIdentity: () => void;
   // 2026-05-11 fix — parent refreshState() threaded into BgRefSlot + BgOptionTile.
   onRefresh: () => void;
   onBeatMissing: (beatId: string) => void | Promise<void>;
