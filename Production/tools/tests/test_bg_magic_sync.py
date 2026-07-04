@@ -84,6 +84,10 @@ def test_stitch_export_prefers_newer_magic_still_when_both_present(tmp_path):
 
     event_dir = tmp_path / "Event_1"
     event_dir.mkdir()
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
+    kling = event_dir / "kling.mp4"
+    kling.write_bytes(b"k")
     magic_video = event_dir / "magic_video_beat_21.mp4"
     magic_still = event_dir / "magic_still_beat_21.mp4"
     magic_video.write_bytes(b"mv")
@@ -95,8 +99,11 @@ def test_stitch_export_prefers_newer_magic_still_when_both_present(tmp_path):
         "beat_id": "bg_arc1_event1_post_beat_21",
         "kling_o3_status": "still_rendered",
         "pipeline": "still_insert",
+        "kling_o3_video_path": str(kling),
         "magic_video_path": magic_video.name,
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
     }
     chosen = bg.resolve_beat_stitch_export_clip_path(beat, event_dir, tmp_path / "scratch")
     assert chosen == magic_still.resolve()
@@ -108,6 +115,10 @@ def test_stitch_export_prefers_newer_magic_video_when_o3_approved(tmp_path):
 
     event_dir = tmp_path / "Event_1"
     event_dir.mkdir()
+    kling = event_dir / "kling.mp4"
+    kling.write_bytes(b"k")
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
     magic_video = event_dir / "magic_video_beat_01.mp4"
     magic_still = event_dir / "magic_still_beat_01.mp4"
     magic_video.write_bytes(b"mv")
@@ -118,8 +129,12 @@ def test_stitch_export_prefers_newer_magic_video_when_o3_approved(tmp_path):
     beat = {
         "beat_id": "bg_arc1_event1_post_beat_01",
         "kling_o3_status": "approved",
+        "kling_o3_video_path": str(kling),
         "magic_video_path": magic_video.name,
+        "magic_video_source_path": str(kling),
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
     }
     chosen = bg.resolve_beat_stitch_export_clip_path(beat, event_dir, tmp_path / "scratch")
     assert chosen == magic_video.resolve()
@@ -287,6 +302,10 @@ def test_resolve_bg_magic_canonical_kind_video_when_video_newer(tmp_path):
 
     event_dir = tmp_path / "Event_1"
     event_dir.mkdir()
+    kling = event_dir / "kling.mp4"
+    kling.write_bytes(b"k")
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
     mv = event_dir / "magic_video_beat_01.mp4"
     ms = event_dir / "magic_still_beat_01.mp4"
     mv.write_bytes(b"v")
@@ -296,16 +315,28 @@ def test_resolve_bg_magic_canonical_kind_video_when_video_newer(tmp_path):
     os.utime(mv, (base + 50, base + 50))
     assert bg.resolve_bg_magic_canonical_kind({
         "kling_o3_status": "approved",
+        "kling_o3_video_path": str(kling),
         "magic_video_path": mv.name,
+        "magic_video_source_path": str(kling),
         "magic_still_path": ms.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
     }, event_dir) == "video"
 
 
-def test_resolve_bg_magic_canonical_kind_still_when_no_o3_video():
+def test_resolve_bg_magic_canonical_kind_still_when_no_o3_video(tmp_path):
+    event_dir = tmp_path / "Event_1"
+    event_dir.mkdir()
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
+    magic_still = event_dir / "magic_still_beat_21.mp4"
+    magic_still.write_bytes(b"ms")
     assert bg.resolve_bg_magic_canonical_kind({
         "kling_o3_status": "draft",
-        "magic_still_path": "magic_still_beat_21.mp4",
-    }) == "still"
+        "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
+    }, event_dir) == "still"
 
 
 def test_sync_partition_display_order_survives_magic_writeback_prune(monkeypatch):
@@ -369,6 +400,9 @@ def test_merge_storyboard_syncs_audio_from_display_order_beat(tmp_path):
             },
         },
     }
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
+    (event_dir / "magic_still_beat_21.mp4").write_bytes(b"ms")
     production_state = {
         "videos": {
             "resolution": {
@@ -378,16 +412,20 @@ def test_merge_storyboard_syncs_audio_from_display_order_beat(tmp_path):
                         "audio_file": "line_02_tessa.mp3",
                         "audio_duration_s": 3.6,
                         "magic_still_path": "magic_still_beat_21.mp4",
+                        "magic_still_source_path": str(still_src),
                     },
                 },
             },
         },
     }
+    sidecar_beat = sidecar["arcs"]["arc_1"]["segments"]["event_1_post"]["beats"][1]
+    sidecar_beat["accepted_library_ref"] = {"abs_path": str(still_src)}
     merged = bg.merge_storyboard_magic_into_bg_beat(
-        sidecar["arcs"]["arc_1"]["segments"]["event_1_post"]["beats"][1],
+        sidecar_beat,
         production_state,
         "resolution",
         sidecar,
+        event_dir=event_dir,
     )
     assert merged["storyboard_beat_id"] == "beat_02"
     assert merged["audio_file"] == "line_02_tessa.mp3"

@@ -4279,6 +4279,8 @@ function BeatGenCard({
         videoSourceIsAbsolute={!!magicVideoSource}
         magicStillPath={beat.magic_still_path}
         magicVideoPath={beat.magic_video_path}
+        magicStillAppliesToActive={beat.magic_still_applies_to_active === true}
+        magicVideoAppliesToActive={beat.magic_video_applies_to_active === true}
         magicCanonicalKind={beat.magic_canonical_kind ?? null}
         klingO3Status={beat.kling_o3_status ?? null}
         onPreviewMagicStill={magicStillPreviewUrl ? () => {

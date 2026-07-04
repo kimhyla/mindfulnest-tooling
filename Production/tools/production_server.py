@@ -6607,6 +6607,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_magic_still(body)
             if path == "/api/storyboard/clear_magic_still":
                 return self._handle_clear_magic_still(body)
+            if path == "/api/storyboard/clear_magic_video":
+                return self._handle_clear_magic_video(body)
             if path == "/api/storyboard/magic_video":
                 return self._handle_magic_video(body)
             if path == "/api/storyboard/switch":
@@ -7783,6 +7785,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_clear_magic_still
         return handle_clear_magic_still(self, body)
 
+    @with_pin_and_drain('_handle_clear_magic_video', track_sync=True)
+    def _handle_clear_magic_video(self, body: dict) -> None:
+        from server_handlers.background import handle_clear_magic_video
+        return handle_clear_magic_video(self, body)
+
     @with_pin_and_drain('_handle_magic_video', track_sync=True)
     def _handle_magic_video(self, body: dict) -> None:
         from server_handlers.background import handle_magic_video
@@ -8515,8 +8522,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                         # no longer points at it.
                         if _beat_state.get("magic_still_path"):
                             _beat_state["magic_still_path"] = None
+                        if _beat_state.get("magic_still_source_path"):
+                            _beat_state["magic_still_source_path"] = None
                         if _beat_state.get("magic_video_path"):
                             _beat_state["magic_video_path"] = None
+                        if _beat_state.get("magic_video_source_path"):
+                            _beat_state["magic_video_source_path"] = None
                         # Same pattern for end_frame_path: was generated using
                         # the prior start image as OpenAI input. New image
                         # means the saved end frame is no longer the right
