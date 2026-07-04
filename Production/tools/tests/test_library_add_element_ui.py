@@ -35,7 +35,16 @@ def test_library_add_element_pose_accepts_library_path_without_beat():
     block = text.split("def handle_bg_add_element_pose")[1].split("\ndef handle_bg_reorder_beats")[0]
     assert "speaker = (body.get(\"speaker\")" in block
     assert "abs_path = (body.get(\"abs_path\")" in block
-    assert "reg.add_element_pose(speaker, abs_path, wavespeed_key)" in block
+    assert "materialize_char_ref_abs_path" in block
+    assert "promote_frontal=bool(promote_frontal)" in block
+
+
+def test_bg_tab_add_element_pose_sends_display_char_ref_speaker_and_path():
+    text = (STORYBOARD / "components" / "BgTab.tsx").read_text(encoding="utf-8")
+    assert "displayCharRef(beat)" in text
+    assert "abs_path: absPath" in text
+    assert "promote_frontal: true" in text
+    assert "'bg_add_element_pose', { beat_id: beatId }" not in text
 
 
 def test_library_add_element_pose_binds_prod_root_via_init_bg_paths():

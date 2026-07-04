@@ -3837,6 +3837,9 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
     beat_id = body.get("beat_id")
     speaker = (body.get("speaker") or "").strip()
     abs_path = (body.get("abs_path") or "").strip()
+    promote_frontal = body.get("promote_frontal", True)
+    if isinstance(promote_frontal, str):
+        promote_frontal = promote_frontal.strip().lower() not in ("0", "false", "no")
     bg = _bg_module()
 
     sidecar_probe = bg._load_sidecar_migrated()
@@ -3850,10 +3853,12 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
                 error_message=f"beat {beat_id} not found",
                 retry_safe=False,
             )
-        speaker = (beat.get("speaker") or "").strip()
-        ref = beat.get("reference_image")
-        if isinstance(ref, dict):
-            abs_path = (ref.get("abs_path") or "").strip()
+        if not speaker:
+            speaker = (beat.get("speaker") or "").strip()
+    if beat:
+        from operator_workbench_contract import materialize_char_ref_abs_path
+
+        abs_path = materialize_char_ref_abs_path(beat, abs_path)
     if not speaker:
         return h._send_error_v59(
             400,
@@ -3889,7 +3894,9 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
         from server_handlers.milestone_scope import rebind_bg_paths_from_app
 
         rebind_bg_paths_from_app(h.app)
-        result = reg.add_element_pose(speaker, abs_path, wavespeed_key)
+        result = reg.add_element_pose(
+            speaker, abs_path, wavespeed_key, promote_frontal=bool(promote_frontal),
+        )
     except Exception as exc:
         return h._send_error_v59(
             500,

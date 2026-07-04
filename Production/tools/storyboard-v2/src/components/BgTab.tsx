@@ -1798,13 +1798,29 @@ export function BgTab() {
   const onAddElementPose = async (beatId: string) => {
     if (beatSaveBlockedRef.current.has(beatId)) return;
     const beat = beats.find((b) => b.beat_id === beatId);
+    const charRef = beat ? displayCharRef(beat) : null;
+    const absPath = (charRef?.abs_path ?? '').trim();
+    const speaker = (beat?.speaker ?? '').trim();
+    if (!absPath) {
+      pushToast({
+        kind: 'error',
+        message: 'No char ref image to register — drop a pose in the char ref slot first',
+        source: 'bg-add-element-pose-error',
+      });
+      return;
+    }
     const result = await pathappPatch<{
       ok: boolean;
       pose_rel?: string;
       element_id?: string;
       element_char_ref_ok?: boolean;
       element_char_ref_error?: string | null;
-    }>(activeScope.value, 'bg_add_element_pose', { beat_id: beatId });
+    }>(activeScope.value, 'bg_add_element_pose', {
+      beat_id: beatId,
+      speaker,
+      abs_path: absPath,
+      promote_frontal: true,
+    });
     if (!result.ok) {
       if (isBeatNotFoundResult(result)) {
         await handleBeatMissingOnSave(beatId);

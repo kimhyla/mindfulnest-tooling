@@ -469,7 +469,7 @@ SPECIES_DESC = {
     "Tessa":   "cartoon turtle with a warm orange shell and gentle eyes, Pixar 3D animated style",
     "Luna":    "cartoon owl with big round scholarly eyes and ruffled feathers, Pixar 3D animated style",
     "Lorelai": "cartoon raccoon scholar with bright eyes, soft fur, and scholarly glasses, Pixar 3D animated style",
-    "Benson":  "cartoon bunny with soft grey fur and a kind anxious expression, Pixar 3D animated style",
+    "Benson":  "cartoon bunny with warm brown fur and a kind anxious expression, Pixar 3D animated style",
     "Ember":   "cartoon fox with bright auburn fur and a lively curious expression, Pixar 3D animated style",
     "Bork":    "cartoon firefly with bioluminescent glow and tiny insect wings, Pixar 3D animated style",
     "Bramble": "cartoon bear with mossy brown fur and a gentle giant presence, Pixar 3D animated style",
@@ -6225,8 +6225,8 @@ _SEGMENT_BG_DEFAULTS: dict[tuple[str, str], str] = {
 # Humanoid hybrid refs at project root (June 2026). Emotion key → filename.
 _HUMANOID_CHAR_REFS: dict[str, dict[str, str]] = {
     "Benson": {
-        "default": "benson_neutral_ref.png",
-        "neutral": "benson_neutral_ref.png",
+        "default": "Production/Benson/poses/benson_pose_neutral.png",
+        "neutral": "Production/Benson/poses/benson_pose_neutral.png",
         "happy_excited": "benson_happy_excited_ref.png",
         "sad_disappointed": "benson_scared_ref.png",
         "upset_shocked": "benson_scared_ref.png",
@@ -10487,17 +10487,41 @@ def try_register_dropped_char_ref_on_element(
 
         if not reg.is_speaker_voice_ready(speaker):
             return {"ok": False, "reason": "not_voice_ready"}
+        locked_drop = bool(beat.get("reference_image_locked") and beat.get("reference_image"))
+        frontal_abs = reg.resolve_frontal_abs_path(speaker) if locked_drop else None
+        needs_frontal_promote = bool(
+            locked_drop
+            and frontal_abs
+            and os.path.normpath(char_path) != os.path.normpath(frontal_abs),
+        )
         if reg.char_ref_matches_element_images(
             char_path, speaker, allow_pose_dir_fallback=False,
         )[0]:
+            if needs_frontal_promote:
+                out = reg.add_element_pose(
+                    speaker, char_path, wavespeed_key, promote_frontal=True,
+                )
+                out["action"] = "promoted_frontal"
+                return out
             return {"ok": True, "action": "already_matched"}
         try:
             out = reg.reconcile_char_ref_with_element(speaker, char_path, wavespeed_key)
-            out["action"] = "reconciled"
+            if needs_frontal_promote:
+                out = reg.add_element_pose(
+                    speaker, char_path, wavespeed_key, promote_frontal=True,
+                )
+                out["action"] = "promoted_frontal"
+            else:
+                out["action"] = "reconciled"
             return out
         except FileNotFoundError:
-            out = reg.add_element_pose(speaker, char_path, wavespeed_key)
-            out["action"] = "added"
+            out = reg.add_element_pose(
+                speaker,
+                char_path,
+                wavespeed_key,
+                promote_frontal=needs_frontal_promote,
+            )
+            out["action"] = "added_promoted" if needs_frontal_promote else "added"
             return out
     except Exception as exc:
         return {"ok": False, "reason": str(exc)}

@@ -203,6 +203,20 @@ def migrate_operator_workbench_sidecar(sidecar: dict) -> bool:
     return changed
 
 
+def materialize_char_ref_abs_path(beat: dict, body_abs_path: str = "") -> str:
+    """Resolve absolute char-ref path for Element mutation handlers (persisted > body > implicit)."""
+    explicit = (body_abs_path or "").strip()
+    if explicit and os.path.isfile(explicit):
+        return os.path.normpath(explicit)
+    ref = beat.get("reference_image")
+    if isinstance(ref, dict):
+        stored = (ref.get("abs_path") or "").strip()
+        if stored and os.path.isfile(stored):
+            return os.path.normpath(stored)
+    resolved = bg.resolve_beat_char_ref_path(beat)
+    return os.path.normpath(resolved) if resolved else ""
+
+
 def resolve_beat_element_char_ref_gate(beat: dict) -> tuple[bool, str | None]:
     """Read-only char-ref gate — submit + registry authority, never stricter than persisted disk."""
     if bg._beat_pipeline_operator_busy(beat):
