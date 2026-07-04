@@ -134,13 +134,15 @@ class ExportSourceGuards(unittest.TestCase):
         self.assertIn("_phase_export_stitcher_audit", block)
         self.assertIn("allow_missing_video_role=True", block)
 
-    def test_phase_b_bake_refresh_calls_shared_slot_apply_gate(self) -> None:
+    def test_phase_b_bake_preflight_validates_slot_authority_read_only(self) -> None:
         src = (TOOLS / "server_handlers/phases.py").read_text(encoding="utf-8")
         block = src.split("def ensure_phase_b_stitch_slot_for_bake", 1)[1].split(
             "\ndef handle_phase_b_preview", 1,
         )[0]
-        self.assertIn("verify_event_slot_four_files_export_applied", block)
-        self.assertIn("playback_artifacts", block)
+        self.assertIn("validate_phase_b_stitch_slot_authority", block)
+        self.assertIn("STITCH_BAKE_SLOT_AUTHORITY_V1", block)
+        self.assertNotIn("stitch_upsert_event_slot", block)
+        self.assertNotIn("verify_event_slot_four_files_export_applied", block)
 
     def test_upsert_event_slots_use_bake_and_assert(self) -> None:
         playback = (TOOLS / "server_handlers" / "stitch_slot_playback.py").read_text(encoding="utf-8")

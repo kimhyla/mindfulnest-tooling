@@ -45,6 +45,8 @@ End the split between **pipeline disk** (`assembled/*.mp4`), **editorial JSON** 
 | `handle_stitch_preview` | Geometry persist + mux artifact pins (must not wipe non-empty `sfx_cues` with empty preview payload) |
 | `load_job` heal | **Only** for slots **already persisted**: timeline dur, artifact validation, canonical audio defaults |
 
+**Not a write path:** `ensure_phase_b_stitch_slot_for_bake` — read-only slot validation per `STITCH_BAKE_SLOT_AUTHORITY_V1`.
+
 ### 3.3 Disk hydrate functions (retained, demoted)
 
 `hydrate_milestone_standalone_from_disk` and `hydrate_stitch_canonical_slots_from_disk` remain for:

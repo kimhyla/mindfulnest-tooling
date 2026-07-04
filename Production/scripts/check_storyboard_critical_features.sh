@@ -104,6 +104,9 @@ MARKERS=(
     # STITCH_SINGLE_OWNER_V1 — load_job read-only; export owns video ingest
     "STITCH_SINGLE_OWNER|STITCH_SINGLE_OWNER_V1"
     "STITCH_SINGLE_OWNER|data-stitch-single-owner"
+    # STITCH_BAKE_SLOT_AUTHORITY_V1 — module bake validates phase_b slot; never upserts
+    "STITCH_BAKE_SLOT_AUTHORITY|STITCH_BAKE_SLOT_AUTHORITY_V1"
+    "STITCH_BAKE_SLOT_AUTHORITY|validate_phase_b_stitch_slot_authority"
     # STITCH_SLOT_SESSION_CACHE_V1 — multiphase slot preview persists within event session
     "STITCH_SLOT_SESSION_CACHE|STITCH_SLOT_SESSION_CACHE_V1"
     # STITCH_COMPOSER_VIDEO_POOL_V1 — four persistent videos for instant phase switch

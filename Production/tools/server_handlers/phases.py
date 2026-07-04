@@ -3705,11 +3705,94 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
     })
 
 
-def ensure_phase_b_stitch_slot_for_bake(h) -> dict:
-    """STITCH_BAKE_PHASE_B_DELIVERY_V1 — delivery lipsync + fresh Phase B preview slot before bake.
+STITCH_BAKE_SLOT_AUTHORITY_V1 = "STITCH_BAKE_SLOT_AUTHORITY_V1"
 
-    Category contract: Bake final MP4 must not concat a stale sub-720 Phase B slot when
-    delivery-encoded lipsync exists on disk. Runs before ``_stitch_build_pipeline``.
+
+def validate_phase_b_stitch_slot_authority(h, *, job_name: str) -> dict:
+    """STITCH_BAKE_SLOT_AUTHORITY_V1 — read-only gate: current stitch slot phase_b wins at bake.
+
+    Module bake must not rebuild or upsert Phase B from the overlay pipeline. The slot
+    (what Stitcher UI shows) is authoritative until the operator exports again.
+    """
+    from server_handlers.stitch_editor import stitch_state_store_for_job  # noqa: PLC0415
+
+    job_name = (job_name or "").strip()
+    if not job_name:
+        return {
+            "ok": False,
+            "error": "job_name required for phase_b slot authority validation",
+            "code": STITCH_BAKE_SLOT_AUTHORITY_V1,
+        }
+
+    store = stitch_state_store_for_job(h, job_name)
+    state = store.read_state()
+    jobs = state.get("jobs") if isinstance(state.get("jobs"), dict) else {}
+    job = jobs.get(job_name)
+    if not isinstance(job, dict):
+        return {
+            "ok": False,
+            "error": f"stitch job not found: {job_name}",
+            "code": STITCH_BAKE_SLOT_AUTHORITY_V1,
+        }
+
+    slots = job.get("slots") if isinstance(job.get("slots"), dict) else {}
+    slot = slots.get("phase_b")
+    if not isinstance(slot, dict):
+        return {
+            "ok": False,
+            "error": "phase_b slot empty — export Phase B to Stitcher before module bake",
+            "code": STITCH_BAKE_SLOT_AUTHORITY_V1,
+        }
+
+    video_rel = (slot.get("video_path") or "").strip()
+    dry_rel = (slot.get("dry_export_path") or video_rel or "").strip()
+    if not video_rel:
+        return {
+            "ok": False,
+            "error": "phase_b slot has no video_path — export Phase B to Stitcher first",
+            "code": STITCH_BAKE_SLOT_AUTHORITY_V1,
+        }
+
+    missing: list[str] = []
+    for label, rel in (("video_path", video_rel), ("dry_export_path", dry_rel)):
+        if not rel:
+            continue
+        try:
+            abs_path = Path(h._stitch_resolve_path(rel))
+        except (OSError, ValueError, RuntimeError) as exc:
+            return {
+                "ok": False,
+                "error": f"phase_b {label} invalid: {exc}",
+                "code": STITCH_BAKE_SLOT_AUTHORITY_V1,
+            }
+        if not abs_path.is_file():
+            missing.append(f"{label}={rel}")
+
+    if missing:
+        return {
+            "ok": False,
+            "error": "phase_b slot file(s) missing on disk: " + "; ".join(missing),
+            "code": STITCH_BAKE_SLOT_AUTHORITY_V1,
+        }
+
+    return {
+        "ok": True,
+        "validated": True,
+        "job_name": job_name,
+        "video_path": video_rel,
+        "dry_export_path": dry_rel,
+        "video_dur_ms": slot.get("video_dur_ms"),
+        "playback_recipe_version": slot.get("playback_recipe_version"),
+        "code": STITCH_BAKE_SLOT_AUTHORITY_V1,
+    }
+
+
+def ensure_phase_b_stitch_slot_for_bake(h, *, job_name: str | None = None) -> dict:
+    """STITCH_BAKE_PHASE_B_DELIVERY_V1 + STITCH_BAKE_SLOT_AUTHORITY_V1.
+
+    Before module concat:
+    1. Finalize phase_b lipsync delivery profile when stale (production_state only).
+    2. Validate the persisted stitch slot phase_b — read-only; never upsert at bake.
     """
     phase = "b"
     state = h.app.state.read_state()
@@ -3740,53 +3823,26 @@ def ensure_phase_b_stitch_slot_for_bake(h) -> dict:
 
         h.app.state.mutate_state(_apply_delivery)
 
-    try:
-        final_path, cache_hash = _phase_ensure_overlay_mp4(h, phase)
-    except (ValueError, FileNotFoundError, RuntimeError, subprocess.CalledProcessError) as exc:
-        return {"ok": False, "error": str(exc)}
-
-    root = h._stitch_project_root()
-    video_rel = str(final_path.resolve().relative_to(root))
-    h._stitch_resolve_path(video_rel)
-
-    from server_handlers.stitch_editor import stitch_upsert_event_slot  # noqa: PLC0415
-    from server_handlers.stitch_slot_playback import verify_event_slot_four_files_export_applied  # noqa: PLC0415
-
-    event_id = h.app.event_dir.name
-    slot_key = f"phase_{phase}"
-    try:
-        job_name, export_dur_ms, export_warnings, playback_artifacts = stitch_upsert_event_slot(
-            h,
-            event_id,
-            slot_key,
-            {
-                "video_path": video_rel,
-                "overlay_baked": True,
-                "source": f"phase_{phase}_export",
-            },
-            operator_export=True,
-        )
-        verify_event_slot_four_files_export_applied(
-            h,
-            job_name=job_name,
-            slot_key=slot_key,
-            dry_video_rel=video_rel,
-            playback_artifacts=playback_artifacts or {},
-        )
-    except (OSError, RuntimeError, ValueError) as exc:
-        return {"ok": False, "error": str(exc), "code": "STITCH_BAKE_PHASE_B_DELIVERY_V1"}
+    resolved_job = (job_name or f"{h.app.event_dir.name}_stitch").strip()
+    slot_auth = validate_phase_b_stitch_slot_authority(h, job_name=resolved_job)
+    if not slot_auth.get("ok"):
+        return {
+            "ok": False,
+            "error": slot_auth.get("error") or "phase_b stitch slot authority validation failed",
+            "code": STITCH_BAKE_SLOT_AUTHORITY_V1,
+        }
 
     return {
         "ok": True,
-        "refreshed": True,
+        "validated": True,
         "delivery_meta": delivery_meta,
-        "video_path": video_rel,
-        "cache_hash": cache_hash,
-        "job_name": job_name,
-        "video_dur_ms": export_dur_ms,
-        "warnings": export_warnings,
-        "playback_artifacts": playback_artifacts,
+        "slot_authority": slot_auth,
+        "job_name": resolved_job,
+        "video_path": slot_auth.get("video_path"),
+        "dry_export_path": slot_auth.get("dry_export_path"),
+        "video_dur_ms": slot_auth.get("video_dur_ms"),
         "code": "STITCH_BAKE_PHASE_B_DELIVERY_V1",
+        "slot_authority_code": STITCH_BAKE_SLOT_AUTHORITY_V1,
     }
 
 

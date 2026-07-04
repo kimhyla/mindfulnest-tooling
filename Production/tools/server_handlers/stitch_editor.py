@@ -4519,15 +4519,16 @@ def _run_stitch_bake_core(
         scope_video_role=(body.get("scope_video_role") or pin.get("pinned_video_role")),
     )
     if not milestone_bake:
-        _progress("Refreshing Phase B delivery slot…", phase="encode")
-        preflight = ensure_phase_b_stitch_slot_for_bake(h)
+        _progress("Validating Phase B stitch slot…", phase="encode")
+        preflight = ensure_phase_b_stitch_slot_for_bake(h, job_name=job_name)
         if not preflight.get("ok", True):
             _stitch_module_bake_audit(
                 h,
-                "PHASE_B_PREFLIGHT_FAILED",
+                "PHASE_B_SLOT_AUTHORITY_FAILED",
                 job_id=job_id,
                 stitch_job_name=job_name,
                 error=preflight.get("error"),
+                code=preflight.get("code"),
             )
             return {
                 "ok": False,
@@ -4535,6 +4536,16 @@ def _run_stitch_bake_core(
                 "error_message": preflight.get("error") or "Phase B bake preflight failed",
                 "retry_safe": True,
             }
+        _stitch_module_bake_audit(
+            h,
+            "PHASE_B_SLOT_AUTHORITY_VALIDATED",
+            job_id=job_id,
+            stitch_job_name=job_name,
+            video_path=preflight.get("video_path"),
+            dry_export_path=preflight.get("dry_export_path"),
+            video_dur_ms=preflight.get("video_dur_ms"),
+            code=preflight.get("slot_authority_code"),
+        )
 
     stitch_store = stitch_state_store_for_job(h, job_name) if job_name else h.app.stitch_state
     orig_stitch_state = None
