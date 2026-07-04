@@ -704,7 +704,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     });
     setBusyAction(null);
     if (res.ok && res.status === 202) {
-      setStatusMsg('⏳ Base clip regenerating — Send for Avatar Pro when done');
+      setStatusMsg('⏳ Base clip regenerating — Send for Lipsync when done');
     } else if (res.ok) {
       setStatusMsg('✓ Base clip regen complete');
       await refreshAll();
@@ -723,7 +723,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
           ? { name: lipsyncFile, label: 'lipsync' as const, kind: 'lipsync' as const }
           : null;
     if (!overlayVideo) {
-      setStatusMsg('No preview video yet — run Send for Avatar Pro first.');
+      setStatusMsg('No preview video yet — run Send for Lipsync first.');
       return;
     }
     if (!priorityAudio) {
@@ -1464,13 +1464,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               class="mn-phase-lipsync-placeholder mn-dim"
               data-testid={`phase-${phase}-lipsync-placeholder`}
             >
-              Lipsync preview appears here after &quot;Send for Avatar Pro&quot; completes.
+              Lipsync preview appears here after &quot;Send for Lipsync&quot; completes.
             </div>
           )}
         </div>
 
         {/* Phase A clip section — fly-in/fly-out bookends (LD PHASE_A_THREE_CLIP_HANDLING_V1).
-            Phase A/B lipsync uses Avatar Pro on canonical still + voice stem. */}
+            Phase A/B lipsync uses base-clip ByteDance (A) or Kling Sync (B). */}
         {phase === 'a' ? (
           <div class="mn-phase-a-clip-section" data-testid="phase-a-clip-section">
             <strong>Phase A clips</strong>
@@ -1616,7 +1616,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         </div>
 
         <p class="mn-readonly-banner">
-          S4 wired: Suggest Script · Send for Avatar Pro · Export (Phase A dry → Stitcher ambient) ·
+          S4 wired: Suggest Script · Send for Lipsync · Export (Phase A dry → Stitcher ambient) ·
           Export to Stitcher · Animate-this. WaveSurfer waveform + drag-drop
           watercolor onto timeline = S5 polish.
         </p>
