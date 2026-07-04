@@ -58,6 +58,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **still_insert_stitch_approve** — still beat export gate | explicit_approve | same contract (still branch) | `kling_o3_still_stitch_approved` | shipped | same |
 | **kling_o3_export_trim** — trim window materialized on export | disk | `prepare_beats_for_stitch_export` | `set_o3_option_trim` | shipped | `beat_generator.py` |
 | **magic_render_visible** — magic sparkle contract | disk | `magic_render_contract` compositor kwargs + durability tests | `write_magic_delivery` | shipped | `HOW_TO_MAKE_VISIBLE_MAGIC.md` |
+| **element_visual_canonical_lock** — Element frontal identity bytes | disk | `verify_frontal_sha256` / `resolve_frontal_abs_path` | **`set_element_identity` only** | shipped | `TECH_SPEC_ELEMENT_VISUAL_CANONICAL_LOCK_v1.md` |
 | **bg_export_stitcher_job** — async BG→Stitcher job truth | disk | `readBgExportBusyLatch` + poll terminal | export job API | shipped | inline `BG_EXPORT_TO_STITCHER_ASYNC_V1` |
 | **o3_job_truth_stack** — terminal/disk/sidecar read parity | derived | `resolve_beat_o3_truth` | `close_o3_attempt` | shipped | `TECH_SPEC_CROSS_PIPELINE_G1_G8_CLOSURE_v1.md` |
 | **o3_failed_redo_heal** — restore prior clip after failed regen | disk | `restore_last_good_o3_delivery_after_failed_attempt` | same | shipped | same |

@@ -15,6 +15,8 @@ def test_active_magic_layer_still_newer_wins_event2_shape(tmp_path):
     """Regression: Event_2 beat_07 — redo magic on still must beat stale magic_video."""
     event_dir = tmp_path / "Event_2"
     event_dir.mkdir()
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"png")
     magic_video = event_dir / "magic_video_bg_arc1_event2_post_beat_07_20260621-010601.mp4"
     magic_still = event_dir / "magic_still_bg_arc1_event2_post_beat_07_20260621-082918.mp4"
     magic_video.write_bytes(b"old-video-magic")
@@ -27,6 +29,8 @@ def test_active_magic_layer_still_newer_wins_event2_shape(tmp_path):
         "pipeline": "still_insert",
         "magic_video_path": magic_video.name,
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
     }
     assert bg.resolve_active_magic_layer(beat, event_dir) == "still"
     assert bg.resolve_bg_magic_canonical_kind(beat, event_dir) == "still"
@@ -37,8 +41,12 @@ def test_active_magic_layer_still_newer_wins_event2_shape(tmp_path):
 def test_active_magic_layer_video_newer_wins(tmp_path):
     event_dir = tmp_path / "Event_1"
     event_dir.mkdir()
+    kling = event_dir / "kling.mp4"
+    kling.write_bytes(b"k")
     magic_video = event_dir / "magic_video_beat_01.mp4"
     magic_still = event_dir / "magic_still_beat_01.mp4"
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
     magic_video.write_bytes(b"mv")
     magic_still.write_bytes(b"ms")
     base = time.time()
@@ -47,8 +55,12 @@ def test_active_magic_layer_video_newer_wins(tmp_path):
     beat = {
         "beat_id": "bg_arc1_event1_post_beat_01",
         "kling_o3_status": "approved",
+        "kling_o3_video_path": str(kling),
         "magic_video_path": magic_video.name,
+        "magic_video_source_path": str(kling),
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
     }
     assert bg.resolve_active_magic_layer(beat, event_dir) == "video"
     chosen = bg.resolve_beat_stitch_export_clip_path(beat, event_dir, tmp_path / "scratch")
@@ -58,6 +70,8 @@ def test_active_magic_layer_video_newer_wins(tmp_path):
 def test_active_magic_layer_still_insert_tie_prefers_still(tmp_path):
     event_dir = tmp_path / "Event_1"
     event_dir.mkdir()
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
     magic_video = event_dir / "magic_video_beat_21.mp4"
     magic_still = event_dir / "magic_still_beat_21.mp4"
     magic_video.write_bytes(b"mv")
@@ -70,6 +84,8 @@ def test_active_magic_layer_still_insert_tie_prefers_still(tmp_path):
         "pipeline": "still_insert",
         "magic_video_path": magic_video.name,
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
     }
     assert bg.resolve_active_magic_layer(beat, event_dir) == "still"
 
@@ -77,6 +93,10 @@ def test_active_magic_layer_still_insert_tie_prefers_still(tmp_path):
 def test_active_magic_layer_lipsync_tie_prefers_video(tmp_path):
     event_dir = tmp_path / "Event_1"
     event_dir.mkdir()
+    kling = event_dir / "kling.mp4"
+    kling.write_bytes(b"k")
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
     magic_video = event_dir / "magic_video_beat_01.mp4"
     magic_still = event_dir / "magic_still_beat_01.mp4"
     magic_video.write_bytes(b"mv")
@@ -87,8 +107,12 @@ def test_active_magic_layer_lipsync_tie_prefers_video(tmp_path):
     beat = {
         "beat_id": "bg_arc1_event1_post_beat_01",
         "kling_o3_status": "approved",
+        "kling_o3_video_path": str(kling),
         "magic_video_path": magic_video.name,
+        "magic_video_source_path": str(kling),
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
     }
     assert bg.resolve_active_magic_layer(beat, event_dir) == "video"
 
@@ -96,11 +120,15 @@ def test_active_magic_layer_lipsync_tie_prefers_video(tmp_path):
 def test_active_magic_layer_only_still_on_disk(tmp_path):
     event_dir = tmp_path / "Event_1"
     event_dir.mkdir()
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
     magic_still = event_dir / "magic_still_beat_21.mp4"
     magic_still.write_bytes(b"ms")
     beat = {
         "pipeline": "still_insert",
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
         "magic_video_path": "missing_video.mp4",
     }
     assert bg.resolve_active_magic_layer(beat, event_dir) == "still"
@@ -109,6 +137,8 @@ def test_active_magic_layer_only_still_on_disk(tmp_path):
 def test_enrich_beat_sets_canonical_from_mtimes(tmp_path):
     event_dir = tmp_path / "Event_2"
     event_dir.mkdir()
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
     magic_video = event_dir / "magic_video_old.mp4"
     magic_still = event_dir / "magic_still_new.mp4"
     magic_video.write_bytes(b"v")
@@ -121,6 +151,8 @@ def test_enrich_beat_sets_canonical_from_mtimes(tmp_path):
         "pipeline": "still_insert",
         "magic_video_path": magic_video.name,
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
     }
     enriched = bg.enrich_beat_kling_o3_pinned(beat, event_dir)
     assert enriched["magic_canonical_kind"] == "still"
@@ -153,6 +185,7 @@ def test_stitch_export_magic_video_when_on_beat(tmp_path):
         "kling_o3_still_stitch_approved": True,
         "kling_o3_video_path": str(kling),
         "magic_video_path": magic_video.name,
+        "magic_video_source_path": str(kling),
     }
     chosen = bg.resolve_beat_stitch_export_clip_path(beat, event_dir, tmp_path / "scratch")
     assert chosen == magic_video.resolve()
@@ -162,6 +195,8 @@ def test_stitch_export_magic_still_when_on_beat(tmp_path):
     event_dir = tmp_path / "Event_2"
     event_dir.mkdir()
     kling = event_dir / "idle.mp4"
+    still_src = event_dir / "still.png"
+    still_src.write_bytes(b"s")
     magic_still = event_dir / "magic_still_beat_07.mp4"
     magic_video = event_dir / "magic_video_stale.mp4"
     kling.write_bytes(b"kling")
@@ -176,6 +211,8 @@ def test_stitch_export_magic_still_when_on_beat(tmp_path):
         "kling_o3_still_stitch_approved": True,
         "kling_o3_video_path": str(kling),
         "magic_still_path": magic_still.name,
+        "magic_still_source_path": str(still_src),
+        "accepted_library_ref": {"abs_path": str(still_src)},
         "magic_video_path": magic_video.name,
     }
     chosen = bg.resolve_beat_stitch_export_clip_path(beat, event_dir, tmp_path / "scratch")

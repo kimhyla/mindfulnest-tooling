@@ -101,6 +101,8 @@ export interface BgBeat {
   magic_still_path_exists?: boolean;
   magic_video_path_exists?: boolean;
   magic_canonical_kind?: 'still' | 'video' | null;
+  magic_video_applies_to_active?: boolean;
+  magic_still_applies_to_active?: boolean;
   storyboard_beat_id?: string | null;
   audio_file?: string | null;
   audio_file_exists?: boolean;

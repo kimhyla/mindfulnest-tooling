@@ -67,6 +67,12 @@ grep -q 'useBgO3TrimNumericDraft' "$SB/components/BgTab.tsx" \
   || fail "BgTab must use useBgO3TrimNumericDraft"
 grep -q 'useBgO3CutSession' "$SB/components/BgTab.tsx" \
   || fail "BgTab must use useBgO3CutSession"
+grep -q 'o3TrimApplyIsBaked' "$SB/components/BgTab.tsx" \
+  || fail "BgTab must use o3TrimApplyIsBaked (export_baked + trim_baked contract)"
+grep -q 'o3TrimApplyContract' "$SB/components/BgTab.tsx" \
+  || fail "BgTab must import o3TrimApplyContract"
+grep -q 'export_baked' "$SB/utils/o3TrimApplyContract.ts" \
+  || fail "o3TrimApplyContract must handle export_baked"
 grep -q 'shouldPreserveBgO3CutDraft' "$SB/components/bg/BgO3CutOverlay.tsx" \
   || fail "BgO3CutOverlay must preserve draft during drag"
 grep -q 'mergeStitchAmbientBedOnHydrate' "$SB/utils/stitchSlotDurableMerge.ts" \
@@ -103,6 +109,7 @@ echo "[operator-edit-surfaces] pass 4/4 — vitest"
   node --experimental-strip-types --test "$SB/hooks/__tests__/useBgO3TrimNumericDraft.test.ts"
   node --experimental-strip-types --test "$SB/utils/__tests__/bgSessionBeatMerge.test.ts"
   node --experimental-strip-types --test "$SB/utils/__tests__/bgO3CutSession.test.ts"
+  node --experimental-strip-types --test "$SB/utils/__tests__/o3TrimApplyContract.test.ts"
   node --experimental-strip-types --test "$SB/utils/__tests__/stitchSlotDurableMerge.test.ts"
 ) || fail "operator edit vitest failed"
 

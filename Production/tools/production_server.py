@@ -6517,6 +6517,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._in_beatgen_scope(self._handle_bg_align_element_ref, body)
             if path == "/api/bg/add-element-pose":
                 return self._in_beatgen_scope(self._handle_bg_add_element_pose, body)
+            if path == "/api/bg/set-element-identity":
+                return self._in_beatgen_scope(self._handle_bg_set_element_identity, body)
             if path == "/api/bg/reorder-beats":
                 return self._in_beatgen_scope(self._handle_bg_reorder_beats, body)
             if path == "/api/bg/delete-beat":
@@ -6607,6 +6609,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_magic_still(body)
             if path == "/api/storyboard/clear_magic_still":
                 return self._handle_clear_magic_still(body)
+            if path == "/api/storyboard/clear_magic_video":
+                return self._handle_clear_magic_video(body)
             if path == "/api/storyboard/magic_video":
                 return self._handle_magic_video(body)
             if path == "/api/storyboard/switch":
@@ -7783,6 +7787,11 @@ class ProductionHandler(BaseHTTPRequestHandler):
         from server_handlers.background import handle_clear_magic_still
         return handle_clear_magic_still(self, body)
 
+    @with_pin_and_drain('_handle_clear_magic_video', track_sync=True)
+    def _handle_clear_magic_video(self, body: dict) -> None:
+        from server_handlers.background import handle_clear_magic_video
+        return handle_clear_magic_video(self, body)
+
     @with_pin_and_drain('_handle_magic_video', track_sync=True)
     def _handle_magic_video(self, body: dict) -> None:
         from server_handlers.background import handle_magic_video
@@ -8065,6 +8074,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
     def _handle_bg_add_element_pose(self, body: dict) -> None:
         from server_handlers.background import handle_bg_add_element_pose
         return handle_bg_add_element_pose(self, body)
+
+    def _handle_bg_set_element_identity(self, body: dict) -> None:
+        from server_handlers.background import handle_bg_set_element_identity
+        return handle_bg_set_element_identity(self, body)
 
     def _handle_bg_reorder_beats(self, body: dict) -> None:
         from server_handlers.background import handle_bg_reorder_beats
@@ -8515,8 +8528,12 @@ class ProductionHandler(BaseHTTPRequestHandler):
                         # no longer points at it.
                         if _beat_state.get("magic_still_path"):
                             _beat_state["magic_still_path"] = None
+                        if _beat_state.get("magic_still_source_path"):
+                            _beat_state["magic_still_source_path"] = None
                         if _beat_state.get("magic_video_path"):
                             _beat_state["magic_video_path"] = None
+                        if _beat_state.get("magic_video_source_path"):
+                            _beat_state["magic_video_source_path"] = None
                         # Same pattern for end_frame_path: was generated using
                         # the prior start image as OpenAI input. New image
                         # means the saved end frame is no longer the right

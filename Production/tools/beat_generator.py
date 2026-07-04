@@ -1565,10 +1565,11 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "kling_o3_selection_pipeline_mismatch",
     "kling_o3_active_clip_pipeline",
     "intro_beat_role", "canonical_intro_tail",
-    "magic_manual_path", "magic_video_path", "magic_path_authored_against",
+    "magic_manual_path", "magic_video_path", "magic_video_source_path",
+    "magic_path_authored_against",
     "storyboard_clip_import",
     "start_frame_image", "end_frame_image", "kling_o3_mode",
-    "magic_still_path",
+    "magic_still_path", "magic_still_source_path",
     "directus_asset_id",
     "directus_registered_at",
     "directus_export_clip_path",
@@ -10280,6 +10281,43 @@ def heal_speaker_char_ref_mismatch(beat: dict) -> bool:
     return align_beat_reference_to_element(beat)
 
 
+def heal_event_beats_to_canonical_frontal(
+    sidecar: dict,
+    speaker: str,
+    frontal_abs_path: str,
+    *,
+    pose_rel: str = "",
+    wavespeed_key: str | None = None,
+) -> list[str]:
+    """Patch every beat for speaker to canonical frontal char ref after set_element_identity."""
+    try:
+        from tools import kling_character_registry as reg
+    except Exception:
+        return []
+    speaker_key = reg.normalize_beat_speaker_for_sidecar(speaker) or str(speaker or "").strip()
+    frontal_abs = str(frontal_abs_path or "").strip()
+    if not speaker_key or not frontal_abs or not os.path.isfile(frontal_abs):
+        return []
+    healed: list[str] = []
+    for b in sidecar.get("beats") or []:
+        if not isinstance(b, dict):
+            continue
+        beat_speaker = reg.normalize_beat_speaker_for_sidecar(str(b.get("speaker") or ""))
+        if beat_speaker != speaker_key:
+            continue
+        b["reference_image"] = {
+            "abs_path": frontal_abs,
+            **({"key": pose_rel} if pose_rel else {}),
+        }
+        b["reference_image_locked"] = True
+        if wavespeed_key:
+            ensure_beat_element_char_ref_for_o3(b, wavespeed_key)
+        bid = str(b.get("beat_id") or "")
+        if bid:
+            healed.append(bid)
+    return healed
+
+
 def align_beat_reference_to_element(beat: dict) -> bool:
     """Point beat reference_image at the speaker's Element image set.
 
@@ -10476,7 +10514,7 @@ def try_register_dropped_char_ref_on_element(
     """Register a dropped library char ref on the speaker's Kling Element when gate fails.
 
     Reconcile when bytes already exist under Production/<Char>/poses/; otherwise
-    copy via add_element_pose (same as library Add to Element).
+    copy via add_element_pose (refer-only — never changes frontal_image).
     """
     speaker = str(beat.get("speaker") or "").strip()
     char_path = resolve_beat_char_ref_path(beat) or ""
@@ -10487,44 +10525,21 @@ def try_register_dropped_char_ref_on_element(
 
         if not reg.is_speaker_voice_ready(speaker):
             return {"ok": False, "reason": "not_voice_ready"}
-        locked_drop = bool(beat.get("reference_image_locked") and beat.get("reference_image"))
-        frontal_abs = reg.resolve_frontal_abs_path(speaker) if locked_drop else None
-        needs_frontal_promote = bool(
-            locked_drop
-            and frontal_abs
-            and os.path.normpath(char_path) != os.path.normpath(frontal_abs),
-        )
         if reg.char_ref_matches_element_images(
             char_path, speaker, allow_pose_dir_fallback=False,
         )[0]:
-            if needs_frontal_promote:
-                out = reg.add_element_pose(
-                    speaker, char_path, wavespeed_key, promote_frontal=True,
-                )
-                out["action"] = "promoted_frontal"
-                return out
             return {"ok": True, "action": "already_matched"}
         try:
             out = reg.reconcile_char_ref_with_element(speaker, char_path, wavespeed_key)
-            if needs_frontal_promote:
-                out = reg.add_element_pose(
-                    speaker, char_path, wavespeed_key, promote_frontal=True,
-                )
-                out["action"] = "promoted_frontal"
-            else:
-                out["action"] = "reconciled"
+            out["action"] = "reconciled"
             return out
         except FileNotFoundError:
-            out = reg.add_element_pose(
-                speaker,
-                char_path,
-                wavespeed_key,
-                promote_frontal=needs_frontal_promote,
-            )
-            out["action"] = "added_promoted" if needs_frontal_promote else "added"
+            out = reg.add_element_pose(speaker, char_path, wavespeed_key)
+            out["action"] = "added"
             return out
     except Exception as exc:
         return {"ok": False, "reason": str(exc)}
+
 
 
 def ensure_beat_element_aligned_reference(beat: dict) -> bool:
@@ -12972,6 +12987,8 @@ def assign_kling_o3_option_to_slot(
     gen = _kling_o3_gen_from_video_path(video_path)
     if gen is not None:
         new_opt["generation"] = gen
+    old_slot_opt = find_o3_option_by_slot_index(beat, slot_index)
+    old_slot_path = str(old_slot_opt.get("video_path") or "") if old_slot_opt else ""
     options = [
         o for o in (beat.get("kling_o3_options") or [])
         if isinstance(o, dict) and str(o.get("video_path") or "") != video_path
@@ -13001,6 +13018,12 @@ def assign_kling_o3_option_to_slot(
 
     stamp_o3_option_audio_contract(new_opt, path=video_path)
     normalize_o3_gallery_options(beat)
+    if old_slot_path and old_slot_path != video_path:
+        maybe_clear_magic_video_on_source_replaced(
+            beat,
+            old_slot_path,
+            event_dir_for_beat_id(beat_id),
+        )
     return key
 
 
@@ -13535,10 +13558,113 @@ def bg_beat_id_from_storyboard_id(
 
 _MAGIC_SYNC_FIELDS: tuple[str, ...] = (
     "magic_still_path",
+    "magic_still_source_path",
     "magic_video_path",
+    "magic_video_source_path",
     "magic_manual_path",
     "magic_path_authored_against",
 )
+
+
+def normalize_magic_media_path(path: str | Path, event_dir: str | Path | None) -> str:
+    """Resolved absolute path for magic source binding comparisons."""
+    p = Path(str(path or "").strip()).expanduser()
+    if not p.is_absolute() and event_dir is not None:
+        p = Path(event_dir) / p
+    try:
+        return str(p.resolve())
+    except OSError:
+        return str(p)
+
+
+def magic_media_paths_match(
+    left: str | Path,
+    right: str | Path,
+    event_dir: str | Path | None,
+) -> bool:
+    return normalize_magic_media_path(left, event_dir) == normalize_magic_media_path(right, event_dir)
+
+
+def clear_magic_video_fields(beat: dict) -> None:
+    for key in (
+        "magic_video_path",
+        "magic_video_source_path",
+        "magic_manual_path",
+        "magic_path_authored_against",
+    ):
+        beat.pop(key, None)
+
+
+def clear_magic_still_fields(beat: dict) -> None:
+    for key in (
+        "magic_still_path",
+        "magic_still_source_path",
+        "magic_manual_path",
+        "magic_path_authored_against",
+    ):
+        beat.pop(key, None)
+
+
+def magic_video_applies_to_path(
+    beat: dict,
+    target_video_path: str | Path,
+    event_dir: str | Path | None,
+) -> bool:
+    """True when beat magic-on-video is bound to ``target_video_path``."""
+    if not (beat.get("magic_video_path") or "").strip():
+        return False
+    bound = (beat.get("magic_video_source_path") or "").strip()
+    if not bound:
+        return False
+    if event_dir is not None and beat_magic_video_clip_path(beat, event_dir) is None:
+        return False
+    if not str(target_video_path or "").strip():
+        return False
+    return magic_media_paths_match(bound, target_video_path, event_dir)
+
+
+def magic_video_applies_to_active(beat: dict, event_dir: str | Path | None) -> bool:
+    vp = (beat.get("kling_o3_video_path") or "").strip()
+    if not vp:
+        return False
+    return magic_video_applies_to_path(beat, vp, event_dir)
+
+
+def magic_still_applies_to_active(beat: dict, event_dir: str | Path | None) -> bool:
+    if not (beat.get("magic_still_path") or "").strip():
+        return False
+    bound = (beat.get("magic_still_source_path") or "").strip()
+    if not bound:
+        return False
+    if event_dir is not None and beat_magic_still_clip_path(beat, event_dir) is None:
+        return False
+    current = resolve_beat_magic_still_source_path(beat)
+    if not current:
+        return False
+    return magic_media_paths_match(bound, current, event_dir)
+
+
+def maybe_clear_magic_video_on_source_replaced(
+    beat: dict,
+    replaced_video_path: str | Path,
+    event_dir: str | Path | None,
+) -> None:
+    """Drop video magic when the bound underlying clip was replaced in-gallery."""
+    if not (beat.get("magic_video_path") or "").strip():
+        return
+    bound = (beat.get("magic_video_source_path") or "").strip()
+    if not bound:
+        clear_magic_video_fields(beat)
+        return
+    if magic_media_paths_match(bound, replaced_video_path, event_dir):
+        clear_magic_video_fields(beat)
+
+
+def enrich_magic_applies_fields(beat: dict, event_dir: str | Path | None) -> dict[str, bool]:
+    return {
+        "magic_video_applies_to_active": magic_video_applies_to_active(beat, event_dir),
+        "magic_still_applies_to_active": magic_still_applies_to_active(beat, event_dir),
+    }
 
 _AUDIO_SYNC_FIELDS: tuple[str, ...] = (
     "audio_file",
@@ -13567,10 +13693,13 @@ def resolve_active_magic_layer(
 
     Orphaned ``magic_video_path`` after redoing magic-on-still must not win over a
     newer ``magic_still_path``. When both files exist on disk, the newer mtime wins.
+    MAGIC_SOURCE_BINDING_V1: layer applies only when bound to the active still/video.
     """
+    still_ok = magic_still_applies_to_active(beat, event_dir)
+    video_ok = magic_video_applies_to_active(beat, event_dir)
     if event_dir is not None:
-        still_clip = beat_magic_still_clip_path(beat, event_dir)
-        video_clip = beat_magic_video_clip_path(beat, event_dir)
+        still_clip = beat_magic_still_clip_path(beat, event_dir) if still_ok else None
+        video_clip = beat_magic_video_clip_path(beat, event_dir) if video_ok else None
         if still_clip and not video_clip:
             return "still"
         if video_clip and not still_clip:
@@ -13586,9 +13715,9 @@ def resolve_active_magic_layer(
                 return "still"
             return "video"
         return None
-    if beat.get("magic_video_path"):
+    if video_ok and beat.get("magic_video_path"):
         return "video"
-    if beat.get("magic_still_path"):
+    if still_ok and beat.get("magic_still_path"):
         return "still"
     return None
 
@@ -14024,6 +14153,7 @@ def enrich_beat_kling_o3_pinned(
                 else:
                     out[key] = val
             out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out, event_dir)
+            out.update(enrich_magic_applies_fields(out, event_dir))
             enrich_beat_magic_video_source_path(out, event_dir)
             return out
     if not session_read:
@@ -14063,6 +14193,7 @@ def enrich_beat_kling_o3_pinned(
         out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out, None)
     elif not session_read:
         out["magic_canonical_kind"] = resolve_bg_magic_canonical_kind(out, event_dir)
+    out.update(enrich_magic_applies_fields(out, event_dir))
     enrich_beat_magic_video_source_path(out, event_dir)
     return out
 

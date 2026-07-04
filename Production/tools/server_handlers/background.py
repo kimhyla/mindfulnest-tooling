@@ -748,15 +748,28 @@ def _magic_partition_writeback_ensure_display_order(partition: dict, sb_beat_id:
 
 _MAGIC_STILL_CLEAR_FIELDS = (
     "magic_still_path",
+    "magic_still_source_path",
     "magic_manual_path",
     "magic_path_authored_against",
 )
 
 _MAGIC_VIDEO_CLEAR_FIELDS = (
     "magic_video_path",
+    "magic_video_source_path",
     "magic_manual_path",
     "magic_path_authored_against",
 )
+
+
+def _magic_production_intent(body: dict | None) -> bool:
+    """MAGIC_SOURCE_BINDING_V1 — agent smoke must not write canonical partition magic."""
+    if (body or {}).get("production_intent") is True:
+        return True
+    return str(os.environ.get("MN_MAGIC_ALLOW_SMOKE_PARTITION_WRITE", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def write_magic_delivery(
@@ -933,7 +946,8 @@ def mirror_magic_clear_to_sidecar_after_image_assign(
         h,
         request_beat_id=bg_beat_id,
         video_role=video_role,
-        fields={"magic_still_path": None, "magic_video_path": None},
+        fields={"magic_still_path": None, "magic_still_source_path": None,
+                "magic_video_path": None, "magic_video_source_path": None},
     )
 
 
@@ -969,6 +983,40 @@ def handle_clear_magic_still(h, body: dict) -> None:
         "storyboard_beat_id": sb_beat_id,
         "partition_written": partition_written,
         "cleared_fields": list(_MAGIC_STILL_CLEAR_FIELDS),
+    })
+
+
+def handle_clear_magic_video(h, body: dict) -> None:
+    """POST /api/storyboard/clear_magic_video — drop magic-on-video from partition + sidecar."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = (body or {}).get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="beat_id required",
+            retry_safe=False,
+        )
+    wb = write_magic_delivery(
+        h,
+        body=body,
+        request_beat_id=str(beat_id),
+        partition_fields={key: None for key in _MAGIC_VIDEO_CLEAR_FIELDS},
+        verify_field="magic_video_path",
+        expected_value="",
+        log_tag="clear_magic_video",
+        verify_absent=True,
+    )
+    if wb is None:
+        return
+    partition_written, sb_beat_id, _ = wb
+    return h._send_json(200, {
+        "ok": True,
+        "beat_id": beat_id,
+        "storyboard_beat_id": sb_beat_id,
+        "partition_written": partition_written,
+        "cleared_fields": list(_MAGIC_VIDEO_CLEAR_FIELDS),
     })
 
 
@@ -1165,9 +1213,24 @@ def handle_magic_still(h, body: dict)-> None:
     magic_filename = Path(rendered).name
     magic_sidecar_fields = {
         "magic_still_path": magic_filename,
+        "magic_still_source_path": safe_sip,
         "magic_manual_path": clean_path,
         **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
     }
+    if not _magic_production_intent(body):
+        smoke_dir = Path(h.app.event_dir) / "_magic_smoke"
+        smoke_dir.mkdir(parents=True, exist_ok=True)
+        smoke_path = smoke_dir / magic_filename
+        shutil.copy2(str(rendered), smoke_path)
+        return h._send_json(200, {
+            "ok": True,
+            "smoke": True,
+            "beat_id": beat_id,
+            "composite_path": str(smoke_path),
+            "magic_still_path": magic_filename,
+            "partition_written": None,
+            "manual_path_points": len(clean_path),
+        })
     wb = write_magic_delivery(
         h,
         body=body,
@@ -1699,9 +1762,27 @@ def handle_magic_video(h, body: dict)-> None:
     magic_filename = Path(out_path).name
     magic_sidecar_fields = {
         "magic_video_path": magic_filename,
+        "magic_video_source_path": safe_ffmpeg_src,
         "magic_manual_path": clean_path,
         **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
     }
+    if not _magic_production_intent(body):
+        smoke_dir = Path(h.app.event_dir) / "_magic_smoke"
+        smoke_dir.mkdir(parents=True, exist_ok=True)
+        smoke_path = smoke_dir / magic_filename
+        shutil.copy2(str(out_path), smoke_path)
+        return h._send_json(200, {
+            "ok": True,
+            "smoke": True,
+            "beat_id": beat_id,
+            "composite_path": str(smoke_path),
+            "magic_video_path": magic_filename,
+            "partition_written": None,
+            "source_dims": [comp_w, comp_h],
+            "path_authored_against": path_authored_against,
+            "duration_s": vid_duration,
+            "manual_path_points": len(clean_path),
+        })
     wb = write_magic_delivery(
         h,
         body=body,
@@ -3837,9 +3918,6 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
     beat_id = body.get("beat_id")
     speaker = (body.get("speaker") or "").strip()
     abs_path = (body.get("abs_path") or "").strip()
-    promote_frontal = body.get("promote_frontal", True)
-    if isinstance(promote_frontal, str):
-        promote_frontal = promote_frontal.strip().lower() not in ("0", "false", "no")
     bg = _bg_module()
 
     sidecar_probe = bg._load_sidecar_migrated()
@@ -3895,7 +3973,7 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
 
         rebind_bg_paths_from_app(h.app)
         result = reg.add_element_pose(
-            speaker, abs_path, wavespeed_key, promote_frontal=bool(promote_frontal),
+            speaker, abs_path, wavespeed_key,
         )
     except Exception as exc:
         return h._send_error_v59(
@@ -3927,6 +4005,138 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
         bg.update_beat_locked(beat_id, _pose_patch)
 
     payload = dict(result)
+    if element_char_ref_ok is not None:
+        payload["element_char_ref_ok"] = element_char_ref_ok
+    if thumb_b64:
+        payload["thumb_b64"] = thumb_b64
+    return h._send_json(200, payload)
+
+
+def handle_bg_set_element_identity(h, body: dict) -> None:
+    """POST /api/bg/set-element-identity — sole path to update Element frontal_image."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = body.get("beat_id")
+    speaker = (body.get("speaker") or "").strip()
+    abs_path = (body.get("abs_path") or "").strip()
+    bg = _bg_module()
+
+    sidecar_probe = bg._load_sidecar_migrated()
+    beat = None
+    if beat_id:
+        _, beat = bg.find_beat(sidecar_probe, beat_id)
+        if not beat:
+            return h._send_error_v59(
+                404,
+                error_code="BEAT_NOT_FOUND",
+                error_message=f"beat {beat_id} not found",
+                retry_safe=False,
+            )
+        if not speaker:
+            speaker = (beat.get("speaker") or "").strip()
+    if beat:
+        from operator_workbench_contract import materialize_char_ref_abs_path
+
+        abs_path = materialize_char_ref_abs_path(beat, abs_path)
+    if not speaker:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_SPEAKER",
+            error_message="speaker or beat_id with speaker required",
+            retry_safe=False,
+        )
+    if not abs_path or not os.path.isfile(abs_path):
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_POSE_SOURCE",
+            error_message="abs_path to pose PNG required (or beat with reference_image)",
+            retry_safe=False,
+        )
+
+    try:
+        from credentials import load_credentials  # type: ignore
+    except ImportError:
+        from tools.credentials_lib.credentials import load_credentials  # type: ignore
+    creds = load_credentials()
+    wavespeed_key = creds.get("wavespeed_key") or creds.get("wavespeed")
+    if not wavespeed_key:
+        return h._send_error_v59(
+            503,
+            error_code="WAVESPEED_NOT_CONFIGURED",
+            error_message="WAVESPEED_API_KEY not configured",
+            retry_safe=False,
+        )
+
+    try:
+        from tools import kling_character_registry as reg
+
+        from server_handlers.milestone_scope import rebind_bg_paths_from_app
+
+        rebind_bg_paths_from_app(h.app)
+        result = reg.set_element_identity(speaker, abs_path, wavespeed_key)
+    except reg.ElementVisualCanonicalError as exc:
+        return h._send_error_v59(
+            409,
+            error_code="ELEMENT_VISUAL_CANONICAL_ERROR",
+            error_message=str(exc),
+            retry_safe=False,
+        )
+    except Exception as exc:
+        return h._send_error_v59(
+            500,
+            error_code="SET_ELEMENT_IDENTITY_FAILED",
+            error_message=str(exc),
+            retry_safe=True,
+        )
+
+    healed_beat_ids: list[str] = []
+
+    def _fleet_heal(sc: dict) -> None:
+        nonlocal healed_beat_ids
+        healed_beat_ids = bg.heal_event_beats_to_canonical_frontal(
+            sc,
+            str(result.get("character") or speaker),
+            str(result.get("pose_abs_path") or abs_path),
+            pose_rel=str(result.get("pose_rel") or ""),
+            wavespeed_key=wavespeed_key,
+        )
+
+    try:
+        bg.mutate_sidecar_locked(
+            _fleet_heal,
+            caller="handle_bg_set_element_identity_fleet_heal",
+        )
+    except Exception:
+        healed_beat_ids = []
+
+    thumb_b64 = None
+    element_char_ref_ok = None
+    if beat_id:
+
+        def _identity_patch(b: dict, _sc: dict) -> None:
+            nonlocal thumb_b64, element_char_ref_ok
+            b["reference_image_locked"] = True
+            ref = b.get("reference_image")
+            if isinstance(ref, dict) and (ref.get("abs_path") or "") == abs_path:
+                bg.ensure_beat_element_char_ref_for_o3(b, wavespeed_key)
+                element_char_ref_ok = b.get("element_char_ref_ok")
+                if not ref.get("thumb_b64"):
+                    from lib.event_library import ref_image_thumb_b64
+
+                    _t = ref_image_thumb_b64(abs_path, h.app._library_root_dirs())
+                    if _t:
+                        b["reference_image"] = dict(ref)
+                        b["reference_image"]["thumb_b64"] = _t
+                        thumb_b64 = _t
+            else:
+                bg.ensure_beat_element_char_ref_for_o3(b, wavespeed_key)
+                element_char_ref_ok = b.get("element_char_ref_ok")
+
+        bg.update_beat_locked(beat_id, _identity_patch)
+
+    payload = dict(result)
+    if healed_beat_ids:
+        payload["healed_beat_ids"] = healed_beat_ids
     if element_char_ref_ok is not None:
         payload["element_char_ref_ok"] = element_char_ref_ok
     if thumb_b64:
