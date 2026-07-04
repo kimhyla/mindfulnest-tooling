@@ -910,3 +910,115 @@ def test_bg_add_element_pose_handler_registered():
     assert "/api/bg/add-element-pose" in server
     endpoints = (TOOLS / "storyboard-v2" / "src" / "api" / "endpoints.ts").read_text(encoding="utf-8")
     assert "bg_add_element_pose" in endpoints
+
+
+def test_humanoid_benson_refs_use_production_poses_dir():
+    from beat_generator import _HUMANOID_CHAR_REFS
+
+    benson = _HUMANOID_CHAR_REFS["Benson"]
+    assert benson["default"].startswith("Production/Benson/poses/")
+    assert benson["neutral"].startswith("Production/Benson/poses/")
+    assert "benson_neutral_ref.png" not in benson["default"]
+
+
+def test_materialize_char_ref_abs_path_prefers_body_then_sidecar(tmp_path: Path):
+    sidecar_path = tmp_path / "stored.png"
+    body_path = tmp_path / "body.png"
+    sidecar_path.write_bytes(b"s")
+    body_path.write_bytes(b"b")
+    beat = {"reference_image": {"abs_path": str(sidecar_path)}}
+    assert owc.materialize_char_ref_abs_path(beat, str(body_path)) == str(body_path.resolve())
+    assert owc.materialize_char_ref_abs_path(beat, "") == str(sidecar_path.resolve())
+
+
+def test_try_register_locked_drop_promotes_when_path_not_frontal(
+    tmp_path: Path, monkeypatch,
+):
+    from tools import kling_character_registry as reg
+
+    poses = tmp_path / "Benson" / "poses"
+    poses.mkdir(parents=True)
+    (poses / "benson_pose_neutral.png").write_bytes(b"frontal-bytes")
+    drop = tmp_path / "library" / "new_pose.png"
+    drop.parent.mkdir(parents=True)
+    drop.write_bytes(b"new-drop-bytes")
+
+    registry = {
+        "characters": {
+            "Benson": {
+                "status": "active",
+                "element_id": "el1",
+                "kling_voice_id": "voice123",
+                "frontal_image": "Benson/poses/benson_pose_neutral.png",
+                "refer_images": ["Benson/poses/benson_pose_neutral.png"],
+                "element_name": "Benson",
+            },
+        },
+    }
+    (tmp_path / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+    reg.set_prod_root(tmp_path)
+
+    calls: list[dict] = []
+
+    def fake_add(speaker, path, key, *, promote_frontal=False):
+        calls.append({"speaker": speaker, "path": path, "promote_frontal": promote_frontal})
+        return {"ok": True, "pose_rel": "Benson/poses/new_pose.png", "action": "added"}
+
+    monkeypatch.setattr(reg, "add_element_pose", fake_add)
+    monkeypatch.setattr(
+        reg,
+        "char_ref_matches_element_images",
+        lambda *_a, **_k: (False, "no match"),
+    )
+    monkeypatch.setattr(reg, "is_speaker_voice_ready", lambda _s: True)
+    monkeypatch.setattr(
+        reg,
+        "reconcile_char_ref_with_element",
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("no pose")),
+    )
+
+    beat = {
+        "speaker": "Benson",
+        "reference_image": {"abs_path": str(drop)},
+        "reference_image_locked": True,
+    }
+    monkeypatch.setattr(bg, "resolve_beat_char_ref_path", lambda _b: str(drop))
+    out = bg.try_register_dropped_char_ref_on_element(beat, "ws-key")
+    assert out["ok"] is True
+    assert calls[0]["promote_frontal"] is True
+
+
+def test_add_element_pose_promote_frontal_overwrites_existing(tmp_path: Path, monkeypatch):
+    from tools import kling_character_registry as reg
+
+    poses = tmp_path / "Benson" / "poses"
+    poses.mkdir(parents=True)
+    (poses / "benson_pose_neutral.png").write_bytes(b"frontal")
+    source = tmp_path / "library" / "custom.png"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"custom")
+
+    registry = {
+        "characters": {
+            "Benson": {
+                "status": "active",
+                "element_id": "old",
+                "kling_voice_id": "voice123",
+                "frontal_image": "Benson/poses/benson_pose_neutral.png",
+                "refer_images": ["Benson/poses/benson_pose_neutral.png"],
+                "element_name": "Benson",
+            },
+        },
+    }
+    (tmp_path / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+    reg.set_prod_root(tmp_path)
+
+    monkeypatch.setattr(
+        "tools.kling_element_voice.register_kling_element",
+        lambda *_a, **_k: ("new_el", "pred"),
+    )
+
+    result = reg.add_element_pose("Benson", source, "ws-key", promote_frontal=True)
+    saved = json.loads((tmp_path / "character_subjects.json").read_text(encoding="utf-8"))
+    assert saved["characters"]["Benson"]["frontal_image"] == result["pose_rel"]
+    assert result["pose_rel"] != "Benson/poses/benson_pose_neutral.png"

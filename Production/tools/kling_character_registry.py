@@ -683,10 +683,24 @@ def _unique_pose_dest(char_key: str, source: Path) -> tuple[Path, str]:
     return dest.resolve(), rel
 
 
+def resolve_frontal_abs_path(speaker: str) -> str | None:
+    """Absolute path for the speaker's registered Element frontal_image, if on disk."""
+    entry = get_character_entry(speaker) or {}
+    frontal_rel = str(entry.get("frontal_image") or "").strip()
+    if not frontal_rel:
+        return None
+    path = prod_root() / frontal_rel
+    if path.is_file():
+        return str(path.resolve())
+    return None
+
+
 def add_element_pose(
     character: str,
     source_abs_path: str | Path,
     wavespeed_key: str,
+    *,
+    promote_frontal: bool = False,
 ) -> dict[str, Any]:
     """Copy a pose PNG into Production/<Char>/poses and re-register Element.
 
@@ -719,10 +733,15 @@ def add_element_pose(
     if not voice_id:
         raise RuntimeError(f"{char_key!r} has no kling_voice_id — cannot re-register Element.")
 
-    dest, rel_pose = _unique_pose_dest(char_key, source)
-    from beat_generator import copy_file_durable
+    existing_rel = find_pose_rel_by_hash(char_key, str(source))
+    if existing_rel and (prod_root() / existing_rel).is_file():
+        rel_pose = existing_rel
+        dest = (prod_root() / existing_rel).resolve()
+    else:
+        dest, rel_pose = _unique_pose_dest(char_key, source)
+        from beat_generator import copy_file_durable
 
-    copy_file_durable(source, dest)
+        copy_file_durable(source, dest)
 
     refer = ensure_refer_anchors(char_key, [str(r) for r in (cfg.get("refer_images") or [])], cfg)
     if rel_pose not in refer:
@@ -738,7 +757,7 @@ def add_element_pose(
         source,
         frontal_rel=str(cfg.get("frontal_image") or "") or None,
     )
-    if not cfg.get("frontal_image"):
+    if promote_frontal or not cfg.get("frontal_image"):
         cfg["frontal_image"] = rel_pose
 
     element_id, _prediction_id = register_kling_element(
