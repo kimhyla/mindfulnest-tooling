@@ -58,7 +58,6 @@ import {
 } from '../../phaseBCedricContract';
 import {
   coercePhaseAArloBaseClipId,
-  PHASE_A_ARLO_AVATAR_STILL_LABEL,
   PHASE_A_ARLO_BASE_CLIP_CANONICAL,
 } from '../../phaseAArloContract';
 import { phaseWatercolorOverlayCssVars } from './phaseWatercolorOverlayGeometry';
@@ -75,6 +74,21 @@ const PHASE_A_CLIP_POSITIONS: ReadonlyArray<PhaseAClipPosition> = ['sitting'];
 const PHASE_A_CLIP_LABELS: Record<PhaseAClipPosition, string> = {
   sitting: 'Arlo base (talking)',
 };
+
+function phaseBaseClipSelectOptions(
+  phase: 'a' | 'b',
+  clips: ReadonlyArray<BaseClipItem>,
+): BaseClipItem[] {
+  const character = phase === 'a' ? 'arlo' : 'cedric';
+  return clips
+    .filter((c) => {
+      if (c.character === character) return true;
+      const id = c.id.toLowerCase();
+      if (character === 'arlo') return id.includes('arlo') || id.includes('chipper');
+      return id.includes('cedric');
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
 
 interface WatercolorItem {
   key: string;
@@ -1299,7 +1313,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             }}
           >
             <option value="">— select —</option>
-            {phaseABaseClipOptions(baseClips).map((c) => (
+            {phaseBaseClipSelectOptions(phase, baseClips).map((c) => (
               <option key={c.id} value={c.id}>
                 {c.id} ({c.duration_s ?? '?'}s)
               </option>
