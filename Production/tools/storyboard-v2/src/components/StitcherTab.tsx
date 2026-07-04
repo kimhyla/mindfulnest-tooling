@@ -2573,6 +2573,7 @@ export function StitcherTab() {
               data-stitch-mux-stale-while-revalidate="STITCH_MUX_STALE_WHILE_REVALIDATE_V1"
               data-stitch-artifact-orchestrator={STITCH_ARTIFACT_ORCHESTRATOR_V1}
               data-stitch-single-owner="STITCH_SINGLE_OWNER_V1"
+              data-stitch-bake-slot-authority="STITCH_BAKE_SLOT_AUTHORITY_V1"
               data-stitch-slot-edit-dispatch={STITCH_SLOT_EDIT_DISPATCH_V1}
               data-stitch-mux-src-identity={STITCH_MUX_SRC_IDENTITY_V1}
               data-stitch-slot-session-cache="STITCH_SLOT_SESSION_CACHE_V1"
