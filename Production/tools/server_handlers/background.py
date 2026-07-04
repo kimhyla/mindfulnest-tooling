@@ -748,15 +748,28 @@ def _magic_partition_writeback_ensure_display_order(partition: dict, sb_beat_id:
 
 _MAGIC_STILL_CLEAR_FIELDS = (
     "magic_still_path",
+    "magic_still_source_path",
     "magic_manual_path",
     "magic_path_authored_against",
 )
 
 _MAGIC_VIDEO_CLEAR_FIELDS = (
     "magic_video_path",
+    "magic_video_source_path",
     "magic_manual_path",
     "magic_path_authored_against",
 )
+
+
+def _magic_production_intent(body: dict | None) -> bool:
+    """MAGIC_SOURCE_BINDING_V1 — agent smoke must not write canonical partition magic."""
+    if (body or {}).get("production_intent") is True:
+        return True
+    return str(os.environ.get("MN_MAGIC_ALLOW_SMOKE_PARTITION_WRITE", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
 
 
 def write_magic_delivery(
@@ -933,7 +946,8 @@ def mirror_magic_clear_to_sidecar_after_image_assign(
         h,
         request_beat_id=bg_beat_id,
         video_role=video_role,
-        fields={"magic_still_path": None, "magic_video_path": None},
+        fields={"magic_still_path": None, "magic_still_source_path": None,
+                "magic_video_path": None, "magic_video_source_path": None},
     )
 
 
@@ -969,6 +983,40 @@ def handle_clear_magic_still(h, body: dict) -> None:
         "storyboard_beat_id": sb_beat_id,
         "partition_written": partition_written,
         "cleared_fields": list(_MAGIC_STILL_CLEAR_FIELDS),
+    })
+
+
+def handle_clear_magic_video(h, body: dict) -> None:
+    """POST /api/storyboard/clear_magic_video — drop magic-on-video from partition + sidecar."""
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+    beat_id = (body or {}).get("beat_id")
+    if not beat_id:
+        return h._send_error_v59(
+            400,
+            error_code="MISSING_BEAT_ID",
+            error_message="beat_id required",
+            retry_safe=False,
+        )
+    wb = write_magic_delivery(
+        h,
+        body=body,
+        request_beat_id=str(beat_id),
+        partition_fields={key: None for key in _MAGIC_VIDEO_CLEAR_FIELDS},
+        verify_field="magic_video_path",
+        expected_value="",
+        log_tag="clear_magic_video",
+        verify_absent=True,
+    )
+    if wb is None:
+        return
+    partition_written, sb_beat_id, _ = wb
+    return h._send_json(200, {
+        "ok": True,
+        "beat_id": beat_id,
+        "storyboard_beat_id": sb_beat_id,
+        "partition_written": partition_written,
+        "cleared_fields": list(_MAGIC_VIDEO_CLEAR_FIELDS),
     })
 
 
@@ -1165,9 +1213,24 @@ def handle_magic_still(h, body: dict)-> None:
     magic_filename = Path(rendered).name
     magic_sidecar_fields = {
         "magic_still_path": magic_filename,
+        "magic_still_source_path": safe_sip,
         "magic_manual_path": clean_path,
         **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
     }
+    if not _magic_production_intent(body):
+        smoke_dir = Path(h.app.event_dir) / "_magic_smoke"
+        smoke_dir.mkdir(parents=True, exist_ok=True)
+        smoke_path = smoke_dir / magic_filename
+        shutil.copy2(str(rendered), smoke_path)
+        return h._send_json(200, {
+            "ok": True,
+            "smoke": True,
+            "beat_id": beat_id,
+            "composite_path": str(smoke_path),
+            "magic_still_path": magic_filename,
+            "partition_written": None,
+            "manual_path_points": len(clean_path),
+        })
     wb = write_magic_delivery(
         h,
         body=body,
@@ -1699,9 +1762,27 @@ def handle_magic_video(h, body: dict)-> None:
     magic_filename = Path(out_path).name
     magic_sidecar_fields = {
         "magic_video_path": magic_filename,
+        "magic_video_source_path": safe_ffmpeg_src,
         "magic_manual_path": clean_path,
         **({"magic_path_authored_against": path_authored_against} if path_authored_against else {}),
     }
+    if not _magic_production_intent(body):
+        smoke_dir = Path(h.app.event_dir) / "_magic_smoke"
+        smoke_dir.mkdir(parents=True, exist_ok=True)
+        smoke_path = smoke_dir / magic_filename
+        shutil.copy2(str(out_path), smoke_path)
+        return h._send_json(200, {
+            "ok": True,
+            "smoke": True,
+            "beat_id": beat_id,
+            "composite_path": str(smoke_path),
+            "magic_video_path": magic_filename,
+            "partition_written": None,
+            "source_dims": [comp_w, comp_h],
+            "path_authored_against": path_authored_against,
+            "duration_s": vid_duration,
+            "manual_path_points": len(clean_path),
+        })
     wb = write_magic_delivery(
         h,
         body=body,
@@ -3891,7 +3972,9 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
         from server_handlers.milestone_scope import rebind_bg_paths_from_app
 
         rebind_bg_paths_from_app(h.app)
-        result = reg.add_element_pose(speaker, abs_path, wavespeed_key)
+        result = reg.add_element_pose(
+            speaker, abs_path, wavespeed_key,
+        )
     except Exception as exc:
         return h._send_error_v59(
             500,

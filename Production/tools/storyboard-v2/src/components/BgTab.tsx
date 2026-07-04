@@ -43,7 +43,7 @@ import {
   resolveO3PlaybackDurationS,
   resolveO3TrimAuthorityDurationS,
 } from './bg/BgO3CutOverlay';
-import { resolveClipPlaybackTruth } from '../utils/playbackCache';
+import { clearPlaybackUrlCache, resolveClipPlaybackTruth } from '../utils/playbackCache';
 import {
   forgetCutPreviewsForBeat,
   recallCutPreviewUrl,
@@ -564,6 +564,18 @@ function resolveO3OptionKey(opt: GptOption, beatId: string, slotIndex: number): 
   if (opt.key) return opt.key;
   const base = (opt.video_path ?? '').split('/').pop()?.replace(/\.mp4$/i, '') ?? '';
   return base || `${beatId}_o3_${slotIndex}`;
+}
+
+/** Per-option trim fields with beat-level fallback when this option is the active O3 clip. */
+function resolveO3OptionTrimFields(
+  opt: GptOption | null | undefined,
+  beat: BgBeat,
+): { trimStartS: number; trimBackS: number } {
+  const mirrorsActive = !!opt?.video_path && opt.video_path === beat.kling_o3_video_path;
+  return {
+    trimStartS: opt?.trim_start_s ?? (mirrorsActive ? (beat.kling_o3_trim_start ?? 0) : 0),
+    trimBackS: opt?.trim_back_s ?? (mirrorsActive ? (beat.kling_o3_trim_back ?? 0) : 0),
+  };
 }
 
 function o3GenerationFromPath(path?: string | null): number {
@@ -2544,6 +2556,9 @@ export function BgTab() {
       ...(opts?.videoPath ? { video_path: opts.videoPath } : {}),
     });
     if (result.ok) {
+      if (!opts?.previewOnly) {
+        clearPlaybackUrlCache();
+      }
       const rawDurationGate = result.data?.raw_duration_s;
       const effectiveGate = result.data?.effective_duration_s;
       const shorteningRequested = !opts?.clear && (
@@ -2756,6 +2771,7 @@ export function BgTab() {
       clear,
     });
     if (result.ok) {
+      clearPlaybackUrlCache();
       updateBgBeats((bs) => bs.map((b) => (
         b.beat_id === beatId
           ? {
@@ -4383,6 +4399,8 @@ function BeatGenCard({
         videoSourceIsAbsolute={!!magicVideoSource}
         magicStillPath={beat.magic_still_path}
         magicVideoPath={beat.magic_video_path}
+        magicStillAppliesToActive={beat.magic_still_applies_to_active === true}
+        magicVideoAppliesToActive={beat.magic_video_applies_to_active === true}
         magicCanonicalKind={beat.magic_canonical_kind ?? null}
         klingO3Status={beat.kling_o3_status ?? null}
         onPreviewMagicStill={magicStillPreviewUrl ? () => {
@@ -4435,7 +4453,9 @@ function BeatGenCard({
 
       {/* 3-options row — 1×3 layout (NOT 3×3 matrix) */}
       <div class="mn-bg-options-row" data-testid={`bg-options-row-${index}`}>
-        {optionsToShow.map((opt, i) => (
+        {optionsToShow.map((opt, i) => {
+          const optionTrim = resolveO3OptionTrimFields(opt, beat);
+          return (
           <BgOptionTile
             // 2026-05-11 Rule 26 fix — key is INDEX-stable, not opt.key. With
             // the prior `opt?.key ?? slot-${i}` key, dropping a library image
@@ -4468,8 +4488,8 @@ function BeatGenCard({
             onApproveStill={(optionKey) => onApproveStill(optionKey)}
             cutStartS={opt?.cut_start_s ?? 0}
             cutEndS={opt?.cut_end_s ?? 0}
-            trimStartS={opt?.trim_start_s ?? 0}
-            trimBackS={opt?.trim_back_s ?? 0}
+            trimStartS={optionTrim.trimStartS}
+            trimBackS={optionTrim.trimBackS}
             onApplyO3Cut={onApplyO3Cut}
             trimStart={beat.kling_o3_trim_start ?? 0}
             trimBack={beat.kling_o3_trim_back ?? null}
@@ -4479,7 +4499,8 @@ function BeatGenCard({
             showReplaceOnRegen={!!beat.speaker}
             overrideVideoUrl={resolveO3TileMagicOverrideUrl(beat, opt, eventId)}
           />
-        ))}
+          );
+        })}
       </div>
       {(beat.kling_o3_disk_delivery_count ?? 0) > 0 && beat.kling_o3_clips_dir ? (
         <p class="mn-dim mn-bg-o3-disk-hint" data-testid={`bg-o3-disk-hint-${index}`}>
@@ -5268,6 +5289,27 @@ function BgOptionTile({
     }
   };
 
+  // Saved trim/cut on disk — auto-load materialized preview when tile is selected.
+  useEffect(() => {
+    if (!selected || !hasSavedCut || previewUrl || cutDraftDirty || cutBusy || pendingCut) return;
+    if (!option.video_path || overlayTimelineDurationS <= 0) return;
+    const trimBack = trimBackS > 0.009 ? trimBackS : cutPreviewTrimBackS();
+    const sig = `${option.video_path}|${savedKeepStartS.toFixed(2)}|${trimBack.toFixed(2)}`;
+    if (lastAutoPreviewRef.current === sig) return;
+    void refreshSavedCutPreview(savedKeepStartS, trimBack);
+  }, [
+    selected,
+    hasSavedCut,
+    previewUrl,
+    cutDraftDirty,
+    cutBusy,
+    pendingCut,
+    option.video_path,
+    savedKeepStartS,
+    trimBackS,
+    overlayTimelineDurationS,
+  ]);
+
   const pendingCutValid = pendingKeep != null
     && trimAuthorityDurationS > 0
     && isValidO3CutWindow(trimAuthorityDurationS, pendingKeep.startS, pendingKeep.endS);
@@ -5288,20 +5330,36 @@ function BgOptionTile({
     if (!saved.ok) return;
     clearPendingCut();
     resetCutHandleFlags();
+    clearPlaybackUrlCache();
+    const trimBack = saved.trimBackS ?? cutPreviewTrimBackS();
+    const startS = saved.keepStartS ?? effectiveKeepStartS;
+    if (saved.previewUrl) {
+      rememberCutPreviewUrl(beatId, optionIndex, option.video_path!, startS, trimBack, saved.previewUrl);
+      lastAutoPreviewRef.current = `${option.video_path}|${startS.toFixed(2)}|${trimBack.toFixed(2)}`;
+      await swapVideoToPreview(saved.previewUrl);
+      return;
+    }
     if (saved.trimBaked && saved.videoPath) {
       setPreviewUrl(null);
       lastAutoPreviewRef.current = null;
       forgetCutPreviewsForBeat(beatId);
+      const truth = await resolveClipPlaybackTruth(saved.videoPath);
+      if (truth?.rawDurationS != null && truth.rawDurationS > 0) {
+        setSourceDurationS(truth.rawDurationS);
+        rawDurationRef.current = truth.rawDurationS;
+      }
+      if (truth?.playbackUrl) {
+        setPlaybackUrl(truth.playbackUrl);
+      }
       const video = videoRef.current;
-      if (video && canonicalVideoUrl) {
-        video.src = canonicalVideoUrl;
+      const url = truth?.playbackUrl ?? canonicalVideoUrl;
+      if (video && url) {
+        video.src = url;
         video.load();
       }
       return;
     }
-    const trimBack = saved.trimBackS ?? cutPreviewTrimBackS();
-    const startS = saved.keepStartS ?? effectiveKeepStartS;
-    await refreshSavedCutPreview(startS, trimBack, saved.previewUrl);
+    await refreshSavedCutPreview(startS, trimBack);
   };
 
   const clearCut = async () => {
@@ -5500,6 +5558,10 @@ function BgOptionTile({
       rawDurationRef.current = applied.rawDurationS;
     }
     clearDirtyAfterSave();
+    if (applied?.previewUrl) {
+      await swapVideoToPreview(applied.previewUrl);
+      return;
+    }
     const video = videoRef.current;
     if (video && canonicalVideoUrl) {
       setPreviewUrl(null);

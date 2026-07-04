@@ -736,6 +736,7 @@
           scope_event_id: scopeEventId || 'Event_1',
           scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
           path_authored_against: window.__pathAuthoredAgainst || null,
+          production_intent: true,
         };
       } else if (mode === 'magic_video') {
         body = {
@@ -746,6 +747,7 @@
           scope_event_id: scopeEventId || 'Event_1',
           scope_video_role: scopeVideoRole,  // S5.5b Bug 3 fix (LD-474)
           path_authored_against: window.__pathAuthoredAgainst || null,
+          production_intent: true,
         };
       } else {  // watercolor_animate
         const motionDesc = (document.getElementById('motion-desc-input').value || '').trim();
