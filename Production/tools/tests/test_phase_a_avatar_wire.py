@@ -154,7 +154,7 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
         vs.write_bytes(b"\x00fakevoice\x00")
         bases = self.event_dir.parent / "assets" / "lipsync_bases"
         bases.mkdir(parents=True, exist_ok=True)
-        base_clip = bases / "arlo_idle_wizard_desk_v7.mp4"
+        base_clip = bases / "arlo_idle_wizard_desk_v8.mp4"
         base_clip.write_bytes(b"\x00fakebase\x00")
 
         def _apply(state):
@@ -199,7 +199,7 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
             status, resp, _ = _http_post(
                 self.port,
                 "/api/phase_a/lipsync",
-                {"phase": "a", "base_clip_id": "arlo_idle_wizard_desk_v7"},
+                {"phase": "a", "base_clip_id": "arlo_idle_wizard_desk_v8"},
             )
             self.assertEqual(status, 202, resp)
             self.assertEqual(resp.get("status"), "running")

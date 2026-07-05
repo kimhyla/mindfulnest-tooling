@@ -1,8 +1,8 @@
 """Phase A Arlo base-clip contract — canonical preset for all events.
 
-Jul 4 2026: ``arlo_idle_wizard_desk_v7`` — 16:9 (1280×720) wizard-desk idle,
-mouth closed entire clip, natural idle gestures. Supersedes v6 (mouth motion).
-Prior v1–v6 coerced on read/submit.
+Jul 4 2026: ``arlo_idle_wizard_desk_v8`` — medium close-up 16:9 wizard-desk idle
+(10s Kling source; crossfade-looped to Phase A stem length). Kim-approved winner.
+Prior v1–v7 coerced on read/submit.
 
 Never use NEW STYLE CHARACTERS/BACKGROUND stills for Arlo idle — wrong asset class.
 """
@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v7"
+PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v8"
 
-# Text-free wide 16:9 wizard-desk still (Jul 4) — headroom + bottom sacrifice zone contract.
+# Medium close-up 16:9 wizard-desk still — sealed-mouth idle base for ByteDance lipsync.
 PHASE_A_ARLO_CANONICAL_STILL_REL = (
-    "NEW STYLE CHARACTERS/ARLO/arlo_still_wide_16x9_v2.png"
+    "NEW STYLE CHARACTERS/ARLO/arlo_still_medium_16x9_v1.png"
 )
 PHASE_A_ARLO_EVENT_STILL_NAME = "phase_a_arlo_canonical_still.png"
 
@@ -25,6 +25,7 @@ _DEPRECATED_EXACT = frozenset({
     "arlo_idle_wizard_desk_v4",
     "arlo_idle_wizard_desk_v5",
     "arlo_idle_wizard_desk_v6",
+    "arlo_idle_wizard_desk_v7",
     "chipper_idle_closeup_v1",
     "chipper_idle_closeup_v2",
 })
@@ -69,9 +70,6 @@ def validate_phase_a_arlo_idle_still_path(path: Path) -> Path:
 def phase_a_arlo_idle_still_candidates(event_dir: Path, prod_root: Path) -> list[Path]:
     return [
         prod_root / PHASE_A_ARLO_CANONICAL_STILL_REL,
-        prod_root / "NEW STYLE CHARACTERS" / "ARLO"
-        / "ChatGPT Image Jul 4, 2026, 05_42 PM Arlo wizard desk.png",
-        prod_root / "NEW STYLE CHARACTERS" / "ARLO" / "arlo_still_wide_16x9_v1.png",
         event_dir / PHASE_A_ARLO_EVENT_STILL_NAME,
         event_dir / "phase_a_arlo_wizard_desk_v1.png",
         prod_root / "Arlo" / "poses" / "arlo_wizard_room_neutral_vest.png",
