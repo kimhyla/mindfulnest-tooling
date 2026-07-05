@@ -52,6 +52,12 @@ describe('waveformTimeAuthority', () => {
     assert.equal(ta.resolvePausedPlayheadMs(0), 15_000);
   });
 
+  it('resolvePausedPlayheadMs keeps scrub when legacy scrub ref cleared but playheadMs set', () => {
+    const ta = createWaveformTimeAuthority(0, 30_000);
+    ta.endDragSeek(12_000);
+    assert.equal(ta.resolvePausedPlayheadMs(0, null), 12_000);
+  });
+
   it('timelineRelXFromClientX respects track insets', () => {
     const box = { left: 100, width: 200 };
     assert.equal(timelineRelXFromClientX(box, 100), 0);
