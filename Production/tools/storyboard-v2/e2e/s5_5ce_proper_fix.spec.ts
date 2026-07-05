@@ -17,6 +17,18 @@ import { restoreE2eFixtureOnServer } from './fixtureRestore';
 const SERVER = 'http://localhost:5200';
 const FIXTURE_EVENT = 'Event_e2e_fixture';
 
+const EMPTY_NEXT_OPTIONS = { ok: true, options: [], anomalies: [] };
+
+async function mockEmptyNextOptions(page: Page): Promise<void> {
+  await page.route('**/api/production/next-options**', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(EMPTY_NEXT_OPTIONS),
+    });
+  });
+}
+
 test.afterAll(async ({ request }) => {
   await restoreE2eFixtureOnServer(request);
 });
@@ -108,6 +120,7 @@ test.describe('R1 — scope-change re-fetch', () => {
   });
 
   test('R1.2 — + New Milestone Create auto-loads milestone scope', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await gotoApp(page);
     // Open the project selector dropdown.
     const projectSelect = page.locator('[data-testid="project-selector"] select');
@@ -404,7 +417,7 @@ test.describe('R4 — Production Map placeholder', () => {
     // After fix (Phase 3.4): UI note above the map table explains the TBD policy.
     const note = page.locator('[data-testid="production-map-tbd-note"]');
     await expect(note).toBeVisible();
-    await expect(note).toContainText(/V1 scope|placeholder|author each by creating an Event/i);
+    await expect(note).toContainText(/Play order|Arc Skeleton|New Event|New Milestone/i);
   });
 });
 
