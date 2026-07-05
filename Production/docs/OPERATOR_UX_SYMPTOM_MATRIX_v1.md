@@ -256,7 +256,7 @@ Commits used **only** to date rows where docs cite them — not as primary inven
 | G4 | Sidecar beats disappear / mirror stale / JSON conflicts | Sidecar | `verify_beatgen_truth_stack_durability.sh` | **shipped** |
 | G5 | Crop/upload lands in wrong library root on milestone scope | Library | `verify_event_library_scope_durability.sh` | **shipped** |
 | G6 | Master tile shows uncropped when delivery exists / Directus timeout | Library | `DIRECTUS_HAS_CROP_DISK_FALLBACK_V1` | **shipped** |
-| G7 | Library sessionStorage stale after crop/upload/delete | Library | `LIBRARY_CLIENT_CACHE_COHERENCE_V1` | **shipped** |
+| G7 | Library sessionStorage stale after crop/upload/delete; ghost tiles after refetch | Library | `LIBRARY_CLIENT_CACHE_COHERENCE_V2` | **shipped** |
 | G8 | Trim/cut/option change doesn't invalidate stitch slot preview | Stitch | `BG_O3_STITCH_EXPORT_LINEAGE_V1` | **shipped** |
 
 ---

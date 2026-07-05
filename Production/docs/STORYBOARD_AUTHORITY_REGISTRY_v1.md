@@ -65,7 +65,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **o3_subprocess_lifecycle** — shutdown finalize live jobs | explicit_approve | `load_intent_terminal` | `finalize_live_o3_jobs_before_shutdown` | shipped | same |
 | **cr_library_milestone_scope** — library CR event_dir on milestone | derived | `_resolve_cr_library_scope` | `assert_production_scope` | shipped | same |
 | **directus_has_crop_disk_fallback** — has_crop when Directus slow | disk | `_enrich_has_crop_from_disk` | same | shipped | same |
-| **library_client_cache_coherence** — bust sessionStorage after mutations | derived | `invalidateLibrarySessionCache` | crop/upload/delete handlers | shipped | same |
+| **library_client_cache_coherence** — server-authoritative list + tagged optimistic overlay (V2); session bust (V1) | derived | `mergeLibraryRefetchWithOptimistic` / `invalidateLibrarySessionCache` | crop/upload/delete + refetch | shipped | `TECH_SPEC_LIBRARY_CLIENT_CACHE_COHERENCE_V2.md` |
 | **bg_o3_stitch_export_lineage** — invalidate stitch preview on export change | derived | `compute_bg_segment_o3_export_lineage_sig` | `invalidate_stitch_slots_for_o3_export_change` | shipped | same |
 
 ### Stitcher
