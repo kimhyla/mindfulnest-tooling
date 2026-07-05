@@ -478,14 +478,14 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
     AuthorityConcept(
         id="library_client_cache_coherence",
         status="shipped",
-        marker="LIBRARY_CLIENT_CACHE_COHERENCE_V1",
-        question="Who busts library sessionStorage after mutations?",
+        marker="LIBRARY_CLIENT_CACHE_COHERENCE_V2",
+        question="Who reconciles library panel list with disk after mutations?",
         authority_shape="derived",
         server_module="server_handlers/cropper.py",
         server_read="handle_cr_library",
         client_module="storyboard-v2/src/utils/libraryCachePolicy.ts",
-        client_read="invalidateLibrarySessionCache",
-        spec_doc="Production/docs/TECH_SPEC_CROSS_PIPELINE_G1_G8_CLOSURE_v1.md",
+        client_read="mergeLibraryRefetchWithOptimistic",
+        spec_doc="Production/docs/TECH_SPEC_LIBRARY_CLIENT_CACHE_COHERENCE_V2.md",
     ),
     AuthorityConcept(
         id="bg_o3_stitch_export_lineage",
