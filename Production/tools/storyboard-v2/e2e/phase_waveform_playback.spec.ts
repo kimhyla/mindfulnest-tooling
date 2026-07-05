@@ -557,6 +557,52 @@ test.describe('PHASE_WAVEFORM_PLAY — drag-seek must not snap to 0 (WAVEFORM_DR
     expect(ms).toBeGreaterThan(8000);
     expect(ms).toBeLessThan(22000);
   });
+
+  test('SEEK-DRAG-B-STEM-1 — Phase B stem review drag release must not snap to 0', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page, 40);
+    await mockPhaseState(page, {
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_lipsync_requires_regen: true,
+      phase_b_voice_stem_mtime: 2_000,
+      phase_b_lipsync_mtime: 1_000,
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    await expect(waveform).toHaveAttribute('data-source-label', 'stem');
+
+    const playBtn = page.locator(
+      '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-play-btn"]',
+    );
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/⏸ Pause/, { timeout: 3_000 });
+    await page.waitForTimeout(800);
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/▶ Play/, { timeout: 3_000 });
+
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+    const y = box!.y + box!.height * 0.72;
+    const x0 = box!.x + box!.width * 0.18;
+    const x1 = box!.x + box!.width * 0.72;
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 12; i += 1) {
+      await page.mouse.move(x0 + ((x1 - x0) * i) / 12, y);
+      await page.waitForTimeout(20);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(500);
+
+    const durMs = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(ms).toBeGreaterThan(durMs * 0.35);
+    expect(ms).toBeLessThan(durMs * 0.95);
+  });
 });
 
 test.describe('PHASE_WAVEFORM_PLAY — WTA remount preserves playhead (REMOUNT-1)', () => {

@@ -62,6 +62,7 @@ import {
 } from '../../phaseAArloContract';
 import { phaseWatercolorOverlayCssVars } from './phaseWatercolorOverlayGeometry';
 import { PLAYBACK_VIDEO_ANTI_BANDING_CLASS, linkedMediaSameFilename } from '../../utils/playbackVideoPolicy';
+import { waveformAudioForPhase } from '../../utils/waveformAudioPolicy.ts';
 import { watercolorFileUrl, watercolorOverlaySrc } from '../../utils/watercolorAssets';
 
 // Schema translation for non-cue phase fields lives in pickPhaseSlice.
@@ -221,41 +222,6 @@ type PhasePreviewFile = {
   label: AudioSourceLabel;
   kind: 'stitched' | 'lipsync';
 };
-
-function priorityAudioFile(
-  slice: PhaseStateSlice,
-): { name: string; label: AudioSourceLabel } | null {
-  const stemMtime = slice.voice_stem_mtime ?? 0;
-  const lipsyncMtime = slice.lipsync_mtime ?? 0;
-  const lipsyncStale =
-    Boolean(slice.lipsync_requires_regen) ||
-    (slice.lipsync_status?.startsWith('error:') ?? false) ||
-    (slice.lipsync_status === 'qa_failed') ||
-    (stemMtime > 0 && lipsyncMtime > 0 && stemMtime > lipsyncMtime);
-
-  // After stem regen, audition the fresh stem — not audio extracted from stale lipsync.
-  if (slice.voice_stem_file && lipsyncStale) {
-    return { name: slice.voice_stem_file, label: 'stem' };
-  }
-  if (slice.lipsync_file && !lipsyncStale) {
-    return { name: slice.lipsync_file, label: 'lipsync' };
-  }
-  if (slice.mixed_audio_file) return { name: slice.mixed_audio_file, label: 'mixed' };
-  if (slice.voice_stem_file) return { name: slice.voice_stem_file, label: 'stem' };
-  if (slice.lipsync_file) return { name: slice.lipsync_file, label: 'lipsync' };
-  return null;
-}
-
-/** Phase A LD-829 — fresh stitched is canonical for waveform + player; Phase B stays lipsync-first. */
-function priorityAudioFileForPhase(
-  slice: PhaseStateSlice,
-  phase: 'a' | 'b',
-): { name: string; label: AudioSourceLabel } | null {
-  if (phase === 'a' && slice.stitched_file && !stitchedPreviewStale(slice)) {
-    return { name: slice.stitched_file, label: 'stitched' };
-  }
-  return priorityAudioFile(slice);
-}
 
 function stitchedPreviewStale(slice: PhaseStateSlice): boolean {
   if (!slice.stitched_file) return false;
@@ -1007,7 +973,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const priorityAudio = priorityAudioFileForPhase(stateSlice, phase);
+  const priorityAudio = waveformAudioForPhase(stateSlice, phase);
   const lipsyncFile = stateSlice.lipsync_file ?? null;
   // Trim mode: when lipsync exists, keep the current composite on the waveform +
   // linked preview (stem cut handles still target voice_stem server-side).
@@ -1229,7 +1195,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
         ) : null}
 
         {/* Audio waveform — WaveSurfer v7 timeline (LD-330 / LD-472).
-            Priority: lipsync > mixed > stem (resolved by priorityAudioFileForPhase).
+            Priority: lipsync > mixed > stem (waveformAudioForPhase — stitched on preview only, SEEK-5).
             stemTrimMode forces stem when no lipsync; otherwise keeps lipsync linked. */}
         <WaveformTimeline
           audioSrc={waveformAudio ? fileUrl(waveformAudio.name) : null}
