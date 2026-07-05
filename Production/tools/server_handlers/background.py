@@ -3721,6 +3721,8 @@ def handle_bg_update_beat(h, body: dict)-> None:
                         bg.stamp_o3_prompt_box_law(b, text)
                         b.pop("kling_o3_prior_beat_context", None)
                         b.pop("beat_continuity_v1", None)
+                        if bg.beat_is_still_insert(b) and not bg.is_still_insert_prompt_text(text):
+                            bg.set_beat_still_prompt(b, text)
                     else:
                         bg.clear_o3_prompt_box_law(b)
                         b.pop("kling_o3_prior_beat_context", None)
@@ -3729,6 +3731,12 @@ def handle_bg_update_beat(h, body: dict)-> None:
                     bg.sync_beat_scene_notes_from_kling_prompt(b)
                 if field == "kling_o3_prompt_still" and isinstance(value, str):
                     bg.set_beat_still_prompt(b, value)
+                    text = value.strip()
+                    if text and bg.beat_is_still_insert(b):
+                        if (b.get("kling_o3_prompt") or "").strip() != text:
+                            b["kling_o3_prompt"] = text
+                            bg.stamp_o3_prompt_box_law(b, text)
+                            bg.sync_beat_dialogue_from_kling_prompt(b)
         identity_fields_written = set(written) & _BG_ELEMENT_CHAR_REF_SYNC_FIELDS
         if isinstance(pre_reg_gate_ok, bool):
             b["element_char_ref_ok"] = pre_reg_gate_ok
@@ -8491,9 +8499,10 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
         dialogue_override = (body.get("dialogue_text") or "").strip()
         if dialogue_override:
             work_beat["dialogue_text"] = dialogue_override
-        prompt_override = (body.get("kling_o3_prompt") or "").strip()
+        prompt_override = (body.get("kling_o3_prompt") or body.get("kling_o3_prompt_still") or "").strip()
         if prompt_override:
             work_beat["kling_o3_prompt"] = prompt_override
+            bg.set_beat_still_prompt(work_beat, prompt_override)
             bg.stamp_o3_prompt_box_law(work_beat, prompt_override)
         bg.sync_beat_dialogue_from_kling_prompt(work_beat)
         work_sidecar = sidecar
@@ -8566,7 +8575,7 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
             "kling_o3_selected_option_key", "kling_o3_selected_at",
             "kling_o3_trim_start", "kling_o3_trim_back", "kling_o3_trim_end",
             "local_render_params", "audio_file", "still_tts_source_text", "dialogue_text",
-            "kling_o3_prompt", "o3_prompt_box_law", "o3_prompt_box_law_at",
+            "kling_o3_prompt", "kling_o3_prompt_still", "o3_prompt_box_law", "o3_prompt_box_law_at",
             "accepted_library_ref", "accepted_image_key", "gpt_options", "bg_ref_image",
         )
 

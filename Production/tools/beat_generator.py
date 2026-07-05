@@ -5795,11 +5795,37 @@ def still_insert_canonical_delivery_phrases(speaker: str) -> list[str]:
     return _split_still_insert_delivery_phrases(delivery)
 
 
+def _still_insert_is_bare_speak_line(
+    source: str,
+    *,
+    speaker: str | None,
+    spoken: str,
+) -> bool:
+    """True for ``Name speaks/says: "line"`` with no author delivery tags in the prompt."""
+    if not (spoken or "").strip():
+        return False
+    if _extract_still_insert_delivery_phrases(source, speaker=speaker, spoken=spoken):
+        return False
+    return bool(re.search(r"\b(?:speaks?|says)\b", source or "", re.I))
+
+
+def resolve_still_insert_tts_source(beat: dict) -> str:
+    """Prompt-box is law — textarea beats stale ``kling_o3_prompt_still`` on Still+TTS beats."""
+    box = (beat.get("kling_o3_prompt") or "").strip()
+    if beat_is_still_insert(beat) and box and not is_still_insert_prompt_text(box):
+        return box
+    still = resolve_beat_still_prompt(beat)
+    if still:
+        return still
+    return box
+
+
 def resolve_still_insert_delivery_for_tts(
     source: str,
     *,
     speaker: str,
     spoken: str,
+    beat: dict | None = None,
 ) -> list[str]:
     """Pick ElevenLabs v3 delivery tags from the prompt box only.
 
@@ -5814,6 +5840,10 @@ def resolve_still_insert_delivery_for_tts(
             return canonical
     if prose:
         return prose
+    if beat and beat.get("o3_prompt_box_law"):
+        return []
+    if _still_insert_is_bare_speak_line(source, speaker=speaker, spoken=spoken):
+        return []
     return canonical
 
 
@@ -5875,7 +5905,7 @@ def extract_still_insert_tts(beat: dict) -> dict | None:
     """Parse still-insert TTS — spoken line + delivery/emotion for ElevenLabs v3."""
     from beat_extract_policy import extract_spoken_from_dialogue, infer_speaker_from_dialogue
 
-    prompt = resolve_beat_still_prompt(beat) or (beat.get("kling_o3_prompt") or "").strip()
+    prompt = resolve_still_insert_tts_source(beat)
     dialogue = (beat.get("dialogue_text") or "").strip()
 
     # Prompt-box is law: the editable textarea drives still-insert TTS when present.
@@ -5883,10 +5913,8 @@ def extract_still_insert_tts(beat: dict) -> dict | None:
         source = prompt
     elif dialogue:
         source = dialogue
-    elif prompt:
-        source = (beat.get("scene_notes") or "").strip() or prompt
     else:
-        source = ""
+        source = (beat.get("scene_notes") or "").strip()
     if not source:
         return None
 
@@ -5928,7 +5956,7 @@ def extract_still_insert_tts(beat: dict) -> dict | None:
     if not spoken:
         return None
     delivery = resolve_still_insert_delivery_for_tts(
-        source, speaker=speaker, spoken=spoken,
+        source, speaker=speaker, spoken=spoken, beat=beat,
     )
     tts_text = build_still_insert_elevenlabs_text(delivery, spoken)
     return {
