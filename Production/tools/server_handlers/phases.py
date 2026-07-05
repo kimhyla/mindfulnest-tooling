@@ -2634,15 +2634,19 @@ def handle_phase_b_mix_audio(h, body: dict)-> None:
 
 
 def _phase_a_tmp_has_resume_work(event_dir: Path) -> bool:
-    tmp_dir = event_dir / "_tmp_phase_a_permanent"
-    if not tmp_dir.is_dir():
-        return False
-    work = tmp_dir / "bytedance_work"
-    return (
-        work.is_dir()
-        or bool(list(tmp_dir.glob("prepped_audio_*")))
-        or bool(list(tmp_dir.glob("bytedance_raw_*.mp4")))
-    )
+    legacy = event_dir / "_tmp_phase_a_permanent"
+    if legacy.is_dir():
+        work = legacy / "bytedance_work"
+        if (
+            work.is_dir()
+            or bool(list(legacy.glob("prepped_audio_*")))
+            or bool(list(legacy.glob("bytedance_raw_*.mp4")))
+        ):
+            return True
+    arlo_tmp = event_dir / "_tmp_phase_a_arlo_startend"
+    if arlo_tmp.is_dir() and any(arlo_tmp.iterdir()):
+        return True
+    return bool(list(event_dir.glob("_tmp_phase_a_still_*")))
 
 
 def _spawn_phase_a_lipsync_worker(target, *args, **kwargs) -> bool:
@@ -2663,12 +2667,12 @@ def _spawn_phase_a_lipsync_worker(target, *args, **kwargs) -> bool:
 
 
 def sweep_phase_a_lipsync_resume(state_mgr) -> None:
-    """Resume Phase A ByteDance jobs after server restart (Preflight 110 parity).
+    """Resume Phase A Kling start+end still jobs after server restart.
 
     Beat + Phase B module lipsync use persistent pollers with task_id. Phase A
-    base-clip ByteDance runs a long ffmpeg pipeline in a worker thread — that
-    thread dies on restart while state stays ``running``. When tmp work exists
-    on disk, re-spawn the worker with ``resume=True``.
+    runs a long Kling idle + LipSync pipeline in a worker thread — that thread
+    dies on restart while state stays ``running``. When tmp work exists on disk,
+    re-spawn the worker.
     """
     with _phase_a_lipsync_worker_lock:
         if _phase_a_lipsync_worker is not None and _phase_a_lipsync_worker.is_alive():
@@ -2711,8 +2715,7 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
     pending_audio = snap.get("phase_a_lipsync_pending_audio") or snap.get(
         "phase_a_voice_stem_file",
     )
-    base_clip_id = snap.get("phase_a_chipper_sitting_clip_id")
-    if not pending_out or not pending_audio or not base_clip_id:
+    if not pending_out or not pending_audio:
         return
 
     out_path = event_dir / pending_out
@@ -2720,13 +2723,7 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
     if not audio_path.is_file():
         return
 
-    bases_dir = event_dir.parent / "assets" / "lipsync_bases"
-    try:
-        from phase_a_chipper_kling_lipsync import resolve_lipsync_base
-
-        base_video = resolve_lipsync_base(bases_dir, base_clip_id)
-    except FileNotFoundError:
-        return
+    prod_root = event_dir.parent
 
     class _AppShim:
         pass
@@ -2738,15 +2735,15 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
 
     def _resume_bg():
         try:
-            from phase_a_middle_permanent import run_phase_a_base_clip_bytedance_lipsync
+            from phase_a_arlo_idle_lipsync import run_phase_a_arlo_idle_lipsync_startend_still
 
-            tmp_dir = event_dir / "_tmp_phase_a_permanent"
-            run_phase_a_base_clip_bytedance_lipsync(
-                base_video,
+            tmp_dir = event_dir / "_tmp_phase_a_arlo_startend"
+            run_phase_a_arlo_idle_lipsync_startend_still(
                 audio_path,
                 out_path,
+                event_dir=event_dir,
+                prod_root=prod_root,
                 tmp_dir=tmp_dir,
-                resume=True,
             )
             if not out_path.is_file():
                 raise RuntimeError(f"resume finished but output missing: {out_path}")
@@ -2764,7 +2761,7 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
             extract_qa_frames(out_path, qa_dir)
 
             delivery_meta = _finalize_phase_a_lipsync_delivery(
-                out_path, method="base_clip_bytedance_tight_v1",
+                out_path, method="idle_kling_lipsync_startend_still",
             )
 
             _m = int(os.path.getmtime(str(out_path)))
@@ -2773,6 +2770,7 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
                 st["phase_a_lipsync_file"] = pending_out
                 st["phase_a_lipsync_mtime"] = _m
                 st["phase_a_lipsync_status"] = "needs_manual_visual_review"
+                st["phase_a_lipsync_method"] = "idle_kling_lipsync_startend_still"
                 st["phase_a_lipsync_requires_regen"] = False
                 st["phase_a_lipsync_delivery_profile"] = _meta.get("delivery_profile")
                 st["phase_a_lipsync_delivery_recipe"] = _meta.get("delivery_recipe")
@@ -2784,6 +2782,7 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
                     nested["phase_a_lipsync_file"] = pending_out
                     nested["phase_a_lipsync_mtime"] = _m
                     nested["phase_a_lipsync_status"] = "needs_manual_visual_review"
+                    nested["phase_a_lipsync_method"] = "idle_kling_lipsync_startend_still"
                     nested["phase_a_lipsync_requires_regen"] = False
                     nested["phase_a_lipsync_delivery_profile"] = _meta.get("delivery_profile")
                     nested["phase_a_lipsync_delivery_recipe"] = _meta.get("delivery_recipe")
@@ -2824,11 +2823,11 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
         )
 
 def handle_phase_a_lipsync(h, body: dict) -> None:
-    """POST /api/phase_a/lipsync — idle Kling lipsync for Chipper (birds).
+    """POST /api/phase_a/lipsync — Arlo Kling start+end still idle → Kling LipSync.
 
-    Kim 2026-06-08: storyboard idle pattern on body plate still + slow zoom.
+    Canonical for all events (Jul 2026): canonical Arlo still as start+end bookend,
+    Element binding, gaze-forward idle prompt, crossfade loop, Kling LipSync.
     Phase B human lipsync stays on Kling Sync (handle_phase_b_lipsync).
-    Locked policy: Production/docs/PHASE_A_CHIPPER_PIPELINE_LOCKED_v1.md
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -2928,34 +2927,23 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             extra={"hint": "Adjust stem trim front/back seconds on the waveform row."},
         )
 
-    base_video_path: Path | None = None
-    if base_clip_id:
-        from phase_a_chipper_kling_lipsync import resolve_lipsync_base
+    from phase_a_arlo_contract import resolve_phase_a_arlo_idle_still  # noqa: WPS433
 
-        bases_dir = h._phase_assets_dir("lipsync_bases")
-        try:
-            base_video_path = resolve_lipsync_base(bases_dir, base_clip_id)
-        except FileNotFoundError:
-            base_video_path = None
+    prod_root = h.app.event_dir.parent
+    try:
+        still_path = resolve_phase_a_arlo_idle_still(h.app.event_dir, prod_root)
+    except FileNotFoundError as exc:
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=str(exc),
+            retry_safe=False,
+            extra={"hint": "Add canonical Arlo still under Production/NEW STYLE CHARACTERS/ARLO/."},
+        )
 
-    still_path: Path | None = None
-    if base_video_path is None:
-        from phase_a_chipper_idle_lipsync import resolve_body_plate
-
-        try:
-            still_path = resolve_body_plate(h.app.event_dir, state)
-        except FileNotFoundError as exc:
-            return h._send_error_v59(
-                404,
-                error_code="GENERIC_ERROR",
-                error_message=str(exc),
-                retry_safe=False,
-                extra={"hint": "Add phase_a_chipper_body_plate_v1.png to the event folder."},
-            )
-
-    # Base-clip path: ByteDance LatentSync (preserves wing pixels). Idle-from-still: 2× Kling jobs.
-    lipsync_jobs = 1 if base_video_path else 2
-    lipsync_method = "base_clip_bytedance_tight_v1" if base_video_path else "idle_kling_lipsync"
+    # Kling idle + Kling LipSync (start+end same still bookend).
+    lipsync_jobs = 2
+    lipsync_method = "idle_kling_lipsync_startend_still"
     spend = h.app.state.read_spend()
     if spend["budget_remaining"] < COST_PER_LIPSYNC * lipsync_jobs:
         return h._send_error_v59(
@@ -2999,9 +2987,9 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
     _stitch = h._auto_assemble_phase_a_stitched
     _still_path = still_path
     _base_clip_id = base_clip_id
-    _base_video_path = base_video_path
     _lipsync_jobs = lipsync_jobs
     _lipsync_method = lipsync_method
+    _prod_root = prod_root
 
     def _bg(
         _out_path=out_path,
@@ -3009,26 +2997,23 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
         _audio_path=audio_for_lipsync,
         _still=_still_path,
         _base_clip_id=_base_clip_id,
-        _base_video=_base_video_path,
         _jobs=_lipsync_jobs,
         _method=_lipsync_method,
+        _prod_root=_prod_root,
         _resume=False,
     ):
         try:
-            if _base_video is not None:
-                from phase_a_middle_permanent import run_phase_a_base_clip_bytedance_lipsync
+            from phase_a_arlo_idle_lipsync import run_phase_a_arlo_idle_lipsync_startend_still
 
-                tmp_dir = _app.event_dir / "_tmp_phase_a_permanent"
-                run_phase_a_base_clip_bytedance_lipsync(
-                    _base_video, _audio_path, _out_path, tmp_dir=tmp_dir, resume=_resume,
-                )
-            else:
-                from phase_a_chipper_idle_lipsync import run_phase_a_chipper_idle_lipsync
-
-                tmp_dir = _app.event_dir / "_tmp_phase_a_idle_lipsync"
-                run_phase_a_chipper_idle_lipsync(
-                    _still, _audio_path, _out_path, tmp_dir=tmp_dir, apply_zoom=False,
-                )
+            tmp_dir = _app.event_dir / "_tmp_phase_a_arlo_startend"
+            run_phase_a_arlo_idle_lipsync_startend_still(
+                _audio_path,
+                _out_path,
+                event_dir=_app.event_dir,
+                prod_root=_prod_root,
+                still=_still,
+                tmp_dir=tmp_dir,
+            )
             if not _out_path.is_file():
                 raise RuntimeError(f"lipsync finished but output missing: {_out_path}")
 
@@ -3153,11 +3138,11 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
         "status": "running",
         "phase": "a",
         "vendor": lipsync_method,
-        "still": still_path.name if still_path else None,
+        "still": still_path.name,
         "base_clip_id": base_clip_id,
-        "base_clip_file": base_video_path.name if base_video_path else None,
+        "base_clip_file": None,
         "message": (
-            "ByteDance Phase A lipsync is processing. "
+            "Kling Phase A lipsync is processing (still bookend idle + LipSync). "
             "Phase A will stop for visual review after media gates pass."
         ),
     })

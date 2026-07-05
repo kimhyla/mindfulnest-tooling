@@ -26,20 +26,20 @@ import production_server as PS  # noqa: E402
 from phase_a_arlo_contract import PHASE_A_ARLO_CANONICAL_STILL_REL  # noqa: E402
 
 
-def test_phases_handler_uses_bytedance_not_avatar_pro():
+def test_phases_handler_uses_arlo_startend_kling_not_avatar_pro():
     src = TOOLS / "server_handlers" / "phases.py"
     block = src.read_text(encoding="utf-8").split("def handle_phase_a_lipsync", 1)[1]
     block = block.split("\ndef handle_phase_b_lipsync", 1)[0]
     assert "submit_avatar_pro" not in block
-    assert "run_phase_a_base_clip_bytedance_lipsync" in block
-    assert "finalize_phase_module_lipsync_delivery" in block or "_finalize_phase_a_lipsync_delivery" in block
-    assert 'lipsync_method = "base_clip_bytedance_tight_v1"' in block or "base_clip_bytedance_tight_v1" in block
+    assert "run_phase_a_arlo_idle_lipsync_startend_still" in block
+    assert "_finalize_phase_a_lipsync_delivery" in block
+    assert 'lipsync_method = "idle_kling_lipsync_startend_still"' in block
 
 
-def test_sweep_resume_byteDance_not_avatar_clear():
+def test_sweep_resume_arlo_startend_not_bytedance():
     src = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
     resume = src.split("def sweep_phase_a_lipsync_resume", 1)[1].split("\ndef handle_phase_a_lipsync", 1)[0]
-    assert "run_phase_a_base_clip_bytedance_lipsync" in resume
+    assert "run_phase_a_arlo_idle_lipsync_startend_still" in resume
     assert "resubmit with Avatar Pro" not in resume
 
 
@@ -149,13 +149,9 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
 
-    def test_lipsync_submits_bytedance_worker(self):
+    def test_lipsync_submits_arlo_startend_worker(self):
         vs = self.event_dir / "phase_a_voice_stem_test.mp3"
         vs.write_bytes(b"\x00fakevoice\x00")
-        bases = self.event_dir.parent / "assets" / "lipsync_bases"
-        bases.mkdir(parents=True, exist_ok=True)
-        base_clip = bases / "arlo_idle_wizard_desk_v8.mp4"
-        base_clip.write_bytes(b"\x00fakebase\x00")
 
         def _apply(state):
             state["phase_a_voice_stem_file"] = vs.name
@@ -179,14 +175,14 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
                 out.write_bytes(b"\x00trim\x00")
             return _R()
 
-        def _fake_bytedance(_base, _audio, out_path, **_kw):
-            Path(out_path).write_bytes(b"\x00bytedance_out\x00")
-            return Path(out_path)
+        def _fake_arlo_startend(_audio, out_path, **_kw):
+            Path(out_path).write_bytes(b"\x00arlo_startend_out\x00")
+            return {"method": "idle_kling_lipsync_startend_still"}
 
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
              mock.patch(
-                 "phase_a_middle_permanent.run_phase_a_base_clip_bytedance_lipsync",
-                 side_effect=_fake_bytedance,
+                 "phase_a_arlo_idle_lipsync.run_phase_a_arlo_idle_lipsync_startend_still",
+                 side_effect=_fake_arlo_startend,
              ), \
              mock.patch(
                  "phase_a_av_post.av_duration_gap",
@@ -195,6 +191,15 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
              mock.patch(
                  "phase_a_middle_permanent.extract_qa_frames",
                  return_value=None,
+             ), \
+             mock.patch(
+                 "server_handlers.phases._finalize_phase_a_lipsync_delivery",
+                 return_value={
+                     "delivery_profile": "voice_first_upscale",
+                     "delivery_recipe": "PHASE_MODULE_LIPSYNC_DELIVERY_V2",
+                     "width": 1280,
+                     "height": 720,
+                 },
              ):
             status, resp, _ = _http_post(
                 self.port,
@@ -203,7 +208,7 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
             )
             self.assertEqual(status, 202, resp)
             self.assertEqual(resp.get("status"), "running")
-            self.assertEqual(resp.get("vendor"), "base_clip_bytedance_tight_v1")
+            self.assertEqual(resp.get("vendor"), "idle_kling_lipsync_startend_still")
 
             for _ in range(50):
                 state = self.app.state.read_state()
@@ -213,7 +218,7 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
 
         state = self.app.state.read_state()
         self.assertEqual(state.get("phase_a_lipsync_status"), "needs_manual_visual_review")
-        self.assertEqual(state.get("phase_a_lipsync_method"), "base_clip_bytedance_tight_v1")
+        self.assertEqual(state.get("phase_a_lipsync_method"), "idle_kling_lipsync_startend_still")
         self.assertTrue(state.get("phase_a_lipsync_file", "").startswith("phase_a_lipsync_"))
 
 

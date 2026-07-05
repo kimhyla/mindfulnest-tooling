@@ -28,19 +28,18 @@ from kling_startend_pipeline import (  # noqa: E402
 )
 
 ARLO_STILL_PROMPT = (
-    "CLOSE MEDIUM SHOT — Arlo the red squirrel wizard fills at least half the frame height, "
-    "centered at a wooden desk in a cozy firelit stone study. Blue scarf and green vest visible. "
-    "Both paws resting on the desk. Mouth closed, lips sealed, tooth-free. "
+    "CLOSE MEDIUM SHOT — Arlo the squirrel is warm, smiling, maintains direct eye contact "
+    "with the camera 80-90% of the time, friendly, affable, pleasant. "
     "LOCKED CAMERA — perfect static camera hold, absolutely zero zoom, zero pan, "
     "zero dolly, zero Ken Burns, zero camera motion of any kind. "
     "Gentle subtle animation only: soft fireplace fire flicker and delicate smoke wisps; "
-    "Arlo with tiny breathing, soft blinks, and minimal squirrel idle motion "
-    "(small ear shifts, subtle posture). No pacing, no large gestures, no tail swish. "
+    "Arlo breathes, blinks, and shows natural idle motion "
+    "(small ear shifts, subtle posture, natural arms and hands). No pacing, no large gestures. "
     "Silent video — no background music, no soundtrack, no score."
 )
 
 NEGATIVE = (
-    "mouth motion, camera zoom, pan, dolly, Ken Burns, human hands, fingers, "
+    "camera zoom, pan, dolly, Ken Burns, human hands, fingers, "
     "bird, magpie, beak, wing, flapping, extra limbs, pacing, walking, "
     "music, soundtrack, score, dialogue audio"
 )

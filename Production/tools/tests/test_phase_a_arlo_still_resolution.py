@@ -11,6 +11,13 @@ from phase_a_arlo_contract import (
 )
 
 
+def test_arlo_gaze_prompt_is_canonical() -> None:
+    from phase_a_arlo_lipsync_base import ARLO_STILL_PROMPT, NEGATIVE
+
+    assert "direct eye contact" in ARLO_STILL_PROMPT
+    assert "mouth motion" not in NEGATIVE
+
+
 def test_arlo_lipsync_base_has_no_background_still_candidate() -> None:
     src = Path(__file__).resolve().parent.parent / "phase_a_arlo_lipsync_base.py"
     text = src.read_text(encoding="utf-8")

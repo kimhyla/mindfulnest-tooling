@@ -64,7 +64,7 @@ def phase_lipsync_progress_message(phase: str) -> str:
     p = (phase or "b").strip().lower()
     if p == "a":
         return (
-            "⏳ Lipsync processing (~5–20 min). "
+            "⏳ Kling Phase A lipsync (~8–20 min: still idle + LipSync). "
             "Safe to switch tabs — will auto-update when done."
         )
     return (

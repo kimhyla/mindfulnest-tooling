@@ -38,8 +38,17 @@ export function phaseLipsyncIsTerminal(status: string | undefined | null): boole
   return s.startsWith('error:');
 }
 
-export function phaseLipsyncProgressMessage(_phase: 'a' | 'b'): string {
-  return '⏳ Avatar Pro processing (~10–50 min). Safe to switch tabs — will auto-update when done.';
+export function phaseLipsyncProgressMessage(phase: 'a' | 'b'): string {
+  if (phase === 'a') {
+    return (
+      '⏳ Kling Phase A lipsync (~8–20 min: still idle + LipSync). ' +
+      'Safe to switch tabs — will auto-update when done.'
+    );
+  }
+  return (
+    '⏳ Kling lipsync in progress (~8–50 min depending on stem length). ' +
+    'Safe to switch tabs — will auto-update when done.'
+  );
 }
 
 export function phaseLipsyncTerminalBanner(
