@@ -39,10 +39,10 @@ PHASE_COUNT="$(curl -sf "${BASE}/api/phase/watercolor_list" | python3 -c "import
 
 LIB_PANEL="$TOOLING/Production/tools/storyboard-v2/src/components/LibraryPanel.tsx"
 LIB_CACHE="$TOOLING/Production/tools/storyboard-v2/src/utils/libraryCachePolicy.ts"
-grep -q 'LIBRARY_CLIENT_CACHE_COHERENCE_V1' "$LIB_CACHE" \
-  || fail "missing libraryCachePolicy authority module (G7)"
-grep -q 'mn.library.items.v4' "$LIB_CACHE" \
-  || fail "library cache session key must be v4 in libraryCachePolicy.ts"
+grep -q 'LIBRARY_CLIENT_CACHE_COHERENCE_V2' "$LIB_CACHE" \
+  || fail "missing libraryCachePolicy V2 authority module (G7)"
+grep -q 'mn.library.items.v5' "$LIB_CACHE" \
+  || fail "library cache session key must be v5 in libraryCachePolicy.ts"
 grep -q 'libraryItemsStorageKey' "$LIB_PANEL" \
   || fail "LibraryPanel must use libraryItemsStorageKey from libraryCachePolicy"
 grep -q "from '../utils/libraryCachePolicy'" "$LIB_PANEL" \
