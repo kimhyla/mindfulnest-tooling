@@ -24,6 +24,8 @@ grep -q 'preserveAcrossRemount' "$WTL" || fail "WaveformTimeline must preserve o
 
 grep -q 'bindWaveformSeekController' "$WTL" || fail "WaveformTimeline must use waveformSeekController"
 grep -q 'WAVEFORM_SEEK_CONTROLLER_V1' "$WSC" || fail "missing WAVEFORM_SEEK_CONTROLLER_V1 marker"
+grep -q 'WTA-12' "$WSC" || fail "missing WTA-12 endDragSeek guard in seek controller"
+grep -q 'WTA-12' "$WTL" || fail "missing WTA-12 paused onSeeking path in WaveformTimeline"
 
 echo "[waveform-time-authority] pass 2/4 — vitest (authority)"
 (

@@ -28,6 +28,7 @@ export type WaveformSeekControllerBindings = {
 };
 
 export function shouldSkipWaveformSeek(target: EventTarget | null): boolean {
+  if (!target || typeof HTMLElement === 'undefined') return false;
   if (!(target instanceof HTMLElement)) return false;
   return Boolean(target.closest(SEEK_SKIP_SELECTOR));
 }
@@ -54,11 +55,10 @@ export function bindWaveformSeekController(
 
   let seekPointerId: number | null = null;
 
-  const applySeek = (rel: number) => {
+  const applySeekAtMs = (ms: number, durMs: number) => {
     const live = wsRef.current;
-    const durMs = resolveDurationMs();
     if (!live || durMs <= 0) return;
-    const ms = rel * durMs;
+    const rel = Math.max(0, Math.min(1, ms / durMs));
     lastScrubMsRef.current = ms;
     timeAuthority.scrubToMs(ms);
     publishPlayheadMs(ms);
@@ -89,6 +89,12 @@ export function bindWaveformSeekController(
     }
   };
 
+  const applySeek = (rel: number, durOverrideMs?: number) => {
+    const durMs = durOverrideMs ?? resolveDurationMs();
+    if (durMs <= 0) return;
+    applySeekAtMs(rel * durMs, durMs);
+  };
+
   const getRelX = (e: PointerEvent): number => {
     const box = wrapper.getBoundingClientRect();
     return timelineRelXFromClientX(box, e.clientX);
@@ -112,13 +118,31 @@ export function bindWaveformSeekController(
   };
 
   const endDragSeek = (rel: number) => {
-    const durMs = resolveDurationMs();
-    const ms = rel * durMs;
-    applySeek(rel);
-    timeAuthority.endDragSeek(ms);
+    let durMs = resolveDurationMs();
+    // WTA-12: resolveDurationMs() can briefly read 0 on release while move scrub succeeded —
+    // endDragSeek(0) was zeroing authority and snapping the label to 0.0s.
+    let ms =
+      durMs > 0
+        ? rel * durMs
+        : (lastScrubMsRef.current ?? timeAuthority.getPlayheadMs());
+    if (ms <= 0) {
+      seekPointerId = null;
+      isDraggingSeekRef.current = false;
+      timeAuthority.setDraggingSeek(false);
+      return;
+    }
+    if (durMs <= 0) {
+      durMs = timeAuthority.getDurationMs() || ms;
+      rel = durMs > 0 ? ms / durMs : rel;
+    }
+    applySeekAtMs(ms, durMs);
     onWaveformClickRef.current?.(ms);
+    // Defer authority release until after WS internal seeking/click handlers (WTA-12).
     requestAnimationFrame(() => {
+      applySeekAtMs(ms, durMs);
+      timeAuthority.endDragSeek(ms);
       requestAnimationFrame(() => {
+        applySeekAtMs(ms, durMs);
         isDraggingSeekRef.current = false;
         timeAuthority.setDraggingSeek(false);
       });
