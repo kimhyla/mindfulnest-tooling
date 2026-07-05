@@ -447,18 +447,6 @@ test.describe('R5 — library tile sizing', () => {
 // + NewEvent — modal + server endpoint
 // ----------------------------------------------------------------------------
 
-const EMPTY_NEXT_OPTIONS = { ok: true, options: [], anomalies: [] };
-
-async function mockEmptyNextOptions(page: Page): Promise<void> {
-  await page.route('**/api/production/next-options**', async (r) => {
-    await r.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(EMPTY_NEXT_OPTIONS),
-    });
-  });
-}
-
 test.describe('+ NewEvent — modal + server endpoint', () => {
   test('+NewEvent.1 — modal opens; reserved-word prefix rejected with regex error', async ({ page }) => {
     await mockEmptyNextOptions(page);
