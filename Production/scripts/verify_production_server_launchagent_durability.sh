@@ -61,6 +61,14 @@ grep -q 'plist unchanged' "$INSTALL" \
   || fail "install script must skip reload when plist unchanged (idempotent)"
 grep -q 'SERVER_LAUNCHD_SINGLE_OWNER_V1' "$DEPLOY" \
   || fail "deploy must use launchd-only start (SERVER_LAUNCHD_SINGLE_OWNER_V1)"
+grep -q 'STORYBOARD_FLEET_RESTART_V1' "$DEPLOY" \
+  || fail "deploy must restart all dedicated Event_N servers after fanout (STORYBOARD_FLEET_RESTART_V1)"
+grep -q 'restart_storyboard_fleet.sh' "$DEPLOY" \
+  || fail "deploy must call restart_storyboard_fleet.sh"
+grep -q 'STORYBOARD_FLEET_BUNDLE_PARITY_V1' "$DEPLOY" \
+  || fail "deploy must verify fleet bundle parity (STORYBOARD_FLEET_BUNDLE_PARITY_V1)"
+grep -q 'verify_storyboard_fleet_bundle_parity.sh' "$DEPLOY" \
+  || fail "deploy must call verify_storyboard_fleet_bundle_parity.sh"
 grep -q 'nohup env PRODUCTION_SERVER_SINGLE_MACHINE' "$DEPLOY" \
   && fail "deploy must not nohup-spawn production_server (dual owner restart storm)"
 
