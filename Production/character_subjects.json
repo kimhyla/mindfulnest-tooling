@@ -53,7 +53,9 @@
           "kling_voice_label": "ElevenLabs Jessica (create-voice)",
           "wavespeed_prediction_id": "2f5c1313c8724b939d4ff0677bf492e9"
         }
-      ]
+      ],
+      "frontal_sha256": "5558caf7564a4fdb7c57cf434c858f2c9770e54197d135fff1109b3ee475edb2",
+      "visual_canonical_lock_source": "auto_migrate_v1"
     },
     "Chipper": {
       "element_id": "314723636875507",
@@ -122,7 +124,9 @@
         "locked_at": "2026-06-15T07:00:00.000000+00:00",
         "note": "Event 1 Beat 10 canonical Arlo O3 stack — prevents Chipper interim bind drift on Event 2 beats"
       },
-      "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
+      "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00",
+      "frontal_sha256": "3fe8917f2ad3c2deaee58f04d2906bdee90600d863f9bf8d1fbdbe363095c2a1",
+      "visual_canonical_lock_source": "auto_migrate_v1"
     },
     "Benson": {
       "element_id": "315105847730320",
@@ -406,7 +410,9 @@
           "kling_voice_label": "ElevenLabs Brayden (create-voice)",
           "wavespeed_prediction_id": "f00f479ecb84429d879daa018256d933"
         }
-      ]
+      ],
+      "frontal_sha256": "a3887ac0e686cd887f6e711c8c79ad67f143909cdcece3855b2e2808806865c6",
+      "visual_canonical_lock_source": "auto_migrate_v1"
     },
     "Willow": {
       "element_id": null,
@@ -486,7 +492,9 @@
         "locked_at": "2026-06-15T07:00:00.000000+00:00",
         "note": "Event 1 Beat 10 canonical Arlo O3 stack — prevents Chipper interim bind drift on Event 2 beats"
       },
-      "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00"
+      "proven_o3_bind_applied_at": "2026-06-15T07:00:00.000000+00:00",
+      "frontal_sha256": "3fe8917f2ad3c2deaee58f04d2906bdee90600d863f9bf8d1fbdbe363095c2a1",
+      "visual_canonical_lock_source": "auto_migrate_v1"
     },
     "Lorelai": {
       "element_id": "314729251556503",
@@ -559,7 +567,9 @@
         "locked_at": "2026-06-29T16:57:05.932275+00:00",
         "note": "Re-pinned after tagged create-voice refresh 2026-06-29"
       },
-      "proven_o3_bind_applied_at": "2026-06-29T16:57:05.932275+00:00"
+      "proven_o3_bind_applied_at": "2026-06-29T16:57:05.932275+00:00",
+      "frontal_sha256": "8ee27c14f31e1160552984a53248509cceef75ca26ef9f051d18560d79ab440a",
+      "visual_canonical_lock_source": "auto_migrate_v1"
     }
   }
 }

@@ -1574,6 +1574,10 @@ SIDECAR_MERGE_PRESERVE_FIELDS: tuple[str, ...] = (
     "directus_registered_at",
     "directus_export_clip_path",
     "audio_file",
+    "real_voice_harvest_active",
+    "real_voice_harvest_at",
+    "superseded_tts_audio_file",
+    "superseded_tts_audio_at",
     "still_tts_source_text",
     "kling_o3_voice_fix_ui_job_id",
     "kling_o3_voice_fix_job_log_path",
@@ -4779,6 +4783,9 @@ def o3_option_visible_in_ui_slots(option: dict, generation_mode: str) -> bool:
     opt_mode = infer_o3_option_pipeline_mode(option)
     if generation_mode == PIPELINE_MODE_STILL:
         if opt_mode == PIPELINE_MODE_STILL:
+            return True
+        source = str(option.get("source") or "").strip().lower()
+        if source == "kling_real_voice_harvest":
             return True
         path = str(option.get("video_path") or "").lower()
         return "_delivery" in path
@@ -12950,6 +12957,39 @@ def normalize_kling_o3_option_slots(
     return slots
 
 
+def apply_real_voice_harvest_beat_fields(beat: dict, *, now: str) -> bool:
+    """After harvest import — ElevenLabs ``audio_file`` must not win preview/export truth."""
+    if beat.get("real_voice_harvest_active"):
+        return False
+    beat["real_voice_harvest_active"] = True
+    beat["real_voice_harvest_at"] = now
+    changed = True
+    audio_file = str(beat.get("audio_file") or "").strip()
+    if audio_file:
+        beat["superseded_tts_audio_file"] = audio_file
+        beat["superseded_tts_audio_at"] = now
+        beat.pop("audio_file", None)
+        beat["audio_file_exists"] = False
+    return changed
+
+
+def beat_active_clip_supersedes_tts_preview(beat: dict) -> bool:
+    """True when gallery active clip carries Omni voice — not ElevenLabs ``audio_file``."""
+    if beat.get("real_voice_harvest_active"):
+        return True
+    from o3_gallery_option_identity import AUDIO_CONTRACT_EMBEDDED_VOICE  # noqa: PLC0415
+
+    active = find_active_o3_option(beat)
+    if not active:
+        return False
+    if str(active.get("source") or "").strip().lower() == "kling_real_voice_harvest":
+        return True
+    return (
+        beat_is_still_insert(beat)
+        and str(active.get("audio_contract") or "") == AUDIO_CONTRACT_EMBEDDED_VOICE
+    )
+
+
 def import_delivery_clip_to_beat(
     *,
     beat_id: str,
@@ -13051,6 +13091,8 @@ def import_delivery_clip_to_beat(
                 str(dest_path.resolve()),
                 still_insert=beat_is_still_insert(beat),
             )
+        if make_active and resolved_source == "kling_real_voice_harvest":
+            apply_real_voice_harvest_beat_fields(beat, now=now)
 
     return update_beat_locked(
         beat_id,

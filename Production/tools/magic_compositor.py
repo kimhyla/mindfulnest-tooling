@@ -130,11 +130,11 @@ STYLES = {
         "fade_tail": 0.72,  # tail fades to 28% of head brightness
 
         # Brightness — sparkle_gain * gain_multiplier = per-hit pixel value
-        "sparkle_gain": 210.0,
-        "ambient_gain": 30.0,
+        "sparkle_gain": 245.0,
+        "ambient_gain": 38.0,
         "ambient_blur_yx": [2.5, 18.0],  # very wide x, narrow y → floor pool
         "sparkle_blur": 0.7,
-        "ambient_mix": 2.2,
+        "ambient_mix": 2.65,
 
         "blend": "additive",  # additive visible on bright daytime bg; switch to "screen" for dark
 
@@ -206,16 +206,20 @@ class MagicCompositor:
         scene_key: str = None,
         path_authored_against: dict = None,
         path_interp: str = "polyline",
+        path_timing: str = "uniform",
     ):
         if style not in STYLES:
             raise ValueError(f"Unknown style '{style}'. Available: {list(STYLES)}")
 
         if path_interp not in ("polyline", "bezier"):
             raise ValueError(f"path_interp must be 'polyline' or 'bezier', got {path_interp!r}")
+        if path_timing not in ("uniform", "arc_length"):
+            raise ValueError(f"path_timing must be 'uniform' or 'arc_length', got {path_timing!r}")
 
         self.bg_path  = background_path
         self.path_pts = path_pts
         self.path_interp = path_interp
+        self.path_timing = path_timing
         self.style    = style
         self.s        = STYLES[style]
         self.duration = duration
@@ -268,6 +272,7 @@ class MagicCompositor:
         print(f"  {self.W}x{self.H}", flush=True)
 
         self.path_pts = self._aspect_correct(self.path_pts, self._path_authored_against)
+        self._init_polyline_arc_length()
 
         self._path_bg_lum = 0.0
         self._bg_lum_sample: np.ndarray | None = np.array(self.bg_img).astype(np.float32)
@@ -641,6 +646,24 @@ class MagicCompositor:
             return self._bezier(t)
         return self._polyline(t)
 
+    def _init_polyline_arc_length(self) -> None:
+        """Precompute segment lengths for arc_length timing (even px/s along path)."""
+        pts = self.path_pts
+        if len(pts) < 2:
+            self._poly_seg_lengths: list[float] = []
+            self._poly_total_length = 0.0
+            return
+        seg_lengths: list[float] = []
+        total = 0.0
+        for i in range(len(pts) - 1):
+            dx = float(pts[i + 1][0]) - float(pts[i][0])
+            dy = float(pts[i + 1][1]) - float(pts[i][1])
+            seg_len = math.hypot(dx, dy)
+            seg_lengths.append(seg_len)
+            total += seg_len
+        self._poly_seg_lengths = seg_lengths
+        self._poly_total_length = total
+
     def _polyline(self, t: float) -> tuple:
         """Walk path_pts in order with straight segments (matches path_picker lineTo)."""
         pts = self.path_pts
@@ -649,6 +672,18 @@ class MagicCompositor:
         if len(pts) == 1:
             return pts[0]
         t = max(0.0, min(1.0, float(t)))
+        if self.path_timing == "arc_length" and self._poly_total_length > 1e-9:
+            target = t * self._poly_total_length
+            acc = 0.0
+            for idx, seg_len in enumerate(self._poly_seg_lengths):
+                if acc + seg_len >= target or idx == len(self._poly_seg_lengths) - 1:
+                    local = 0.0 if seg_len <= 1e-9 else (target - acc) / seg_len
+                    local = max(0.0, min(1.0, local))
+                    x0, y0 = pts[idx]
+                    x1, y1 = pts[idx + 1]
+                    return (x0 + (x1 - x0) * local, y0 + (y1 - y0) * local)
+                acc += seg_len
+            return pts[-1]
         n_seg = len(pts) - 1
         pos = t * n_seg
         idx = min(int(pos), n_seg - 1)

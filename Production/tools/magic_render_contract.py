@@ -8,13 +8,15 @@ Authoritative doc: Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md
 """
 from __future__ import annotations
 
-MAGIC_RENDER_CONTRACT_VERSION = "LD-469-VISIBLE-MAGIC-V2"
+MAGIC_RENDER_CONTRACT_VERSION = "LD-469-VISIBLE-MAGIC-V3"
 
 # ── Shared production invariants (intro + resolution, Event_1..N, all arcs) ──
 PRODUCTION_STYLE_DEFAULT = "tessa_ori"
 PRODUCTION_PATH_INTERP = "polyline"  # path_picker lineTo — NOT bezier
+PRODUCTION_PATH_TIMING = "arc_length"  # uniform segment time races corners; arc-length = even px/s
 PRODUCTION_GAIN = 1.0
 PRODUCTION_COMPOSITE = "screen_rgb"  # composite_screen_rgb — NOT additive, NOT ffmpeg YUV screen
+PRODUCTION_STILL_DURATION_DEFAULT = 5.0  # was 4.0 — slower golden river (Kim 2026-07-04)
 
 # Marker strings — CI greps handlers for these; do not rename without updating tests.
 HANDLER_MARKER_STILL = "MAGIC_RENDER_CONTRACT_V2_STILL"
@@ -36,13 +38,13 @@ SPARKLE_FULL_BELOW_LUM = 85.0
 MIXED_PATH_BRIGHT_FRAC_MIN = 0.10
 MIXED_PATH_PEAK_LUM_MIN = 175.0
 
-# Faceted rune gems (Event 3 nest): path mean stays on dark moss, bright_frac < 25%,
-# peak 145–170 (below mixed guard 175) — dark crystal facets get sparkle → blocky squares.
-CRYSTAL_FACET_PEAK_LUM_MIN = 145.0
-CRYSTAL_FACET_PEAK_LUM_MAX = 170.0
-CRYSTAL_FACET_MEAN_LUM_MAX = 90.0
-CRYSTAL_FACET_AMB_MIX = 165.0
-CRYSTAL_FACET_AMB_GAIN_MULT = 1.75
+# Faceted rune gems (Event 3/5 nest): path mean on moss/stone, bright_frac < 25%,
+# peak 145–175 — gem highlights get sparkle dots → blocky white squares.
+CRYSTAL_FACET_PEAK_LUM_MIN = 125.0  # Event 5 nest gems peak ~134; Event 3 ~145+
+CRYSTAL_FACET_PEAK_LUM_MAX = 175.0
+CRYSTAL_FACET_MEAN_LUM_MAX = 115.0  # Event 5 orbital mean ~104–110 on moss + gem highlights
+CRYSTAL_FACET_AMB_MIX = 195.0
+CRYSTAL_FACET_AMB_GAIN_MULT = 2.05
 # Sparkle gate uses max lum in this pixel radius (faceted gem dark facets sit beside bright ones).
 SPARKLE_LOCAL_LUM_RADIUS = 5
 
@@ -59,8 +61,8 @@ FORBIDDEN_HANDLER_PATTERNS = (
     'blend=all_mode=screen',
     'path_interp="bezier"',
     "path_interp='bezier'",
-    "PRODUCTION_PATH_TIMING",
-    "path_timing=",
+    'path_timing="uniform"',
+    "path_timing='uniform'",
 )
 
 # Production server handlers that construct MagicCompositor — must use production_magic_compositor_kwargs.
@@ -91,7 +93,10 @@ def production_magic_compositor_kwargs(
     path_authored_against: dict | None = None,
 ) -> dict:
     """Canonical MagicCompositor kwargs for production handlers — only params the compositor accepts."""
-    out: dict = {"path_interp": PRODUCTION_PATH_INTERP}
+    out: dict = {
+        "path_interp": PRODUCTION_PATH_INTERP,
+        "path_timing": PRODUCTION_PATH_TIMING,
+    }
     if path_authored_against is not None:
         out["path_authored_against"] = path_authored_against
     return out
@@ -256,7 +261,7 @@ def resolve_magic_still_duration_from_registry(
     module_id: int = 1,
     event_id: str | int = 1,
     video_role: str = "resolution",
-    fallback: float = 4.0,
+    fallback: float = 5.0,
 ) -> float:
     _, scene = resolve_magic_scene_registry_entry(
         bg_beat_id,

@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Generate Phase A Arlo lipsync base clip from a wizard-desk still PNG.
 
-Kling single-image idle with Arlo Element binding when available.
-Locked camera; gentle fireplace fire/smoke + squirrel idle motion; silent output.
+Default: Kling start+end with the **same still** on both frames (mouth pinned).
+Use --single-image only for experiments.
+
+Prompt policy (Kim Jul 4 2026): describe desired still pose in positive;
+negative = camera/species/motion only — never list speech synonyms (activates talk).
 """
 from __future__ import annotations
 
@@ -19,7 +22,6 @@ if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
 from kling_startend_pipeline import (  # noqa: E402
-    RULE8_ANTI_LIPSYNC,
     ensure_min_dimensions,
     kling_poll_fresh,
     kling_startend_submit,
@@ -27,29 +29,42 @@ from kling_startend_pipeline import (  # noqa: E402
     log,
 )
 
-ARLO_STILL_PROMPT = (
-    "CLOSE MEDIUM SHOT — Arlo the red squirrel wizard fills at least half the frame height, "
-    "centered at a wooden desk in a cozy firelit stone study. Blue scarf and green vest visible. "
-    "Both paws resting on the desk. Mouth closed, lips sealed, tooth-free. "
-    "LOCKED CAMERA — perfect static camera hold, absolutely zero zoom, zero pan, "
-    "zero dolly, zero Ken Burns, zero camera motion of any kind. "
-    "Gentle subtle animation only: soft fireplace fire flicker and delicate smoke wisps; "
-    "Arlo with tiny breathing, soft blinks, and minimal squirrel idle motion "
-    "(small ear shifts, subtle posture). No pacing, no large gestures, no tail swish. "
-    "Silent video — no background music, no soundtrack, no score."
+# Start+end same still — short affirmative prompt; PNG pins mouth shape.
+ARLO_IDLE_STARTEND_PROMPT = (
+    "First frame: sealed lips, eyes on lens. "
+    "Medium close-up. Arlo the red squirrel wizard at a wooden desk in a cozy "
+    "firelit stone study. Blue scarf, green vest. Lips pressed softly together, "
+    "serene closed-mouth expression, calm direct gaze into camera. "
+    "Subtle idle only: slow blinks, gentle chest breathing, tiny ear twitches, "
+    "paws resting quietly on the desk. Soft fireplace flicker and smoke in background. "
+    "Locked static camera, no camera motion. "
+    "Last frame: same sealed lips, eyes on lens."
 )
 
-NEGATIVE = (
-    RULE8_ANTI_LIPSYNC + ", "
-    "teeth, fangs, dental, human hands, fingers, bird, magpie, beak, wing, "
-    "flapping, extra limbs, zoom in, zoom out, camera move, pan, tilt, dolly, "
-    "Ken Burns, pacing, walking, music, soundtrack, score, orchestral, humming, "
-    "singing, dialogue audio"
+# Single-image fallback — slightly more scene detail; still no 'don't talk' spam.
+ARLO_STILL_PROMPT = (
+    "Medium close-up. Arlo the red squirrel wizard at a wooden desk in a cozy "
+    "firelit stone study. Blue scarf, green vest. Lips pressed softly together, "
+    "serene closed-mouth expression, calm direct gaze into camera. "
+    "Subtle idle only: slow blinks, gentle chest breathing, tiny ear twitches, "
+    "paws resting on the desk. Soft fireplace flicker and smoke. Locked static camera."
+)
+
+# No RULE8_ANTI_LIPSYNC here — it is mostly speech vocabulary and triggers talk.
+ARLO_IDLE_NEGATIVE = (
+    "open mouth, "
+    "camera zoom, camera pan, tilt, dolly, Ken Burns, "
+    "walking, pacing, large gestures, arm waving, tail swish, "
+    "scene change, cut, "
+    "bird, magpie, beak, wing, flapping, "
+    "human hands, extra fingers, extra limbs, "
+    "text, subtitles, watermark, "
+    "music, soundtrack, score"
 )
 
 ARLO_ELEMENT_ID = "313106596591323"
-DEFAULT_CLIP_ID = "arlo_idle_wizard_desk_v4"
-PHASE_A_BASE_CLIP_DURATION_S = 15
+DEFAULT_CLIP_ID = "arlo_idle_wizard_desk_v7"
+PHASE_A_BASE_CLIP_DURATION_S = 10
 PHASE_A_BASE_DURATION_CHOICES = (5, 10, 15)
 
 
@@ -90,8 +105,8 @@ def _normalize(src: Path, dst: Path) -> None:
     from video_encode_policy import BASE_CLIP_FFMPEG_VIDEO_ARGS, VIDEO_QUALITY_GRADFUN_VF  # noqa: E402
 
     vf = (
-        "scale=1280:960:force_original_aspect_ratio=decrease,"
-        "pad=1280:960:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24,"
+        "scale=1280:720:force_original_aspect_ratio=decrease,"
+        "pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1:1,fps=24,"
         + VIDEO_QUALITY_GRADFUN_VF
     )
     subprocess.run([
@@ -105,7 +120,15 @@ def _normalize(src: Path, dst: Path) -> None:
     ], check=True, timeout=180)
 
 
-def _write_clip_meta(bases: Path, clip_id: str, still: Path) -> None:
+def _write_clip_meta(
+    bases: Path,
+    clip_id: str,
+    still: Path,
+    *,
+    kling_mode: str,
+    prompt: str,
+    negative_prompt: str,
+) -> None:
     meta = bases / f"{clip_id}.meta.json"
     meta.write_text(
         json.dumps({
@@ -113,6 +136,9 @@ def _write_clip_meta(bases: Path, clip_id: str, still: Path) -> None:
             "still_path": str(still),
             "still_name": still.name,
             "generator": "phase_a_arlo_lipsync_base.py",
+            "kling_mode": kling_mode,
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
         }, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -129,6 +155,11 @@ def main() -> int:
         choices=PHASE_A_BASE_DURATION_CHOICES,
     )
     p.add_argument("--no-element", action="store_true")
+    p.add_argument(
+        "--single-image",
+        action="store_true",
+        help="Free-animate single-image Kling (default: start+end same still lock)",
+    )
     args = p.parse_args()
 
     event = _event_dir()
@@ -149,6 +180,9 @@ def main() -> int:
     png, info, _ = ensure_min_dimensions(raw)
     log(f"Start frame: {still.name} — {info}")
     start_uri = f"data:image/png;base64,{base64.b64encode(png).decode('ascii')}"
+    end_uri = None if args.single_image else start_uri
+    prompt = ARLO_STILL_PROMPT if args.single_image else ARLO_IDLE_STARTEND_PROMPT
+    kling_mode = "single_image" if args.single_image else "start_end_same_still"
 
     keys = load_api_keys()
     element = None
@@ -160,10 +194,15 @@ def main() -> int:
             "element_name": arlo.get("element_name", "Arlo"),
         }
 
-    log("Submitting Kling single-image idle (Arlo wizard desk v4, locked camera)")
+    log(
+        f"Submitting Kling idle ({kling_mode}, {args.duration}s, "
+        f"locked camera, silent mouth)"
+    )
+    log(f"prompt: {prompt}")
+    log(f"negative: {ARLO_IDLE_NEGATIVE}")
     task_id = kling_startend_submit(
-        start_uri, None,
-        prompt=ARLO_STILL_PROMPT, negative_prompt=NEGATIVE,
+        start_uri, end_uri,
+        prompt=prompt, negative_prompt=ARLO_IDLE_NEGATIVE,
         duration=args.duration, api_key=keys["wavespeed"],
         element_entry=element,
     )
@@ -183,12 +222,20 @@ def main() -> int:
     _normalize(staging, out)
     staging.unlink(missing_ok=True)
     log(f"✓ Saved {out} ({out.stat().st_size / 1024 / 1024:.1f} MB)")
-    _write_clip_meta(bases, args.clip_id, still)
+    _write_clip_meta(
+        bases, args.clip_id, still,
+        kling_mode=kling_mode,
+        prompt=prompt,
+        negative_prompt=ARLO_IDLE_NEGATIVE,
+    )
 
     print(json.dumps({
         "clip_id": args.clip_id,
         "mp4": out.name,
         "still": still.name,
+        "kling_mode": kling_mode,
+        "prompt": prompt,
+        "negative_prompt": ARLO_IDLE_NEGATIVE,
         "size_mb": round(out.stat().st_size / 1024 / 1024, 1),
     }))
     return 0

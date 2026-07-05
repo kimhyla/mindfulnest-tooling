@@ -71,7 +71,7 @@ def _isolated_bright_pixels(gem_diff: np.ndarray, *, thresh: float = 200.0) -> i
 
 class MagicRenderContractConstantsTests(unittest.TestCase):
     def test_contract_version_is_frozen_marker(self):
-        self.assertEqual(mrc.MAGIC_RENDER_CONTRACT_VERSION, "LD-469-VISIBLE-MAGIC-V2")
+        self.assertEqual(mrc.MAGIC_RENDER_CONTRACT_VERSION, "LD-469-VISIBLE-MAGIC-V3")
 
     def test_bright_stone_constants_match_compositor_import(self):
         from magic_compositor import BRIGHT_STONE_AMB_MIX  # noqa: WPS433
@@ -89,6 +89,7 @@ class MagicRenderContractConstantsTests(unittest.TestCase):
         allowed = set(sig.parameters) - {"self"}
         kwargs = mrc.production_magic_compositor_kwargs(path_authored_against={"width": 1280, "height": 720})
         self.assertEqual(kwargs["path_interp"], mrc.PRODUCTION_PATH_INTERP)
+        self.assertEqual(kwargs["path_timing"], mrc.PRODUCTION_PATH_TIMING)
         for key in kwargs:
             self.assertIn(key, allowed, f"production kwargs leak unknown MagicCompositor param {key!r}")
 
@@ -101,22 +102,16 @@ class MagicRenderContractConstantsTests(unittest.TestCase):
                 f"background.py references mrc.{name} but magic_render_contract has no such attribute",
             )
 
-    def test_handlers_do_not_pass_phantom_compositor_kwargs(self):
+    def test_handlers_route_compositor_kwargs_through_factory(self):
         for fn in mrc.PRODUCTION_MAGIC_HANDLER_FUNCTIONS:
             src = _handler_source(fn)
-            self.assertNotIn("path_timing", src, f"{fn} must not pass path_timing until compositor supports it")
-            self.assertNotIn("PRODUCTION_PATH_TIMING", src, f"{fn} must not reference phantom PRODUCTION_PATH_TIMING")
             self.assertIn(
                 "production_magic_compositor_kwargs",
                 src,
                 f"{fn} must route MagicCompositor kwargs through production_magic_compositor_kwargs",
             )
-
-    def test_beat_generator_run_magic_compositor_uses_factory(self):
         text = BEAT_GENERATOR_PY.read_text()
         self.assertIn("production_magic_compositor_kwargs", text)
-        self.assertNotIn("PRODUCTION_PATH_TIMING", text)
-        self.assertNotIn("path_timing=", text)
         m = re.search(
             r"def run_magic_compositor\(.*?(?=\n\ndef |\Z)",
             text,
@@ -125,18 +120,16 @@ class MagicRenderContractConstantsTests(unittest.TestCase):
         self.assertIsNotNone(m, "run_magic_compositor not found")
         self.assertIn("production_magic_compositor_kwargs()", m.group(0))
 
-    def test_no_phantom_production_path_timing_anywhere_in_tools(self):
+    def test_production_path_timing_is_arc_length(self):
+        self.assertEqual(mrc.PRODUCTION_PATH_TIMING, "arc_length")
+
+    def test_handlers_do_not_hardcode_uniform_path_timing(self):
         for rel in (
             "server_handlers/background.py",
             "beat_generator.py",
-            "production_server.py",
         ):
             body = (TOOLS / rel).read_text()
-            self.assertNotIn(
-                "PRODUCTION_PATH_TIMING",
-                body,
-                f"{rel} must not reference removed phantom constant PRODUCTION_PATH_TIMING",
-            )
+            self.assertNotIn('path_timing="uniform"', body, f"{rel} must not hardcode uniform timing")
 
 
 class MagicHandlerWiringTests(unittest.TestCase):
@@ -176,6 +169,12 @@ class MagicHandlerWiringTests(unittest.TestCase):
         self.assertIn("_handle_magic_video", text)
         self.assertIn("/api/storyboard/magic_still", text)
         self.assertIn("/api/storyboard/magic_video", text)
+
+    def test_magic_submit_path_uses_ld469_not_legacy_render_video(self):
+        src = _handler_source("handle_magic_submit_path")
+        code = _handler_code_without_comments("handle_magic_submit_path")
+        self.assertIn("render_ld469_on_background", src)
+        self.assertNotIn("mc.render_video()", code)
 
     def test_storyboard_buttons_target_canonical_endpoints(self):
         text = BEAT_MAGIC_TSX.read_text()
@@ -311,6 +310,71 @@ class MagicBrightStoneBehaviorTests(unittest.TestCase):
             self.assertLess(iso, 50, f"blocky sparkle pixels={iso}")
             self.assertGreater(float(gem.mean()), 8.0, "operator redraw must read visibly brighter")
             self.assertGreater(float(trail.max()), 80.0, "ambient river must remain visible")
+
+    def test_event5_nest_orbital_path_hits_crystal_facet(self):
+        """Event 5 resolution beat_06 — mean ~104 peak ~134 must not fall through to sparkle dots."""
+        lums = [
+            92.0, 94.0, 96.0, 98.0, 100.0, 102.0, 104.0, 106.0, 108.0, 112.0,
+            118.0, 122.0, 128.0, 132.0, 134.0, 130.0, 120.0, 110.0, 100.0, 95.0,
+        ]
+        self.assertFalse(mrc.bright_stone_ambient_from_lums(lums))
+        self.assertTrue(
+            mrc.crystal_facet_ambient_from_lums(lums),
+            "Event 5 nest orbital must use crystal facet ambient (no blocky sparkles)",
+        )
+
+    def test_event5_nest_orbital_render_no_blocky_sparkle(self):
+        """Full render on Event 5 nest still — crystal facet branch + brighter ambient."""
+        e5_still = (
+            DROPBOX
+            / "Production/Event_5/library/images/sources/"
+            "ChatGPT Image Jul 4, 2026, 07_59_29 PM.png"
+        )
+        if not e5_still.is_file():
+            self.skipTest("Event 5 nest still missing")
+        import json as _json
+
+        state_path = DROPBOX / "Production/Event_5/production_state.json"
+        if not state_path.is_file():
+            self.skipTest("Event 5 production_state missing")
+        path = (
+            _json.loads(state_path.read_text())
+            .get("videos", {})
+            .get("resolution", {})
+            .get("beats", {})
+            .get("beat_06", {})
+            .get("magic_manual_path")
+        )
+        if not path:
+            self.skipTest("Event 5 beat_06 magic_manual_path missing")
+        with tempfile.TemporaryDirectory() as tmp:
+            mc = MagicCompositor(
+                background_path=str(e5_still),
+                path_pts=[tuple(p) for p in path],
+                style="tessa_ori",
+                duration=5.0,
+                fps=24,
+                seed=42,
+                output_dir=tmp,
+                label="e5b6nest",
+                path_interp="polyline",
+                path_timing="arc_length",
+                path_authored_against={"width": 1672, "height": 940},
+            )
+            mc._gain = 1.0
+            self.assertTrue(
+                mc._crystal_facet_ambient() or mc._bright_stone_ambient() or mc._mixed_path_sparkle_guard(),
+                "nest path must hit sparkle-suppression branch",
+            )
+            frame_idx = int(3.5 / 5.0 * (mc.n_frames - 1))
+            trail = mc._make_trail(frame_idx)
+            bg = np.array(mc.bg_img.convert("RGB")).astype(np.float32)
+            comp = composite_screen_rgb(bg, trail)
+            gem = _gem_roi_diff(comp, bg)
+            iso = _isolated_bright_pixels(gem)
+            self.assertLess(iso, 80, f"blocky sparkle pixels={iso}")
+            self.assertGreater(float(trail.max()), 90.0, "ambient river must remain visible")
+            self.assertGreater(float(gem.mean()), 6.0, "nest gem ROI must read visibly brighter")
 
     def test_mixed_path_suppresses_sparkle_layer(self):
         """Event 2–style mixed paths: guard fires; render is ambient-only (no sparkle acc)."""

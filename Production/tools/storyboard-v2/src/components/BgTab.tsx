@@ -359,6 +359,9 @@ function inferO3OptionPipelineMode(opt?: GptOption | null): BeatGenerationMode |
 function displayO3OptionLabel(opt: GptOption): string {
   const stored = opt.label?.trim();
   if (stored === 'latest O3 voice video') return 'ElevenLabs voice-first (latest)';
+  if (opt.source === 'kling_real_voice_harvest') {
+    return stored || 'Omni voice on still (harvest)';
+  }
   const mode = inferO3OptionPipelineMode(opt);
   if (mode === 'avatar_pro') return 'Avatar Pro (latest)';
   if (mode === 'voice_first') return 'ElevenLabs voice-first';
@@ -375,6 +378,17 @@ function displayO3OptionLabel(opt: GptOption): string {
 function activeO3OptionForBeat(beat?: BgBeat | null): GptOption | null {
   if (!beat?.kling_o3_video_path) return null;
   return (beat.kling_o3_options ?? []).find((o) => o?.video_path === beat.kling_o3_video_path) ?? null;
+}
+
+/** True when active gallery clip carries embedded Omni voice (real-voice harvest). */
+function beatActiveClipSupersedesTtsPreview(beat?: BgBeat | null): boolean {
+  if (!beat) return false;
+  if (beat.real_voice_harvest_active === true) return true;
+  const active = activeO3OptionForBeat(beat);
+  if (!active) return false;
+  if (active.source === 'kling_real_voice_harvest') return true;
+  if (isStillInsertBeat(beat) && active.audio_contract === 'embedded_voice') return true;
+  return false;
 }
 
 function computePipelineSelectionMismatch(beat?: BgBeat | null): boolean {
@@ -604,7 +618,14 @@ function buildFixedO3OptionSlots(
   const o3History = (beat.kling_o3_options ?? []).filter((o) => {
     if (!isUserSelectableO3Video(o?.video_path, o?.source)) return false;
     const optMode = inferO3OptionPipelineMode(o);
-    if (mode === 'still_insert') return optMode === 'still_insert';
+    if (mode === 'still_insert') {
+      if (optMode === 'still_insert') return true;
+      const source = (o?.source ?? '').trim().toLowerCase();
+      const path = (o?.video_path ?? '').toLowerCase();
+      if (source === 'kling_real_voice_harvest') return true;
+      if (path.includes('_delivery')) return true;
+      return false;
+    }
     if (optMode === 'still_insert') return false;
     if (mode === 'element_native' || mode === 'voice_first' || mode === 'avatar_pro') {
       if (!optMode) return true;
@@ -4470,7 +4491,7 @@ function BeatGenCard({
           onRefresh();
         }}
       />
-      {magicPreviewMode === 'still' && magicStillPreviewUrl && beat.storyboard_beat_id ? (
+      {magicPreviewMode === 'still' && magicStillPreviewUrl && beat.storyboard_beat_id && !beatActiveClipSupersedesTtsPreview(beat) ? (
         <BgMagicStillPreview
           index={index}
           videoUrl={magicStillPreviewUrl}
@@ -4478,6 +4499,11 @@ function BeatGenCard({
           eventId={eventId}
           autoPlayOnMount={stillPreviewAutoplay}
         />
+      ) : null}
+      {magicPreviewMode === 'still' && magicStillPreviewUrl && beat.storyboard_beat_id && beatActiveClipSupersedesTtsPreview(beat) ? (
+        <p class="mn-dim" data-testid={`bg-magic-preview-tts-superseded-${index}`}>
+          Omni voice is baked into the selected gallery clip — play the harvest tile above (not ElevenLabs preview).
+        </p>
       ) : null}
       {magicPreviewMode === 'still' && magicStillPreviewUrl && !beat.storyboard_beat_id ? (
         <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>

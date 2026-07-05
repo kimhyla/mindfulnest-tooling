@@ -510,7 +510,7 @@ def handle_magic_submit_path(h, body: dict)-> None:
             # ── Step 4: Render full video ──────────────────────────
             _MAGIC_JOBS[job_id].update({"status": "rendering_video",
                                         "message": "Rendering full video (84 frames)..."})
-            video_path = mc.render_video()
+            video_path = mc.render_ld469_on_background()
             _MAGIC_JOBS[job_id]["video_path"] = video_path
 
             # ── Step 5: Directus two-write ─────────────────────────
@@ -1135,14 +1135,15 @@ def handle_magic_still(h, body: dict)-> None:
     out_path = out_dir / f"magic_still_{beat_id}_{ts}.mp4"
 
     # Canonical magic_still clip is silent — TTS is mixed at stitch export
-    # (materialize_magic_still_with_tts_export). Default 4.0s for tessa_ori floor
+    # (materialize_magic_still_with_tts_export). Default 5.0s for tessa_ori floor
     # trails; nest orbital scenes pin 6.083s via scene_registry.yaml.
+    import magic_render_contract as mrc  # type: ignore
     registry = _load_scene_registry(h)
     _video_role_for_dur = (body or {}).get("scope_video_role") or (body or {}).get("scope_target_video") or "resolution"
     magic_still_duration = _bg_module().resolve_magic_still_render_duration(
         beat_id,
         scene_registry=registry,
-        fallback=4.0,
+        fallback=mrc.PRODUCTION_STILL_DURATION_DEFAULT,
         event_id=h.app.event_id,
         video_role=_video_role_for_dur,
     )
@@ -1152,7 +1153,6 @@ def handle_magic_still(h, body: dict)-> None:
         if tools_dir not in sys.path:
             sys.path.insert(0, tools_dir)
         from magic_compositor import MagicCompositor  # type: ignore
-        import magic_render_contract as mrc  # type: ignore
         # MAGIC_RENDER_CONTRACT_V2_STILL — see Production/docs/HOW_TO_MAKE_VISIBLE_MAGIC.md
         _sidecar_style = _bg_module().read_sidecar()
         magic_style = _resolve_magic_style(h, beat_id, body, clean_path, _sidecar_style)

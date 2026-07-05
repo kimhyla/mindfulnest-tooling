@@ -1,0 +1,19 @@
+---
+description: Trigger real-voice harvest skill for still+TTS beats needing Omni Element voice
+globs:
+  - Production/tools/scripts/kling_real_voice_harvest.py
+  - Production/tools/beat_generator.py
+  - Production/docs/TECH_SPEC_KLING_REAL_VOICE_HARVEST_V1.md
+alwaysApply: false
+---
+
+# Kling real-voice harvest
+
+When Kim asks to port **Omni / real character voice** onto a **still + TTS** beat, or mentions **real voice harvest**, **KLING_REAL_VOICE_HARVEST**, or a container beat that "still sounds like ElevenLabs":
+
+1. Read `.cursor/skills/kling-real-voice-harvest/SKILL.md` and follow it end-to-end.
+2. **Agent runs** harvest + verification — never delegate terminal to Kim.
+3. Pin `MN_BEATGEN_DB_PATH` + `MN_O3_EVENT_DIR` for the target event before running the script.
+4. Proof = audit `IMPORTED` + active clip duration (~8s) + harvest tile selected — not Storyboard Audio preview.
+
+Still + TTS **Generate** locks visual only; harvest is a **separate deliberate step** after visual approval.

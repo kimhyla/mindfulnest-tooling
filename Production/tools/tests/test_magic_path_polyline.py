@@ -27,6 +27,7 @@ class MagicPathPolylineTests(unittest.TestCase):
                 output_dir=tmp,
                 label="test",
                 path_interp=path_interp,
+                path_timing="uniform",
             )
 
     def test_polyline_hits_every_knot(self):

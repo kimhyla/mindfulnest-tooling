@@ -10,6 +10,7 @@ export interface GptOption {
   video_path?: string;
   video_path_exists?: boolean;
   source?: string;
+  audio_contract?: 'embedded_voice' | 'tts_muxed' | 'video_only' | string;
   slot_index?: number;
   cut_start_s?: number;
   cut_end_s?: number;
@@ -109,6 +110,10 @@ export interface BgBeat {
   storyboard_beat_id?: string | null;
   audio_file?: string | null;
   audio_file_exists?: boolean;
+  real_voice_harvest_active?: boolean;
+  real_voice_harvest_at?: string | null;
+  superseded_tts_audio_file?: string | null;
+  superseded_tts_audio_at?: string | null;
   start_frame_image?: { abs_path?: string } | null;
   end_frame_image?: { abs_path?: string } | null;
 }
