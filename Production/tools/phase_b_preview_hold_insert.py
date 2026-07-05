@@ -37,6 +37,9 @@ from credentials_lib.ffmpeg_stitch import (  # noqa: E402
 PHASE_B_PREVIEW_HOLD_INSERT_V1 = "PHASE_B_PREVIEW_HOLD_INSERT_V1"
 DEFAULT_FADE_S = 0.30
 DEFAULT_MAX_DRIFT_S = STITCH_EXPORT_AV_MAX_DRIFT_S
+# Hold freeze must not be sampled during a seam fade-to-black tail/head.
+HOLD_FRAME_MIN_LUMA = 12.0
+HOLD_SEAM_INSERT_MIN_GAP_S = DEFAULT_FADE_S + 0.05
 
 ENC = [
     "-c:v", "libx264", "-preset", "fast", "-crf", "18", "-r", "24", "-pix_fmt", "yuv420p",
@@ -65,6 +68,37 @@ def _run_ffmpeg(cmd: list[str], *, label: str) -> None:
     if proc.returncode != 0:
         tail = (proc.stderr or proc.stdout or "")[-4000:]
         raise RuntimeError(f"{label} failed:\n{tail}")
+
+
+def mean_frame_luma(frame_png: Path) -> float:
+    """Mean grayscale luma 0–255 for hold-frame brightness gate."""
+    raw = subprocess.check_output([
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-i", str(frame_png),
+        "-vf", "format=gray,scale=1:1,format=rgb24",
+        "-frames:v", "1", "-f", "rawvideo", "pipe:1",
+    ])
+    if len(raw) < 3:
+        raise RuntimeError(f"could not sample luma from {frame_png.name}")
+    return (raw[0] + raw[1] + raw[2]) / 3.0
+
+
+def validate_seams_vs_hold_insert(seams: list[SeamSpec], *, insert_at_s: float) -> None:
+    """Seam out-point and hold insert are independent — never co-locate them."""
+    for seam in seams:
+        gap = insert_at_s - seam.out_s
+        if abs(gap) < HOLD_SEAM_INSERT_MIN_GAP_S:
+            raise ValueError(
+                f"seam out {seam.out_s}s is only {gap:.3f}s from hold insert {insert_at_s}s; "
+                "the fade-to-black tail would darken the freeze hold. "
+                "Keep the watercolor/pause-interior seam earlier (e.g. 149.85) and "
+                "insert the hold later (e.g. 150.4) on the already-spliced preview.",
+            )
+        if seam.out_s > insert_at_s:
+            raise ValueError(
+                f"seam out {seam.out_s}s is after hold insert {insert_at_s}s — "
+                "apply pause-interior seams before the hold point only",
+            )
 
 
 def probe_stream_durations(path: Path) -> tuple[float, float]:
@@ -151,6 +185,22 @@ def splice_pause_interior(
     ], label=f"splice {dest.name}")
 
 
+def capture_hold_frame(src: Path, insert_at_s: float, frame: Path) -> float:
+    """Extract one freeze frame; return mean luma for brightness gate."""
+    _run_ffmpeg([
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-ss", f"{insert_at_s:.6f}", "-i", str(src), "-frames:v", "1", str(frame),
+    ], label="hold frame capture")
+    luma = mean_frame_luma(frame)
+    if luma < HOLD_FRAME_MIN_LUMA:
+        raise RuntimeError(
+            f"hold frame at {insert_at_s}s is too dark (mean_luma={luma:.1f} < {HOLD_FRAME_MIN_LUMA}); "
+            "likely sampled during a seam fade-to-black — use an earlier seam out-point "
+            "or a source that already has the watercolor card removed",
+        )
+    return luma
+
+
 def insert_freeze_hold(
     src: Path,
     dest: Path,
@@ -158,6 +208,8 @@ def insert_freeze_hold(
     insert_at_s: float,
     hold_s: float,
     work_dir: Path,
+    hold_frame_src: Path | None = None,
+    hold_frame_at_s: float | None = None,
 ) -> None:
     if hold_s <= 0:
         raise ValueError("hold_s must be > 0")
@@ -179,10 +231,9 @@ def insert_freeze_hold(
         "-ss", f"{insert_at_s:.6f}", "-i", str(src),
         *ENC, str(seg_b),
     ], label="hold tail")
-    _run_ffmpeg([
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-ss", f"{insert_at_s:.6f}", "-i", str(src), "-frames:v", "1", str(frame),
-    ], label="hold frame")
+    frame_src = hold_frame_src or src
+    frame_at = hold_frame_at_s if hold_frame_at_s is not None else insert_at_s
+    capture_hold_frame(frame_src, frame_at, frame)
     audio_start = max(0.0, insert_at_s - 0.1)
     _run_ffmpeg([
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -263,6 +314,7 @@ def run_pipeline(
     max_drift_s: float = DEFAULT_MAX_DRIFT_S,
 ) -> HoldResult:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    validate_seams_vs_hold_insert(seams, insert_at_s=insert_at_s)
     current = src.resolve()
     duration_before_s = ffprobe_duration(src)
     applied_seams: list[SeamSpec] = []
@@ -279,6 +331,8 @@ def run_pipeline(
         insert_at_s=insert_at_s,
         hold_s=hold_s,
         work_dir=work_dir / "hold",
+        hold_frame_src=current,
+        hold_frame_at_s=insert_at_s,
     )
 
     duration_after_s = ffprobe_duration(dest)

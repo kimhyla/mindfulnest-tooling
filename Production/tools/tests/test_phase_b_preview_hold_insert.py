@@ -28,14 +28,31 @@ def test_build_manifest_includes_seams_and_hold():
         hold_s=3.0,
         duration_before_s=198.0,
         duration_after_s=201.0,
-        seams=[hold.SeamSpec(out_s=150.4, in_s=155.175, label="cedric_150")],
+        seams=[hold.SeamSpec(out_s=149.85, in_s=155.175, label="cedric_150")],
         av_drift_s=0.132,
     )
     assert payload["schema_version"] == hold.PHASE_B_PREVIEW_HOLD_INSERT_V1
     assert payload["insert_at_s"] == 150.4
     assert payload["hold_s"] == 3.0
-    assert payload["seams"][0]["module_join_out_s"] == 150.4
+    assert payload["seams"][0]["module_join_out_s"] == 149.85
     assert payload["av_drift_s"] == 0.132
+
+
+def test_validate_seams_vs_hold_insert_rejects_co_located_seam():
+    import pytest
+
+    with pytest.raises(ValueError, match="fade-to-black tail"):
+        hold.validate_seams_vs_hold_insert(
+            [hold.SeamSpec(out_s=150.4, in_s=155.175)],
+            insert_at_s=150.4,
+        )
+
+
+def test_validate_seams_vs_hold_insert_allows_watercolor_seam_before_hold():
+    hold.validate_seams_vs_hold_insert(
+        [hold.SeamSpec(out_s=149.85, in_s=155.175)],
+        insert_at_s=150.4,
+    )
 
 
 def test_dry_run_does_not_require_output_file(tmp_path: Path):
