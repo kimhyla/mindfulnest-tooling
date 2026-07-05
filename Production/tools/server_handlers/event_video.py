@@ -30,22 +30,46 @@ from tools.production_server import (  # noqa: E402
 
 
 def handle_event_create(h, body: dict) -> None:
-    """POST /api/event/create  body: {event_id, event_label?}
+    """POST /api/event/create  body: {event_id, event_label?, unexpected?}
 
     S5.5c+e proper-fix +NewEvent (LD NEW_EVENT_CREATION_UI_V1).
-    Spec §4.4: regex ^[A-Z][A-Za-z0-9_]{2,63}$; reserved prefixes
-    Test_/_/Tmp_; case-insensitive uniqueness vs Production/Event_*;
-    StateManager._init_files for v3 state shape.
-
-    Returns:
-      200 {ok, event_id, event_dir}
-      400 on validation failure
-      409 on case-insensitive collision
+    Constrained creation (2026-07-04): validates against production event map;
+    requires unexpected: true when ID is not an expected next slot.
     """
     from production_server import StateManager
+    from server_handlers.production_map import (
+        backfill_prod_module_from_slot,
+        validate_creation_allowed,
+    )
+    from lib.directus_admin_client import DirectusAdminClient
 
     import re as _re
     new_event_id = (body or {}).get("event_id", "")
+    unexpected = bool((body or {}).get("unexpected"))
+
+    # Constrained creation validation (forward-only, soft-warn).
+    try:
+        client = DirectusAdminClient()
+        prod_modules = client._request(
+            "GET",
+            "/items/prod_modules?fields=id,m_number,creature_name,spell_name,technique_name&limit=200",
+        )
+        allowed, err_payload, matched = validate_creation_allowed(
+            kind="event",
+            requested_id=new_event_id,
+            unexpected=unexpected,
+            production_root=h.app.event_dir.parent,
+            prod_modules=prod_modules,
+            bg_module=_bg_module(),
+        )
+        if not allowed and err_payload:
+            return h._send_json(422, err_payload)
+    except Exception as _val_exc:
+        print(f"[event_create] WARN constrained validation skipped: {_val_exc}", flush=True)
+        matched = None
+        prod_modules = []
+        client = None
+
     if not new_event_id or not _re.match(r'^[A-Z][A-Za-z0-9_]{2,63}$', new_event_id):
         return h._send_error_v59(
                    400,
@@ -134,6 +158,21 @@ def handle_event_create(h, body: dict) -> None:
                 f"[event_create] WARN stitch job bootstrap: {_stitch_boot_exc}",
                 flush=True,
             )
+    # Backfill prod_modules from map on expected-slot creation (Judgment Call 1).
+    if matched and client is not None:
+        try:
+            arc_number, slot = matched
+            prod_by_m = {
+                int(r["m_number"]): r for r in (prod_modules or []) if r.get("m_number") is not None
+            }
+            backfill_prod_module_from_slot(
+                slot,
+                arc_number=arc_number,
+                prod_modules_by_m=prod_by_m,
+                client=client,
+            )
+        except Exception as _bf_exc:
+            print(f"[event_create] WARN prod_modules backfill: {_bf_exc}", flush=True)
     # EVENT_DEDICATED_SERVER_PROVISION_V1 — kickstart launchd (client awaits provision API).
     if dedicated_port_for_event_id(new_event_id) is not None:
         threading.Thread(
@@ -631,15 +670,37 @@ def handle_milestones_list(h, body: dict | None = None) -> None:
 
 
 def handle_milestones_create(h, body: dict) -> None:
-    """POST /api/milestones/create — body: {milestone_id, milestone_label?}.
+    """POST /api/milestones/create — body: {milestone_id, milestone_label?, unexpected?}.
 
-    Validates milestone_id per v3 spec §3.4.1; rejects collision with
-    existing milestone (HTTP 409 case-insensitive). Creates
-    Production/Milestones/<id>/ with a v3-shaped state.json containing
-    videos.standalone partition.
+    Validates milestone_id per v3 spec §3.4.1; constrained creation checks production
+    event map (2026-07-04). Requires unexpected: true for unplanned IDs.
     """
+    from server_handlers.production_map import validate_creation_allowed
+
     milestone_id = (body or {}).get("milestone_id")
     milestone_label = (body or {}).get("milestone_label")
+    unexpected = bool((body or {}).get("unexpected"))
+
+    try:
+        from lib.directus_admin_client import DirectusAdminClient
+
+        client = DirectusAdminClient()
+        prod_modules = client._request(
+            "GET",
+            "/items/prod_modules?fields=id,m_number,creature_name,spell_name&limit=200",
+        )
+        allowed, err_payload, _matched = validate_creation_allowed(
+            kind="milestone",
+            requested_id=str(milestone_id or ""),
+            unexpected=unexpected,
+            production_root=h.app.event_dir.parent,
+            prod_modules=prod_modules,
+        )
+        if not allowed and err_payload:
+            return h._send_json(422, err_payload)
+    except Exception as _val_exc:
+        print(f"[milestones_create] WARN constrained validation skipped: {_val_exc}", flush=True)
+
     ok, err = h._validate_milestone_id(milestone_id)
     if not ok:
         return h._send_error_v59(

@@ -28,6 +28,18 @@ import { test, expect, type Page } from '@playwright/test';
 
 const SERVER = 'http://localhost:5200';
 
+const EMPTY_NEXT_OPTIONS = { ok: true, options: [], anomalies: [] };
+
+async function mockEmptyNextOptions(page: Page): Promise<void> {
+  await page.route('**/api/production/next-options**', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(EMPTY_NEXT_OPTIONS),
+    });
+  });
+}
+
 async function gotoApp(page: Page, query = ''): Promise<void> {
   page.on('pageerror', (err) => {
     // eslint-disable-next-line no-console
@@ -80,6 +92,7 @@ test.describe('S6 — ProjectSelector + ScopeBoundary integration', () => {
   });
 
   test('S6.3 — selecting "+ New Event…" opens NewEventModal (not a load fetch)', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await page.route('**/api/project/list', async (r) => {
       await r.fulfill({
         status: 200,
@@ -101,6 +114,7 @@ test.describe('S6 — ProjectSelector + ScopeBoundary integration', () => {
   });
 
   test('S6.4 — selecting "+ New Milestone…" opens NewMilestoneModal (not a load fetch)', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await page.route('**/api/project/list', async (r) => {
       await r.fulfill({
         status: 200,
@@ -228,6 +242,7 @@ test.describe('S6 — ProjectSelector + ScopeBoundary integration', () => {
   });
 
   test('S6.8 — invalid event_id input in NewEventModal surfaces live regex error (reserved prefix)', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await page.route('**/api/project/list', async (r) => {
       await r.fulfill({
         status: 200,

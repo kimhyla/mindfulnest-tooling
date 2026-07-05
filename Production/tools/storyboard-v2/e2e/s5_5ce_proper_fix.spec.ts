@@ -17,6 +17,18 @@ import { restoreE2eFixtureOnServer } from './fixtureRestore';
 const SERVER = 'http://localhost:5200';
 const FIXTURE_EVENT = 'Event_e2e_fixture';
 
+const EMPTY_NEXT_OPTIONS = { ok: true, options: [], anomalies: [] };
+
+async function mockEmptyNextOptions(page: Page): Promise<void> {
+  await page.route('**/api/production/next-options**', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(EMPTY_NEXT_OPTIONS),
+    });
+  });
+}
+
 test.afterAll(async ({ request }) => {
   await restoreE2eFixtureOnServer(request);
 });
@@ -108,6 +120,7 @@ test.describe('R1 — scope-change re-fetch', () => {
   });
 
   test('R1.2 — + New Milestone Create auto-loads milestone scope', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await gotoApp(page);
     // Open the project selector dropdown.
     const projectSelect = page.locator('[data-testid="project-selector"] select');
@@ -404,7 +417,7 @@ test.describe('R4 — Production Map placeholder', () => {
     // After fix (Phase 3.4): UI note above the map table explains the TBD policy.
     const note = page.locator('[data-testid="production-map-tbd-note"]');
     await expect(note).toBeVisible();
-    await expect(note).toContainText(/V1 scope|placeholder|author each by creating an Event/i);
+    await expect(note).toContainText(/Play order|Arc Skeleton|New Event|New Milestone/i);
   });
 });
 
@@ -436,6 +449,7 @@ test.describe('R5 — library tile sizing', () => {
 
 test.describe('+ NewEvent — modal + server endpoint', () => {
   test('+NewEvent.1 — modal opens; reserved-word prefix rejected with regex error', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await gotoApp(page);
     const projectSelect = page.locator('[data-testid="project-selector"] select');
     await projectSelect.selectOption('__new_event__');
@@ -450,6 +464,7 @@ test.describe('+ NewEvent — modal + server endpoint', () => {
   });
 
   test('+NewEvent.2 — valid event_id POSTs to /api/event/create; succeeds (200) or already-exists (409)', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await gotoApp(page);
     const projectSelect = page.locator('[data-testid="project-selector"] select');
     await projectSelect.selectOption('__new_event__');
@@ -470,6 +485,7 @@ test.describe('+ NewEvent — modal + server endpoint', () => {
     const posted = createReqs[0]!.req.postDataJSON() as Record<string, unknown>;
     // pathappPatch must not clobber body.event_id with the pinned scope (Event_4-on-5114 bug).
     expect(posted['event_id']).toBe(eventId);
+    expect(posted['unexpected']).toBe(true);
     expect([200, 409]).toContain(createReqs[0]!.status);
   });
 });

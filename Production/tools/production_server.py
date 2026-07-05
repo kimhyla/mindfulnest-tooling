@@ -6265,6 +6265,8 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 return self._handle_phase_b_ambient_preset_list()
             if path == "/api/production/map":
                 return self._handle_production_map()
+            if path == "/api/production/next-options":
+                return self._handle_production_next_options()
             # ── Visible Magic Phase 2 (2026-04-24) ──────────────────────────────
             if path == "/magic":
                 return self._serve_magic_picker()
@@ -7838,200 +7840,59 @@ class ProductionHandler(BaseHTTPRequestHandler):
                    )
 
         production_root = self.app.event_dir.parent
-        rows: list[dict] = []
-        for m in modules or []:
-            # S5.5g — PRODUCTION_MAP_MULTI_EVENT_MAPPING_V1 (SOFT) per spec
-            # §3.6 + audit doc §6. Convention-based mapping: m_number=N →
-            # Event_N. Falls back to None if the directory doesn't exist on
-            # disk (so the row still renders, just without segment artifacts).
-            # Avoids the prior bug where every module reported Event_1.
-            m_num = m.get("m_number")
-            edir: Path | None = None
-            if m_num is not None:
-                candidate = production_root / f"Event_{m_num}"
-                if candidate.is_dir():
-                    edir = candidate
-            segments: dict[str, dict] = {}
-            videos_by_role: dict[str, dict] = {}
-            if edir:
-                # Best-effort: file-based status.
-                # Per spec §3.9: 'canonical' is reserved for fly-in/fly-out source clips.
-                # Phase A stitched outputs use phase_a_stitched_*.mp4 (S4 migration).
-                phase_a = list(edir.glob("phase_a_stitched_*.mp4"))
-                phase_b = list(edir.glob("phase_b_lipsync_*.mp4"))
-                final_concat = list(edir.glob(f"M{m.get('m_number')}_*_final.mp4"))
-                segments = {
-                    "phase_a": {
-                        "status": "ready" if phase_a else "missing",
-                        "count": len(phase_a),
-                        "latest": phase_a[0].name if phase_a else None,
-                    },
-                    "phase_b": {
-                        "status": "ready" if phase_b else "missing",
-                        "count": len(phase_b),
-                        "latest": phase_b[0].name if phase_b else None,
-                    },
-                    "final_concat": {
-                        "status": "ready" if final_concat else "missing",
-                        "count": len(final_concat),
-                    },
-                }
+        from server_handlers.production_map import (  # noqa: PLC0415
+            build_production_map_timeline,
+        )
 
-                # C-12 ride-along (Production Map per-role + 5-state glyph) per
-                # post-redeploy v2 §3.3 Part 2 + handoff §4 C-12. Per-role
-                # state derives from (a) partition presence in state.videos,
-                # (b) display_order shape, (c) per-role completed mp4 presence,
-                # (d) module-level final concat presence. NO prod_modules schema
-                # migration (picker-spec R3 boundary preserved).
-                #
-                # 5-state glyph mapping (returned as `state` field on each role):
-                #   absent       — partition not in state.videos                → glyph '—'
-                #   empty        — partition present + display_order list is [] → glyph '○'
-                #   in_progress  — partition + non-empty display_order, no mp4  → glyph '◐'
-                #   complete     — partition + display_order + per-role mp4    → glyph '●'
-                #   final        — complete + module-level final concat        → glyph '★'
-                #
-                # For partitions whose display_order is the legacy int form
-                # (Event_e2e_fixture pre-v3 shape), treat any non-empty beats
-                # dict as 'in_progress' (matches renderer's fallback behavior).
-                state_path = edir / "production_state.json"
-                state_videos: dict = {}
-                try:
-                    with open(state_path, "r", encoding="utf-8") as _f:
-                        state_videos = (json.load(_f).get("videos") or {})
-                except (FileNotFoundError, json.JSONDecodeError):
-                    state_videos = {}
-
-                # Per-role completed mp4 globs. The canonical filenames vary
-                # by event so we accept either scene_<role>_*.mp4 (Event_1
-                # naming) or <role>_atomic_*.mp4 / <role>_atomic.mp4 (post-
-                # redeploy spec naming). Handler does NOT enforce a single
-                # filename — discovery is best-effort.
-                final_concat_present = bool(final_concat)
-                for _role in ("intro", "resolution", "standalone"):
-                    partition = state_videos.get(_role)
-                    if not isinstance(partition, dict):
-                        videos_by_role[_role] = {"state": "absent"}
-                        continue
-                    do = partition.get("display_order")
-                    beats = partition.get("beats") or {}
-                    if isinstance(do, list):
-                        is_empty = (len(do) == 0)
-                    else:
-                        # Legacy int / missing display_order: treat as 'present
-                        # with content' if any beats exist.
-                        is_empty = (len(beats) == 0)
-                    if is_empty:
-                        videos_by_role[_role] = {"state": "empty"}
-                        continue
-                    role_dir = edir / _role
-                    role_mp4s: list[Path] = []
-                    if role_dir.is_dir():
-                        role_mp4s = (
-                            list(role_dir.glob(f"scene_{_role}_*.mp4"))
-                            + list(role_dir.glob(f"{_role}_atomic*.mp4"))
-                        )
-                    else:
-                        role_mp4s = (
-                            list(edir.glob(f"scene_{_role}_*.mp4"))
-                            + list(edir.glob(f"{_role}_atomic*.mp4"))
-                        )
-                    if role_mp4s:
-                        if final_concat_present:
-                            videos_by_role[_role] = {
-                                "state": "final",
-                                "completed_mp4": role_mp4s[0].name,
-                            }
-                        else:
-                            videos_by_role[_role] = {
-                                "state": "complete",
-                                "completed_mp4": role_mp4s[0].name,
-                            }
-                    else:
-                        videos_by_role[_role] = {"state": "in_progress"}
-
-            rows.append({
-                "m_number": m.get("m_number"),
-                "creature_name": m.get("creature_name"),
-                "video_role": m.get("video_role"),
-                "event_dir": edir.name if edir else None,
-                "segments": segments,
-                "videos_by_role": videos_by_role,
-            })
-
-        # Milestone nodes — standalone single-video projects (Oliver meet, etc.)
-        from lib.milestone_store import list_milestones  # noqa: PLC0415
-
-        milestone_rows: list[dict] = []
-        for ms in list_milestones(production_root):
-            mid = ms["milestone_id"]
-            mdir = Path(ms["path"])
-            skel = ms.get("skeleton_ref") or {}
-            state_path = mdir / "state.json"
-            state_videos: dict = {}
-            try:
-                with open(state_path, encoding="utf-8") as _mf:
-                    state_videos = (json.load(_mf).get("videos") or {})
-            except (FileNotFoundError, json.JSONDecodeError):
-                state_videos = {}
-            standalone_part = state_videos.get("standalone") if isinstance(state_videos, dict) else {}
-            do = standalone_part.get("display_order") if isinstance(standalone_part, dict) else None
-            beats = standalone_part.get("beats") if isinstance(standalone_part, dict) else {}
-            if not isinstance(standalone_part, dict):
-                role_state = "absent"
-            elif isinstance(do, list) and len(do) == 0:
-                role_state = "empty"
-            elif isinstance(do, list) and len(do) > 0:
-                mp4s = list(mdir.glob("*_final.mp4")) + list(mdir.glob("standalone_*.mp4"))
-                role_state = "complete" if mp4s else "in_progress"
-            elif isinstance(beats, dict) and beats:
-                role_state = "in_progress"
-            else:
-                role_state = "empty"
-            sidecar_path = mdir / "beat_generator_sidecar.json"
-            bg_beats = 0
-            if sidecar_path.is_file():
-                try:
-                    with open(sidecar_path, encoding="utf-8") as _sf:
-                        sc = json.load(_sf)
-                    arc = int(skel.get("arc_number") or 1)
-                    eid = str(skel.get("event_id") or mid)
-                    ph = str(skel.get("phase") or "full")
-                    seg_key = f"event_{eid}_{ph}"
-                    seg_entry = (
-                        (sc.get("arcs") or {})
-                        .get(f"arc_{arc}", {})
-                        .get("segments", {})
-                        .get(seg_key, {})
-                    )
-                    bg_beats = len(seg_entry.get("beats") or [])
-                except (OSError, json.JSONDecodeError, TypeError, ValueError):
-                    bg_beats = 0
-            milestone_rows.append({
-                "milestone_id": mid,
-                "milestone_label": ms.get("milestone_label"),
-                "skeleton_ref": skel,
-                "library_event_id": ms.get("library_event_id"),
-                "path": str(mdir),
-                "scope_type": "milestone",
-                "videos_by_role": {
-                    "standalone": {
-                        "state": role_state,
-                        "bg_beat_count": bg_beats,
-                    },
-                },
-            })
+        timeline, milestone_extras = build_production_map_timeline(production_root, modules)
+        module_rows = [r for r in timeline if r.get("kind") == "module"]
 
         out = {
             "ok": True,
-            "modules": rows,
-            "milestones": milestone_rows,
+            "timeline": timeline,
+            "modules": module_rows,
+            "milestones": [r for r in timeline if r.get("kind") == "milestone"],
+            "milestone_extras": milestone_extras,
             "cache_ttl_s": 60,
             "generated_at": datetime.now(timezone.utc).isoformat(),
         }
         ProductionHandler._PRODUCTION_MAP_CACHE = out
         ProductionHandler._PRODUCTION_MAP_CACHE_TS = time.time()
         return self._send_json(200, out)
+
+    def _handle_production_next_options(self) -> None:
+        """GET /api/production/next-options — expected-not-yet-created slots."""
+        from server_handlers.production_map import compute_next_options
+        from lib.directus_admin_client import DirectusAdminClient
+
+        qs = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        arc_filter = None
+        if qs.get("arc"):
+            try:
+                arc_filter = int(qs["arc"][0])
+            except (TypeError, ValueError):
+                pass
+        try:
+            client = DirectusAdminClient()
+            prod_modules = client._request(
+                "GET",
+                "/items/prod_modules?fields=id,m_number,creature_name,spell_name,technique_name&limit=200",
+            )
+        except Exception as exc:  # noqa: BLE001
+            return self._send_error_v59(
+                500,
+                error_code="GENERIC_ERROR",
+                error_message=f"Directus read failed: {type(exc).__name__}: {exc}",
+                retry_safe=True,
+            )
+        production_root = self.app.event_dir.parent
+        payload = compute_next_options(
+            production_root=production_root,
+            prod_modules=prod_modules,
+            arc_filter=arc_filter,
+            bg_module=_bg_module(),
+        )
+        return self._send_json(200, payload)
 
     def _handle_stitch_loudnorm(self, body: dict) -> None:
         from server_handlers.stitch_editor import handle_stitch_loudnorm

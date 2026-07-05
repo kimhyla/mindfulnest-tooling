@@ -34,9 +34,11 @@ def parse_m_form_event_identity(event_id_str: str) -> tuple[int, int] | None:
 
 
 def production_folder_to_arc_play_order(folder_id: str) -> tuple[int, int] | None:
-    """Map ``Event_N`` folder → ``(arc_number, play_order_within_arc)``.
+    """Map ``Event_N`` folder → ``(arc_number, module_index_within_arc)``.
 
-    Six modules per arc: Event_1–6 = Arc 1 play 1–6, Event_7–12 = Arc 2 play 1–6, …
+    Event_N counts modules only (milestones use ``Milestones/<id>``). Per-arc module
+    counts vary — see ``production_event_map.MODULE_COUNT_BY_ARC`` (prod_blockers
+    id=180 fix; not a uniform 6-per-arc).
     """
     raw = str(folder_id or "").strip()
     m = _NUMBERED_EVENT_DIR_RE.match(raw)
@@ -45,9 +47,18 @@ def production_folder_to_arc_play_order(folder_id: str) -> tuple[int, int] | Non
     n = int(m.group(1))
     if n < 1:
         return None
-    arc_number = ((n - 1) // 6) + 1
-    play_order = ((n - 1) % 6) + 1
-    return arc_number, play_order
+    try:
+        from .production_event_map import MODULE_COUNT_BY_ARC  # noqa: PLC0415
+    except ImportError:
+        from production_event_map import MODULE_COUNT_BY_ARC  # noqa: PLC0415
+
+    remaining = n
+    for arc_number in sorted(MODULE_COUNT_BY_ARC.keys()):
+        count = MODULE_COUNT_BY_ARC[arc_number]
+        if remaining <= count:
+            return arc_number, remaining
+        remaining -= count
+    return None
 
 
 def is_numbered_event_folder_id(event_id_str: str) -> bool:

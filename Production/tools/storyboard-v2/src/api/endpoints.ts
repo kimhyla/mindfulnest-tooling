@@ -39,6 +39,7 @@ export const READ_ENDPOINTS = {
   // S5.5f — ambient bed preset inventory.
   phase_b_ambient_preset_list: `${SERVER_BASE}/api/phase_b/ambient_preset_list`,
   production_map: `${SERVER_BASE}/api/production/map`,
+  production_next_options: `${SERVER_BASE}/api/production/next-options`,
   // S5.5b new — Bug 4 fix + VideoSelector data source
   event_current: `${SERVER_BASE}/api/event/current`,
   video_list: `${SERVER_BASE}/api/video/list`,
