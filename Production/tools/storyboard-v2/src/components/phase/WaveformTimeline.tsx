@@ -29,6 +29,8 @@
 //           bindDropTargetCapture on wrapperRef (capture phase).
 //   CUE-HANDLE-1  cue-block body pointer-events:none (SEEK-4); drag-body + handles
 //           pointer-events:auto — drag-body in shouldSkipSeek for cue-move only.
+//   WTA-12  endDragSeek must not call endDragSeek(0) when resolveDurationMs flickers;
+//           onSeeking while paused always publishes authority + re-seeks WS cursor.
 //   WTA-1   Paused playhead: waveformTimeAuthority.resolvePausedPlayheadMs — never
 //           let WS/video clocks at 0 clobber scrub authority on drag release.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
@@ -364,6 +366,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         ? slotClockMs
         : displayDurationS * 1000;
       setDurationMs(authoritativeMs);
+      timeAuthorityRef.current.setDurationMs(authoritativeMs);
       setCurrentMs(restoredMs);
       if (restoredMs > 0) lastScrubMsRef.current = restoredMs;
       setIsPlaying(false);
@@ -387,6 +390,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
           ? slotClockMs
           : (ws.getDuration() || displayDurationS) * 1000;
         setDurationMs(authoritativeMs);
+        timeAuthorityRef.current.setDurationMs(authoritativeMs);
         setIsReady(true);
         isReadyRef.current = true;
         const playheadMs = lastScrubMsRef.current ?? timeAuthorityRef.current.getPlayheadMs();
@@ -422,6 +426,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const restoredMs = ta.restoreAfterRemount();
     setLoadError(null);
     setDurationMs(null);
+    timeAuthorityRef.current.setDurationMs(0);
     setCurrentMs(restoredMs);
     if (restoredMs > 0) lastScrubMsRef.current = restoredMs;
     setIsPlaying(false);
@@ -452,6 +457,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     const onReadyHandler = () => {
       const d = ws.getDuration() * 1000;
       setDurationMs(d);
+      timeAuthorityRef.current.setDurationMs(d);
       setIsReady(true);
       isReadyRef.current = true;
       // Never resume after decode — prevents ghost audio on tab load / refresh.
@@ -499,8 +505,18 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         wsMs,
         lastScrubMsRef.current,
       );
-      // WTA-1: stale WS clock at 0 wins over ws.isPlaying() lies after drag release.
-      if (!ws.isPlaying() || (authorityMs > 0 && wsMs < 50)) {
+      // WTA-12: while paused, never trust WS clock — stem mp3 + lipsync mp4 both lie on release.
+      if (!ws.isPlaying()) {
+        if (authorityMs > 0) lastScrubMsRef.current = authorityMs;
+        publishPlayhead(authorityMs);
+        const durMs = timelineDurationMsRef.current ?? 0;
+        if (durMs > 0 && authorityMs > 0 && wsMs + 50 < authorityMs) {
+          ws.seekTo(Math.min(1, authorityMs / durMs));
+        }
+        return;
+      }
+      // WTA-1: playing-path stale zero after drag release (isPlaying() may still lie briefly).
+      if (authorityMs > 0 && wsMs < 50) {
         if (authorityMs > 0) lastScrubMsRef.current = authorityMs;
         publishPlayhead(authorityMs);
         return;
