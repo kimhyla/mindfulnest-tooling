@@ -1,6 +1,6 @@
 # TECH SPEC — Phase B Avatar Pro production wire v1
 
-**Status:** Approved for implementation (3×3 debate below)  
+**Status:** Superseded for Module tab — see `TECH_SPEC_MODULE_LIPSYNC_LEGACY_REINSTATEMENT_v1.md`. Beat Gen Avatar unchanged.  
 **Scope:** Replace Phase B `Send for Lipsync` vendor path (Kling base-loop lipsync) with **Kling V2 Avatar Pro** (still + full voice stem + frozen-BG prompt).  
 **Proof anchor:** Event_2 chunk-0 job `fbb800405fb54c829e12e6b795f923f7` — $2.93 / 26.07s — operator-approved quality.
 

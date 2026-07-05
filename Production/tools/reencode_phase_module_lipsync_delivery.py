@@ -16,7 +16,11 @@ HERE = Path(__file__).resolve().parent
 if str(HERE) not in sys.path:
     sys.path.insert(0, str(HERE))
 
-from phase_module_lipsync_delivery import finalize_phase_module_lipsync_delivery  # noqa: E402
+from phase_module_lipsync_delivery import (  # noqa: E402
+    PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT,
+    finalize_phase_module_lipsync_delivery,
+    resolve_module_lipsync_reencode_source,
+)
 
 
 def _event_dir(name: str) -> Path:
@@ -55,19 +59,34 @@ def main() -> int:
         if not name:
             print(f"FATAL: phase_{args.phase}_lipsync_file unset in production_state", file=sys.stderr)
             return 1
-        lipsync_path = (event_dir / name).resolve()
+        try:
+            lipsync_path = resolve_module_lipsync_reencode_source(event_dir, name)
+        except FileNotFoundError:
+            lipsync_path = (event_dir / name).resolve()
+
+    out_name = lipsync_path.name.replace("_reframed", "")
+    if out_name == lipsync_path.name and not out_name.endswith("_raw.mp4"):
+        out_path = event_dir / out_name.replace(".mp4", "_v3_delivery.mp4")
+    else:
+        out_path = event_dir / out_name if out_name != lipsync_path.name else lipsync_path
 
     if not lipsync_path.is_file():
         print(f"FATAL: lipsync not found: {lipsync_path}", file=sys.stderr)
         return 1
 
-    if not args.no_backup:
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup = lipsync_path.with_suffix(lipsync_path.suffix + f".pre_delivery_{ts}.bak")
-        shutil.copy2(lipsync_path, backup)
-        print(f"backup: {backup}")
-
-    meta = finalize_phase_module_lipsync_delivery(lipsync_path, sharpen=True)
+    if out_path.resolve() == lipsync_path.resolve():
+        if not args.no_backup:
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup = lipsync_path.with_suffix(lipsync_path.suffix + f".pre_delivery_{ts}.bak")
+            shutil.copy2(lipsync_path, backup)
+            print(f"backup: {backup}")
+        meta = finalize_phase_module_lipsync_delivery(lipsync_path, sharpen=True)
+    else:
+        meta = finalize_phase_module_lipsync_delivery(
+            lipsync_path, dest_path=out_path, sharpen=True,
+        )
+        print(f"output: {out_path}")
+        print(f"recipe: {PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_CURRENT}")
     print(json.dumps(meta, indent=2))
     return 0
 

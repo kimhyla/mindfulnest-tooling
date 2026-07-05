@@ -1,5 +1,5 @@
 /** Phase B Cedric base clip — mirrors phase_b_cedric_contract.py */
-export const PHASE_B_CEDRIC_BASE_CLIP_CANONICAL = 'cedric_idle_newstyle_v3';
+export const PHASE_B_CEDRIC_BASE_CLIP_CANONICAL = 'cedric_idle_newstyle_v6';
 
 const DEPRECATED_PREFIXES = [
   'cedric_idle_camera_',
@@ -10,6 +10,9 @@ const DEPRECATED_PREFIXES = [
 const DEPRECATED_EXACT = new Set([
   'cedric_idle_newstyle_v1',
   'cedric_idle_newstyle_v2',
+  'cedric_idle_newstyle_v3',
+  'cedric_idle_newstyle_v4',
+  'cedric_idle_newstyle_v5',
 ]);
 
 export function phaseBCedricBaseClipDeprecated(clipId: string | null | undefined): boolean {

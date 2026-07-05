@@ -9,11 +9,15 @@ from phase_a_arlo_contract import (
 
 
 class PhaseAArloContractTests(unittest.TestCase):
-    def test_deprecated_ids_coerce_to_v4(self) -> None:
+    def test_deprecated_ids_coerce_to_v8(self) -> None:
         for old in (
             "arlo_idle_wizard_desk_v1",
             "arlo_idle_wizard_desk_v2",
             "arlo_idle_wizard_desk_v3",
+            "arlo_idle_wizard_desk_v4",
+            "arlo_idle_wizard_desk_v5",
+            "arlo_idle_wizard_desk_v6",
+            "arlo_idle_wizard_desk_v7",
         ):
             self.assertTrue(phase_a_arlo_base_clip_deprecated(old))
             self.assertEqual(coerce_phase_a_arlo_base_clip_id(old), PHASE_A_ARLO_BASE_CLIP_CANONICAL)

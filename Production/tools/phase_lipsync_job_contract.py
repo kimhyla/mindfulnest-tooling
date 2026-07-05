@@ -26,6 +26,9 @@ PHASE_LIPSYNC_TERMINAL_CLEARED = frozenset({
 PHASE_LIPSYNC_TERMINAL_FAILURE_PREFIX = "error:"
 PHASE_LIPSYNC_QA_FAILED = "qa_failed"
 
+# Module Phase B: single Kling job when stem ≤ this; legacy_28s segmented above.
+LIPSYNC_SINGLE_PASS_MAX_S = 180.0
+
 # Statuses that require a vendor task_id before UI shows in-flight (Kling path).
 _PHASE_LIPSYNC_TASK_BOUND = frozenset({"polling", "submitting", "submitted"})
 
@@ -65,7 +68,7 @@ def phase_lipsync_progress_message(phase: str) -> str:
             "Safe to switch tabs — will auto-update when done."
         )
     return (
-        "⏳ Avatar Pro lipsync in progress (~10–50 min for full meditation). "
+        "⏳ Kling lipsync in progress (~8–50 min depending on stem length). "
         "Safe to switch tabs — will auto-update when done."
     )
 

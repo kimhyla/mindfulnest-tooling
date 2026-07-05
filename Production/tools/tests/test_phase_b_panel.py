@@ -484,11 +484,15 @@ class TestPhaseEndpoints(unittest.TestCase):
         self.assertEqual(state.get("phase_b_ambient_preset_id"),
                          "meditation_fireplace_v1")
 
-    # 11. lipsync submits Avatar Pro (mocked) — no base clip required
-    def test_lipsync_submits_avatar_pro(self):
+    # 11. lipsync submits Kling Sync (mocked) — base clip required
+    def test_lipsync_submits_kling_sync(self):
         # Seed voice stem.
         vs = self.event_dir / "phase_b_voice_stem_test.mp3"
         vs.write_bytes(b"\x00fakevoice\x00")
+        bases = self.event_dir.parent / "assets" / "lipsync_bases"
+        bases.mkdir(parents=True, exist_ok=True)
+        base_clip = bases / "cedric_idle_newstyle_v4.mp4"
+        base_clip.write_bytes(b"\x00fakebase\x00")
         def _apply(state):
             state["phase_b_voice_stem_file"] = vs.name
             state["phase_b_voice_stem_mtime"] = int(time.time())
@@ -512,8 +516,8 @@ class TestPhaseEndpoints(unittest.TestCase):
 
         def _fake_lipsync_client(*_a, **_kw):
             class _LSC:
-                def submit_avatar_pro(self, _still, _audio, _prompt):
-                    return "fake_avatar_task_id"
+                def submit(self, _video, _audio):
+                    return "fake_kling_task_id"
 
                 def download(self, _url, dest):
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -521,7 +525,7 @@ class TestPhaseEndpoints(unittest.TestCase):
             return _LSC()
 
         def _fake_poll(_task_id):
-            return {"status": "completed", "outputs": ["http://fake/avatar.mp4"]}
+            return {"status": "completed", "outputs": ["http://fake/kling.mp4"]}
 
         self.app.client.poll = _fake_poll  # type: ignore[attr-defined]
 
@@ -530,7 +534,7 @@ class TestPhaseEndpoints(unittest.TestCase):
                  "phase_module_lipsync_delivery.finalize_phase_module_lipsync_delivery",
                  side_effect=lambda path, **kw: {
                      "delivery_profile": "voice_first_upscale",
-                     "delivery_recipe": "PHASE_MODULE_LIPSYNC_DELIVERY_V1",
+                     "delivery_recipe": "PHASE_MODULE_LIPSYNC_DELIVERY_V2",
                      "raw_width": 720,
                      "raw_height": 544,
                      "width": 1280,
@@ -540,26 +544,28 @@ class TestPhaseEndpoints(unittest.TestCase):
                  },
              ), \
              mock.patch("server_handlers.phases.LipSyncClient",
-                        create=True, new=_fake_lipsync_client):
+                        create=True, new=_fake_lipsync_client), \
+             mock.patch(
+                 "server_handlers.phases._ffprobe_duration",
+                 return_value=30.0,
+             ):
             status, resp, _ = _http_post(
                 self.port, "/api/phase_b/lipsync",
-                {"phase": "b"},
+                {"phase": "b", "base_clip_id": "cedric_idle_newstyle_v4"},
                 timeout=30,
             )
             self.assertEqual(status, 202, resp)
             self.assertEqual(resp.get("status"), "submitted")
-            self.assertEqual(resp.get("task_id"), "fake_avatar_task_id")
-            self.assertEqual(resp.get("lipsync_method"), "kling_avatar_pro_v1")
-            self.assertEqual(resp.get("lipsync_route"), "single_full_stem_v1")
+            self.assertEqual(resp.get("task_id"), "fake_kling_task_id")
+            self.assertNotIn("lipsync_method", resp)
             state_after_submit = self.app.state.read_state()
             self.assertEqual(state_after_submit.get("phase_b_lipsync_status"), "polling")
-            self.assertEqual(state_after_submit.get("phase_b_lipsync_task_id"), "fake_avatar_task_id")
+            self.assertEqual(state_after_submit.get("phase_b_lipsync_task_id"), "fake_kling_task_id")
             self.assertTrue(state_after_submit.get("phase_b_lipsync_pending_out"))
             self.assertEqual(
-                state_after_submit.get("phase_b_lipsync_method"),
-                "kling_avatar_pro_v1",
+                state_after_submit.get("phase_b_cedric_base_clip_id"),
+                "cedric_idle_newstyle_v4",
             )
-            self.assertTrue(state_after_submit.get("phase_b_avatar_still_file"))
             from server_handlers.phases import sweep_phase_module_lipsync_polls
 
             lipsync_file = None
@@ -574,7 +580,7 @@ class TestPhaseEndpoints(unittest.TestCase):
                         f"expected poller sweep to write lipsync file; state={state}")
         self.assertEqual(state.get("phase_b_lipsync_status"), "done")
         self.assertNotIn("phase_b_lipsync_task_id", state)
-        self.assertEqual(state.get("phase_b_lipsync_method"), "kling_avatar_pro_v1")
+        self.assertNotIn("phase_b_avatar_still_file", state)
 
     # 12. preview fails loud on missing lipsync
     def test_preview_fails_loud_when_lipsync_file_missing(self):

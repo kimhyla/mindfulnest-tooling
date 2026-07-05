@@ -1,6 +1,6 @@
 # TECH SPEC — Phase A Avatar Pro production wire v1
 
-**Status:** Approved for implementation  
+**Status:** Superseded for Module tab — see `TECH_SPEC_MODULE_LIPSYNC_LEGACY_REINSTATEMENT_v1.md`. Beat Gen Avatar unchanged.  
 **Scope:** Replace Phase A `Send for Lipsync` ByteDance-on-base-clip path with **Kling V2 Avatar Pro** (Arlo wizard-desk still + full voice stem + frozen-BG prompt). Parity with Phase B module contract.  
 **Proof anchor:** Event_2 probe `phase_a_avatar_pro_probe/phase_a_arlo_avatar_pro_10s_20260624-154539.mp4` — operator-approved quality vs ByteDance middle.
 

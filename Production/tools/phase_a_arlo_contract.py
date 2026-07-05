@@ -1,8 +1,8 @@
 """Phase A Arlo base-clip contract — canonical preset for all events.
 
-Jun 22 2026: ``arlo_idle_wizard_desk_v4`` from NEW STYLE ARLO wizard-desk still +
-locked-camera Kling idle (fireplace fire/smoke + gentle squirrel motion).
-Prior v1–v3 coerced on read/submit.
+Jul 4 2026: ``arlo_idle_wizard_desk_v8`` — medium close-up 16:9 wizard-desk idle
+(10s Kling source; crossfade-looped to Phase A stem length). Kim-approved winner.
+Prior v1–v7 coerced on read/submit.
 
 Never use NEW STYLE CHARACTERS/BACKGROUND stills for Arlo idle — wrong asset class.
 """
@@ -10,11 +10,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v4"
+PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v8"
 
-# Text-free wide 16:9 wizard-desk still (Jun 30) — headroom + bottom sacrifice zone contract.
+# Medium close-up 16:9 wizard-desk still — sealed-mouth idle base for ByteDance lipsync.
 PHASE_A_ARLO_CANONICAL_STILL_REL = (
-    "NEW STYLE CHARACTERS/ARLO/arlo_still_wide_16x9_v1.png"
+    "NEW STYLE CHARACTERS/ARLO/arlo_still_medium_16x9_v1.png"
 )
 PHASE_A_ARLO_EVENT_STILL_NAME = "phase_a_arlo_canonical_still.png"
 
@@ -22,6 +22,10 @@ _DEPRECATED_EXACT = frozenset({
     "arlo_idle_wizard_desk_v1",
     "arlo_idle_wizard_desk_v2",
     "arlo_idle_wizard_desk_v3",
+    "arlo_idle_wizard_desk_v4",
+    "arlo_idle_wizard_desk_v5",
+    "arlo_idle_wizard_desk_v6",
+    "arlo_idle_wizard_desk_v7",
     "chipper_idle_closeup_v1",
     "chipper_idle_closeup_v2",
 })

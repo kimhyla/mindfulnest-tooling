@@ -4,6 +4,8 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks';
 import { pathappPatch } from '../api/client';
 import type { Scope } from '../state/scope';
+import { coercePhaseAArloBaseClipId } from '../phaseAArloContract';
+import { coercePhaseBCedricBaseClipId } from '../phaseBCedricContract';
 import { mergeOperatorFieldOnHydrate } from '../utils/operatorEditMerge.ts';
 
 export interface UsePhaseBaseClipPickerOptions {
@@ -56,10 +58,18 @@ export function usePhaseBaseClipPicker({
     const field = phase === 'a'
       ? 'phase_a_chipper_sitting_clip_id'
       : 'phase_b_cedric_base_clip_id';
-    if (!Object.prototype.hasOwnProperty.call(state, field)) return;
+    if (!Object.prototype.hasOwnProperty.call(state, field)) {
+      adoptServerClipId(undefined);
+      return;
+    }
     const raw = state[field];
-    const serverId = typeof raw === 'string' ? raw : undefined;
-    adoptServerClipId(serverId);
+    const serverId = typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+    const coerced = serverId === undefined
+      ? undefined
+      : phase === 'a'
+        ? coercePhaseAArloBaseClipId(serverId)
+        : coercePhaseBCedricBaseClipId(serverId);
+    adoptServerClipId(coerced);
   }, [phase, adoptServerClipId]);
 
   const pickClip = useCallback(async (clipId: string, field: string): Promise<boolean> => {

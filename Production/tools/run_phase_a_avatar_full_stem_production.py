@@ -29,7 +29,7 @@ from phase_a_avatar_lipsync import (  # noqa: E402
 )
 from phase_a_chipper_bytedance_lipsync import ffprobe_duration  # noqa: E402
 from phase_module_lipsync_delivery import finalize_phase_module_lipsync_delivery  # noqa: E402
-from server_handlers.phases import _apply_phase_audio_trim  # noqa: E402
+from server_handlers.phases import _apply_phase_avatar_pro_audio_prep  # noqa: E402
 
 
 class _HandlerShim:
@@ -74,7 +74,7 @@ def main() -> int:
     still = resolve_phase_a_arlo_avatar_still(event_dir, event_dir.parent)
     ts = _ts()
     shim = _HandlerShim(event_dir, state)
-    audio_for_lipsync, audio_duration = _apply_phase_audio_trim(
+    audio_for_lipsync, audio_duration = _apply_phase_avatar_pro_audio_prep(
         shim, audio_path, "a", state, ts,
     )
     est = estimate_avatar_pro_usd(audio_duration)

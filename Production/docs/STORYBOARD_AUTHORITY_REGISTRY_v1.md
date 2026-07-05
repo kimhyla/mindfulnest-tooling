@@ -81,6 +81,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_export_truth_v2** — still-insert video fade + ambient tile concat + peaks invalidate | disk | `_still_insert_exit_at_join` / `build_ambient_explicit_tile_concat_loop` | `concat_kling_o3_approved_beats` / `bake_and_persist_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V2.md` |
 | **stitch_playback_url** — composer video when SFX exist | derived | `resolveSlotPlaybackPreviewUrl` | mux artifact bake | shipped | `TECH_SPEC_STITCH_SFX_PLAYBACK_TRUTH_V1.md` |
 | **stitch_single_owner** — who mutates slot video post-export | disk | `STITCH_SINGLE_OWNER_V1` load_job read-only | export path owns ingest | shipped | `TECH_SPEC_STITCH_SINGLE_OWNER_V1.md` |
+| **stitch_bake_slot_authority** — phase_b MP4 at module bake | disk | `validate_phase_b_stitch_slot_authority` | `stitch_upsert_event_slot` (export/pin/save only; bake never writes) | shipped | `TECH_SPEC_STITCH_BAKE_SLOT_AUTHORITY_V1.md` |
 
 ### Phase producer (Tier D — operator edit surfaces)
 

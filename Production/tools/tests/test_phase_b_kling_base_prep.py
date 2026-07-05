@@ -12,13 +12,13 @@ def test_kling_submit_bitrate_fits_22mb_for_two_minute_loop():
     assert implied_mb <= prep.WAVESPEED_RAW_MB_CEILING
 
 
-def test_phases_handler_uses_avatar_pro_not_kling_base_loop():
+def test_phases_handler_uses_kling_base_loop_not_avatar_pro():
     src = Path(__file__).resolve().parent.parent / "server_handlers" / "phases.py"
     block = src.read_text(encoding="utf-8").split("def handle_phase_b_lipsync", 1)[1]
     block = block.split("\ndef _write_phase_b_lipsync_complete", 1)[0]
-    assert "submit_avatar_pro" in block
-    assert "prep_phase_b_kling_base_video" not in block
-    assert "resolve_phase_b_cedric_still" in block
+    assert "submit_avatar_pro" not in block
+    assert "prep_phase_b_kling_base_video" in block
+    assert "LipSyncClient" in block
 
 
 def test_prep_module_exports_code_constant():

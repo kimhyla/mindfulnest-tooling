@@ -3709,6 +3709,23 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
 _STITCH_SLOT_ORDER = ["intro", "phase_a", "phase_b", "resolution"]
 _DEFAULT_PHASE_TRANSITION_FADE_MS = 3800
 
+# STITCH_MODULE_LATE_FADE_TRANSITIONS_V1 — black in the middle, not on dialogue tails.
+STITCH_MODULE_VISUAL_OUT_MS = 200
+STITCH_MODULE_VISUAL_IN_MS = 200
+STITCH_MODULE_BOUNDARY_PAIR_FADE_MS: tuple[int, int, int] = (2800, 3800, 3800)
+
+
+def module_boundary_pair_fade_ms(after_slot: int) -> int:
+    """Per-boundary total fade-through-black budget (ms)."""
+    idx = max(0, min(len(STITCH_MODULE_BOUNDARY_PAIR_FADE_MS) - 1, int(after_slot)))
+    return STITCH_MODULE_BOUNDARY_PAIR_FADE_MS[idx]
+
+
+def module_boundary_visual_in_ms_by_pair(pair_count: int, default_in_ms: int) -> list[int]:
+    """Per-boundary incoming visual fade — short head fade only."""
+    _ = default_in_ms
+    return [STITCH_MODULE_VISUAL_IN_MS for _ in range(max(0, pair_count))]
+
 # STITCH_CANONICAL_TRANSITIONS_V1 — module boundaries always fade-through-black like intro.
 STITCH_CANONICAL_TRANSITIONS_V1 = "STITCH_CANONICAL_TRANSITIONS_V1"
 
@@ -3725,8 +3742,12 @@ STITCH_CANONICAL_BOUNDARY_SFX: dict[int, str] = {
 
 
 def module_boundary_visual_out_ms_by_pair(pair_count: int, default_out_ms: int) -> list[int]:
-    """Per-boundary outgoing visual fade — symmetric dissolve tails at every phase join."""
-    return [int(default_out_ms) for _ in range(max(0, pair_count))]
+    """Per-boundary outgoing visual fade — late start; phase_b→res has no outgoing dim."""
+    _ = default_out_ms
+    outs = [STITCH_MODULE_VISUAL_OUT_MS for _ in range(max(0, pair_count))]
+    if len(outs) >= 3:
+        outs[2] = 0
+    return outs
 
 
 def boundary_sfx_overlay_plan(
@@ -3811,12 +3832,12 @@ def resolve_canonical_finale_outtro_path(h, filename: str) -> str:
 
 
 def default_stitch_transitions() -> list[dict]:
-    """Prolonged dissolve at each phase boundary (matches intro canonical fade scale)."""
+    """Late-fade dissolve at each phase boundary (STITCH_MODULE_LATE_FADE_TRANSITIONS_V1)."""
     return [
         {
             "after_slot": i,
             "kind": "dissolve",
-            "fade_ms": _DEFAULT_PHASE_TRANSITION_FADE_MS,
+            "fade_ms": module_boundary_pair_fade_ms(i),
             "audio_xfade_ms": 0,
         }
         for i in range(3)
@@ -4015,11 +4036,7 @@ def _persist_stitch_preview_slot_geometry(
 
 def _preview_module_timing_from_hydrated(h, hydrated: dict) -> tuple[list[int], list[int]]:
     """Module seek timing for preview JSON (STITCH_MODULE_SEEK_V1) without full pipeline."""
-    from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415
-        DEFAULT_FADE_THROUGH_BLACK_VISUAL_IN_MS,
-        DEFAULT_FADE_THROUGH_BLACK_VISUAL_OUT_MS,
-        module_slot_start_offsets_ms,
-    )
+    from credentials_lib.ffmpeg_stitch import module_slot_start_offsets_ms  # noqa: PLC0415
 
     slots = hydrated.get("slots") or []
     transitions = hydrated.get("transitions") or []
@@ -4043,11 +4060,16 @@ def _preview_module_timing_from_hydrated(h, hydrated: dict) -> tuple[list[int], 
             pair_fades_ms.append(0)
     while len(pair_fades_ms) < max(0, len(slot_durations) - 1):
         pair_fades_ms.append(0)
+    visual_out_by_pair = module_boundary_visual_out_ms_by_pair(
+        len(pair_fades_ms),
+        STITCH_MODULE_VISUAL_OUT_MS,
+    )
     slot_start_offsets_ms = module_slot_start_offsets_ms(
         slot_durations,
         pair_fades_ms,
-        visual_out_ms=DEFAULT_FADE_THROUGH_BLACK_VISUAL_OUT_MS,
-        visual_in_ms=DEFAULT_FADE_THROUGH_BLACK_VISUAL_IN_MS,
+        visual_out_ms=STITCH_MODULE_VISUAL_OUT_MS,
+        visual_in_ms=STITCH_MODULE_VISUAL_IN_MS,
+        visual_out_ms_by_pair=visual_out_by_pair,
     )
     return slot_durations, slot_start_offsets_ms
 
@@ -4519,15 +4541,16 @@ def _run_stitch_bake_core(
         scope_video_role=(body.get("scope_video_role") or pin.get("pinned_video_role")),
     )
     if not milestone_bake:
-        _progress("Refreshing Phase B delivery slot…", phase="encode")
-        preflight = ensure_phase_b_stitch_slot_for_bake(h)
+        _progress("Validating Phase B stitch slot…", phase="encode")
+        preflight = ensure_phase_b_stitch_slot_for_bake(h, job_name=job_name)
         if not preflight.get("ok", True):
             _stitch_module_bake_audit(
                 h,
-                "PHASE_B_PREFLIGHT_FAILED",
+                "PHASE_B_SLOT_AUTHORITY_FAILED",
                 job_id=job_id,
                 stitch_job_name=job_name,
                 error=preflight.get("error"),
+                code=preflight.get("code"),
             )
             return {
                 "ok": False,
@@ -4535,6 +4558,16 @@ def _run_stitch_bake_core(
                 "error_message": preflight.get("error") or "Phase B bake preflight failed",
                 "retry_safe": True,
             }
+        _stitch_module_bake_audit(
+            h,
+            "PHASE_B_SLOT_AUTHORITY_VALIDATED",
+            job_id=job_id,
+            stitch_job_name=job_name,
+            video_path=preflight.get("video_path"),
+            dry_export_path=preflight.get("dry_export_path"),
+            video_dur_ms=preflight.get("video_dur_ms"),
+            code=preflight.get("slot_authority_code"),
+        )
 
     stitch_store = stitch_state_store_for_job(h, job_name) if job_name else h.app.stitch_state
     orig_stitch_state = None

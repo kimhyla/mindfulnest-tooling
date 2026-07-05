@@ -875,7 +875,7 @@ test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => 
     await openPhaseA(page);
 
     const slot = page.locator('[data-testid="phase-a-clip-slot-sitting"]');
-    await expect(slot).toHaveAttribute('data-clip-id', 'arlo_idle_wizard_desk_v1');
+    await expect(slot).toHaveAttribute('data-clip-id', 'arlo_idle_wizard_desk_v8');
 
     await page.locator('[data-testid="phase-a-clip-pick-sitting"]').click();
     await page.locator('[data-testid="base-clip-option-chipper_sitting_alt_v2"]').click();
