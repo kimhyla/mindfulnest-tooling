@@ -104,6 +104,7 @@ def test_import_delivery_clip_applies_harvest_fields(
                         "beats": [{
                             "beat_id": beat_id,
                             "pipeline": "still_insert",
+                            "beat_render_mode": "still_insert",
                             "audio_file": "line_02_benson.mp3",
                             "kling_o3_options": [],
                         }],
@@ -112,18 +113,16 @@ def test_import_delivery_clip_applies_harvest_fields(
             },
         },
     }
-    store = BeatgenStore(db)
-    store.import_sidecar(sidecar)
-    scope = build_event_production_scope(event_dir)
-    monkeypatch.setattr(bg, "read_sidecar", lambda: store.read_sidecar())
-    monkeypatch.setattr(
-        bg,
-        "update_beat_locked",
-        lambda beat_id, mutator, **kw: store.update_beat_locked(beat_id, mutator, **kw),
-    )
-    monkeypatch.setattr(bg, "event_dir_for_beat_id", lambda _bid: event_dir)
-    monkeypatch.setattr(bg, "kling_o3_clips_dir", lambda _ed: clips_dir)
-    monkeypatch.setattr(bg, "copy_file_durable", lambda src, dest: Path(dest).write_bytes(b"x"))
+    monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(db))
+    monkeypatch.setenv("MN_SIDECAR_SQLITE_AUTHORITY", "1")
+    monkeypatch.setenv("MN_BEATGEN_SERVER_WRITER", "1")
+    monkeypatch.setattr(bg, "bootstrap_sqlite_from_legacy_global_db", lambda *_a, **_k: 0)
+    BeatgenStore.reset_singleton_for_tests()
+    bg.reset_bg_paths_activation_for_tests()
+    bg.init_bg_paths(str(event_dir), clear_milestone_scope=True)
+    bg._beatgen_store().import_from_dict(sidecar, replace=True)
+    delivery = tmp_path / "incoming.mp4"
+    delivery.write_bytes(b"fake-harvest")
     monkeypatch.setattr(bg, "persist_o3_disk_enrich_on_beat", lambda *a, **k: None)
     monkeypatch.setattr(
         "kling_stitch_readiness.finalize_kling_delivery_clip",
@@ -140,13 +139,13 @@ def test_import_delivery_clip_applies_harvest_fields(
 
     ok, beat = bg.import_delivery_clip_to_beat(
         beat_id=beat_id,
-        delivery_mp4=clips_dir / "incoming.mp4",
+        delivery_mp4=delivery,
         slot_index=2,
         label="POV visual + Omni Benson voice (real-voice harvest)",
         source="kling_real_voice_harvest",
         make_active=True,
         event_dir=event_dir,
-        scope=scope,
+        scope=build_event_production_scope(event_dir),
     )
     assert ok is True
     assert beat is not None
