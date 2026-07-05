@@ -487,20 +487,29 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // Paused scrub: applySeek + lastScrubMsRef own the label. WS 'seeking' /
     // getCurrentTime() often reports 0 on mp4/lipsync until decode catches up —
     // accepting that clock zeros the red playhead on drag release.
+    const publishPlayhead = (ms: number) => {
+      const rounded = Math.round(ms);
+      setCurrentMs(rounded);
+      onTimeUpdateRef.current?.(rounded);
+    };
     const onSeeking = () => {
       if (isDraggingSeekRef.current || timeAuthorityRef.current.isDraggingSeek()) return;
-      if (!ws.isPlaying()) {
-        const wsMs = msFromWsClock(ws) ?? 0;
-        const ms = resolvePausedPlayheadMs(wsMs);
-        lastScrubMsRef.current = ms > 0 ? ms : null;
-        publishPlayheadMs(ms);
+      const wsMs = msFromWsClock(ws) ?? 0;
+      const authorityMs = timeAuthorityRef.current.resolvePausedPlayheadMs(
+        wsMs,
+        lastScrubMsRef.current,
+      );
+      // WTA-1: stale WS clock at 0 wins over ws.isPlaying() lies after drag release.
+      if (!ws.isPlaying() || (authorityMs > 0 && wsMs < 50)) {
+        if (authorityMs > 0) lastScrubMsRef.current = authorityMs;
+        publishPlayhead(authorityMs);
         return;
       }
       const ms = msFromWsClock(ws);
       if (ms == null) return;
       lastScrubMsRef.current = null;
       timeAuthorityRef.current.scrubToMs(ms);
-      publishPlayheadMs(ms);
+      publishPlayhead(ms);
     };
     const linkedVideoTimeS = (): number => {
       if (!ws.isPlaying()) {
