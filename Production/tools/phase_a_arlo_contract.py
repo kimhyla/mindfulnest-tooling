@@ -1,7 +1,11 @@
 """Phase A Arlo base-clip contract — canonical preset for all events.
 
-Jul 4 2026: ``arlo_idle_wizard_desk_v8`` — medium close-up 16:9 wizard-desk idle
-(10s Kling source; crossfade-looped to Phase A stem length). Kim-approved winner.
+Jul 5 2026: default Phase A lipsync route is Kling start+end same still
+(idle_kling_lipsync_startend_still) — gaze-forward idle from
+``arlo_still_medium_16x9_v1.png`` + Element binding, then Kling LipSync.
+
+``arlo_idle_wizard_desk_v8`` remains the optional base-clip preset for
+Regen Base Clip only; Send for Lipsync no longer routes through ByteDance.
 Prior v1–v7 coerced on read/submit.
 
 Never use NEW STYLE CHARACTERS/BACKGROUND stills for Arlo idle — wrong asset class.
