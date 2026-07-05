@@ -94,8 +94,8 @@ def test_extract_still_insert_tts_lorelai_says_colon_format():
     assert parsed is not None
     assert parsed["speaker"] == "Lorelai"
     assert parsed["text"] == "Well I can read the picture-writing . it says . Feel . What's . Real."
-    assert "warm excited conversational pace" in parsed["tts_text"]
-    assert "scholarly" in parsed["tts_text"]
+    assert parsed["tts_text"] == parsed["text"]
+    assert "warm excited conversational pace" not in parsed["tts_text"]
 
 
 def test_extract_still_insert_tts_pronoun_says_does_not_steal_named_character():
@@ -233,6 +233,38 @@ def test_extract_still_insert_tts_prefers_kling_prompt_over_stale_dialogue():
     assert parsed["tts_text"].startswith("[worried]")
     assert bg.sync_beat_dialogue_from_kling_prompt(beat) is True
     assert beat["dialogue_text"].startswith("Hmmm")
+
+
+def test_extract_still_insert_tts_prompt_box_beats_stale_kling_o3_prompt_still():
+    """Regression: textarea ``kling_o3_prompt`` must win over stale ``kling_o3_prompt_still``."""
+    beat = {
+        "pipeline": "still_insert",
+        "speaker": "Arlo",
+        "o3_prompt_box_law": True,
+        "kling_o3_prompt": 'Arlo speaks:  "There it goes...."',
+        "kling_o3_prompt_still": (
+            "STALE sidecar script about the nest blooming with extra lines Arlo never wrote"
+        ),
+        "dialogue_text": "Old plan dialogue that should not be spoken",
+    }
+    parsed = bg.extract_still_insert_tts(beat)
+    assert parsed is not None
+    assert parsed["text"] == "There it goes."
+    assert parsed["tts_text"] == "There it goes."
+    assert "not bubbly" not in parsed["tts_text"].lower()
+    assert "STALE" not in parsed["tts_text"]
+
+
+def test_extract_still_insert_tts_bare_speak_line_skips_canonical_delivery():
+    beat = {
+        "pipeline": "still_insert",
+        "speaker": "Arlo",
+        "kling_o3_prompt": 'Arlo speaks:  "There it goes...."',
+    }
+    parsed = bg.extract_still_insert_tts(beat)
+    assert parsed is not None
+    assert parsed["tts_text"] == "There it goes."
+    assert parsed["fingerprint"] == "There it goes."
 
 
 def test_sync_beat_dialogue_from_kling_prompt_still_insert():
