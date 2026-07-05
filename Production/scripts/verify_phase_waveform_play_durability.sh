@@ -57,7 +57,7 @@ grep -q 'lastScrubMsRef' "$WS" \
   || fail "paused scrub must use lastScrubMsRef (play-pause-drag on lipsync mp4)"
 grep -q 'timelineDurationMsRef' "$WS" \
   || fail "drag-seek must use timelineDurationMsRef — ws.getDuration() can be 0 while loaded"
-grep -q 'WAVEFORM_DRAG_SEEK_V2' "$WS" \
+grep -q 'WAVEFORM_DRAG_SEEK_V2' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils/waveformSeekController.ts" \
   || fail "drag-seek handlers must set data-drag-seek-bound WAVEFORM_DRAG_SEEK_V2"
 grep -q 'WAVEFORM_CUE_HANDLE_V1' "$CSS" \
   || fail "cue-block-handle must declare WAVEFORM_CUE_HANDLE_V1 marker in app.css"
@@ -93,6 +93,33 @@ if "isDraggingSeekRef.current" not in block or "lastScrubMsRef.current" not in b
 PY
 grep -q 'timelineRelXFromClientX' "$WS" \
   || fail "seek/drop/cue drag must share timelineRelXFromClientX (WTA-5)"
+grep -q 'resolvePausedPlayheadMs' "$WS" \
+  || fail "WaveformTimeline must use waveformTimeAuthority.resolvePausedPlayheadMs (WTA-1)"
+grep -q 'resolvePausedPlayheadMs' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils/waveformTimeAuthority.ts" \
+  || fail "waveformTimeAuthority must export resolvePausedPlayheadMs (WTA-1)"
+python3 - "$WS" <<'PY' || fail "shouldSkipSeek must not skip .mn-waveform-cue-block (SEEK-4 — body is pointer-events:none)"
+import sys
+from pathlib import Path
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+if ".mn-waveform-cue-block," in src or ".mn-waveform-cue-block '" in src:
+    raise SystemExit(1)
+PY
+grep -q 'SEEK-DRAG-B-STEM-1' "$E2E" \
+  || fail "e2e must include Phase B stem drag regression (SEEK-DRAG-B-STEM-1)"
+grep -q 'bindWaveformSeekController' "$WS" \
+  || fail "WaveformTimeline must bind via waveformSeekController (WAVEFORM_SEEK_CONTROLLER_V1)"
+grep -q 'bindWaveformSeekController' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils/waveformSeekController.ts" \
+  || fail "missing waveformSeekController.ts"
+python3 - "$WS" <<'PY' || fail "drag-seek pointer handlers must not live in WaveSurfer mount effect"
+import sys
+from pathlib import Path
+src = Path(sys.argv[1]).read_text(encoding="utf-8")
+mount = src.split("// WaveSurfer mount", 1)[1].split("// VQ-P1:", 1)[0]
+if "addEventListener('pointerdown'" in mount or 'addEventListener("pointerdown"' in mount:
+    raise SystemExit(1)
+PY
+grep -q 'waveformAudioForPhase' "${REPO_ROOT}/Production/tools/storyboard-v2/src/components/phase/PhaseProducer.tsx" \
+  || fail "PhaseProducer must use waveformAudioForPhase (SEEK-5 audio policy)"
 grep -q 'timelineRelXFromClientX' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils/waveformTimeAuthority.ts" \
   || fail "waveformTimeAuthority must export timelineRelXFromClientX"
 grep -q 'bindDropTargetCapture' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils/dragdrop.ts" \

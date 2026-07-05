@@ -686,7 +686,7 @@ test.describe('F17 — Phase A single canonical player (LD-829)', () => {
     await expect(videos.first()).toHaveAttribute('src', /phase_a_stitched_e2e\.mp4/);
     await expect(page.locator('[data-testid="waveform-timeline"]')).toHaveAttribute(
       'data-source-label',
-      'stitched',
+      'lipsync',
     );
   });
 

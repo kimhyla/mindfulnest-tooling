@@ -23,8 +23,10 @@ grep -q 'PHASE_A_SINGLE_PLAYER_V1' "$PRODUCER" \
   || fail "missing PHASE_A_SINGLE_PLAYER_V1 marker on PhaseProducer"
 grep -q 'phaseAPreviewFile' "$PRODUCER" \
   || fail "missing phaseAPreviewFile helper"
-grep -q 'priorityAudioFileForPhase' "$PRODUCER" \
-  || fail "missing priorityAudioFileForPhase helper"
+grep -q 'waveformAudioForPhase' "$PRODUCER" \
+  || fail "missing waveformAudioForPhase (WAVEFORM_AUDIO_POLICY_V1 / SEEK-5)"
+grep -q 'waveformAudioPolicy' "$PRODUCER" \
+  || fail "PhaseProducer must import waveformAudioPolicy"
 grep -q 'Preview (normalized dry lipsync — ambient added in Stitcher):' "$PRODUCER" \
   || fail "missing dry lipsync preview label"
 grep -q 'phase-a-mix-btn' "$PRODUCER" \

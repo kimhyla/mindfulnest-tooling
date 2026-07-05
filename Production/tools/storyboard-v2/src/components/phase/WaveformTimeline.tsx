@@ -27,8 +27,10 @@
 //           isDraggingSeekRef + lastScrubMsRef — video.currentTime at 0 fights drag.
 //   DROP-CAPTURE-1  HTML5 drop on wrapper bubble misses WaveSurfer canvas child;
 //           bindDropTargetCapture on wrapperRef (capture phase).
-//   CUE-HANDLE-1  cue-block body pointer-events:auto for drag-to-move (CUE-MOVE-1);
-//           handles + popover hit stay interactive; body in shouldSkipSeek.
+//   CUE-HANDLE-1  cue-block body pointer-events:none (SEEK-4); drag-body + handles
+//           pointer-events:auto — drag-body in shouldSkipSeek for cue-move only.
+//   WTA-1   Paused playhead: waveformTimeAuthority.resolvePausedPlayheadMs — never
+//           let WS/video clocks at 0 clobber scrub authority on drag release.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
 //           same stale-duration class as SEEK (ws.getDuration() can be 0).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,6 +61,7 @@ import {
   createWaveformTimeAuthority,
   timelineRelXFromClientX,
 } from '../../utils/waveformTimeAuthority.ts';
+import { bindWaveformSeekController } from '../../utils/waveformSeekController.ts';
 
 /** Intentional ws.destroy() during audioSrc / shared-media transitions aborts in-flight load. */
 function isIgnorableWaveformLoadError(err: unknown): boolean {
@@ -299,6 +302,19 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     return Math.max(0, Math.min(100 - cuePctLeft(cue), (durMs / timelineDurationMs) * 100));
   };
 
+  const resolvePausedPlayheadMs = useCallback((mediaTimeMs: number): number => {
+    return timeAuthorityRef.current.resolvePausedPlayheadMs(
+      mediaTimeMs,
+      lastScrubMsRef.current,
+    );
+  }, []);
+
+  const publishPlayheadMs = useCallback((ms: number) => {
+    const rounded = Math.round(ms);
+    setCurrentMs(rounded);
+    onTimeUpdateRef.current?.(rounded);
+  }, []);
+
   const withLinkedVideoSuppress = useCallback((fn: () => void) => {
     const ref = linkedVideoEventSuppressRef;
     if (ref) ref.current = true;
@@ -472,25 +488,24 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // getCurrentTime() often reports 0 on mp4/lipsync until decode catches up —
     // accepting that clock zeros the red playhead on drag release.
     const onSeeking = () => {
-      if (isDraggingSeekRef.current) return;
+      if (isDraggingSeekRef.current || timeAuthorityRef.current.isDraggingSeek()) return;
       if (!ws.isPlaying()) {
-        const scrubbed = lastScrubMsRef.current;
-        if (scrubbed != null) {
-          setCurrentMs(scrubbed);
-          onTimeUpdateRef.current?.(scrubbed);
-        }
+        const wsMs = msFromWsClock(ws) ?? 0;
+        const ms = resolvePausedPlayheadMs(wsMs);
+        lastScrubMsRef.current = ms > 0 ? ms : null;
+        publishPlayheadMs(ms);
         return;
       }
       const ms = msFromWsClock(ws);
       if (ms == null) return;
       lastScrubMsRef.current = null;
-      setCurrentMs(ms);
-      onTimeUpdateRef.current?.(ms);
+      timeAuthorityRef.current.scrubToMs(ms);
+      publishPlayheadMs(ms);
     };
     const linkedVideoTimeS = (): number => {
-      const scrubbed = lastScrubMsRef.current;
-      if (!ws.isPlaying() && scrubbed != null) {
-        return scrubbed / 1000;
+      if (!ws.isPlaying()) {
+        const wsMs = (msFromWsClock(ws) ?? 0);
+        return resolvePausedPlayheadMs(wsMs) / 1000;
       }
       const t = ws.getCurrentTime();
       return t > 0 ? t : 0;
@@ -722,20 +737,17 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
     // SEEK-8 — Stitcher displayOnly: master <video> must not clobber paused drag authority.
     const syncFromVideo = (video: HTMLVideoElement) => {
-      if (isDraggingSeekRef.current) return;
+      if (isDraggingSeekRef.current || timeAuthorityRef.current.isDraggingSeek()) return;
       if (!video.paused && !video.ended) {
         lastScrubMsRef.current = null;
         applyPlayheadMs(Math.max(0, video.currentTime * 1000));
         setIsPlaying(true);
         return;
       }
-      const scrubbed = lastScrubMsRef.current;
-      if (scrubbed != null) {
-        applyPlayheadMs(scrubbed);
-        setIsPlaying(false);
-        return;
-      }
-      applyPlayheadMs(Math.max(0, video.currentTime * 1000));
+      const mediaMs = Math.max(0, video.currentTime * 1000);
+      const ms = resolvePausedPlayheadMs(mediaMs);
+      if (ms > 0) lastScrubMsRef.current = ms;
+      applyPlayheadMs(ms);
       setIsPlaying(false);
     };
 
@@ -795,7 +807,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     }
 
     return detach;
-  }, [displayOnly, masterVideo, displayDurationS, durationMs, slotTimelineDurMs, fallbackDurationMs, onTimeUpdate]);
+  }, [displayOnly, masterVideo, displayDurationS, durationMs, slotTimelineDurMs, fallbackDurationMs, onTimeUpdate, resolvePausedPlayheadMs]);
 
   // Shared lipsync <video> + WaveSurfer media: drive overlay cue timing from the
   // video clock (audioprocess alone can lag when WS uses the same element).
@@ -807,22 +819,18 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     // SEEK-3 / WTA-1: while paused, linked lipsync <video> often reports currentTime 0
     // until decode catches up — must not clobber applySeek / lastScrubMsRef authority.
     const syncFromVideo = (video: HTMLVideoElement) => {
-      if (isDraggingSeekRef.current) return;
-      const scrubbed = lastScrubMsRef.current;
+      if (isDraggingSeekRef.current || timeAuthorityRef.current.isDraggingSeek()) return;
       if (!video.paused && !video.ended) {
         const ms = Math.max(0, video.currentTime * 1000);
-        setCurrentMs(ms);
-        onTimeUpdateRef.current?.(ms);
+        lastScrubMsRef.current = null;
+        timeAuthorityRef.current.scrubToMs(ms);
+        publishPlayheadMs(ms);
         return;
       }
-      if (scrubbed != null) {
-        setCurrentMs(scrubbed);
-        onTimeUpdateRef.current?.(scrubbed);
-        return;
-      }
-      const ms = Math.max(0, video.currentTime * 1000);
-      setCurrentMs(ms);
-      onTimeUpdateRef.current?.(ms);
+      const mediaMs = Math.max(0, video.currentTime * 1000);
+      const ms = resolvePausedPlayheadMs(mediaMs);
+      if (ms > 0) lastScrubMsRef.current = ms;
+      publishPlayheadMs(ms);
     };
 
     const tick = () => {
@@ -878,7 +886,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       boundVideo.removeEventListener('timeupdate', onVideoTimeUpdate);
       boundVideo = null;
     };
-  }, [useSharedLinkedMedia, displayOnly, linkedVideoFilename, audioSrc]);
+  }, [useSharedLinkedMedia, displayOnly, linkedVideoFilename, audioSrc, resolvePausedPlayheadMs, publishPlayheadMs]);
 
   // Keep-alive: pause when this phase tab is hidden so background WaveSurfer
   // instances do not block playback on the visible tab (Chrome autoplay policy).
@@ -926,112 +934,30 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       : Boolean(audioSrc);
     if (!wrapper || !isReady || !canSeek) return;
 
-    let seekPointerId: number | null = null;
-
-    const applySeek = (rel: number) => {
-      const live = wsRef.current;
-      const durMs = displayOnly
-        ? (slotTimelineDurMs ?? fallbackDurationMs ?? (displayDurationS ?? 0) * 1000)
-        : (timelineDurationMsRef.current ?? 0);
-      if (!live || durMs <= 0) return;
-      const ms = rel * durMs;
-      lastScrubMsRef.current = ms;
-      timeAuthorityRef.current.scrubToMs(ms);
-      setCurrentMs(ms);
-      onTimeUpdateRef.current?.(ms);
-      live.seekTo(rel);
-      if (displayOnly) {
-        onMasterSeek?.(ms);
-        return;
-      }
-      const lv = linkedVideoRef.current?.current;
-      if (lv && useSharedLinkedMediaRef.current) {
-        withLinkedVideoSuppress(() => {
-          lv.muted = false;
-          try {
-            lv.currentTime = ms / 1000;
-          } catch {
-            // ignore seek on unloaded media
-          }
-        });
-      } else if (lv && !useSharedLinkedMediaRef.current) {
-        withLinkedVideoSuppress(() => {
-          lv.muted = true;
-          try {
-            lv.currentTime = ms / 1000;
-          } catch {
-            // ignore seek on unloaded media
-          }
-        });
-      }
-    };
-
-    const getRelX = (e: PointerEvent): number => {
-      const box = wrapper.getBoundingClientRect();
-      return timelineRelXFromClientX(box, e.clientX);
-    };
-
-    const shouldSkipSeek = (target: EventTarget | null): boolean => {
-      if (!(target instanceof HTMLElement)) return false;
-      return Boolean(
-        target.closest(
-          '.mn-waveform-source-label, .mn-waveform-cue-drag-body, .mn-waveform-cue-block, .mn-waveform-cue-block-handle, .mn-waveform-cue-popover-hit, .mn-waveform-stem-trim-handle',
-        ),
-      );
-    };
-
-    const onPointerDown = (e: PointerEvent) => {
-      if (shouldSkipSeek(e.target)) return;
-      const live = wsRef.current;
-      const durMs = displayOnly
-        ? (slotTimelineDurMs ?? fallbackDurationMs ?? (displayDurationS ?? 0) * 1000)
-        : (timelineDurationMsRef.current ?? 0);
-      if (!live || durMs <= 0) return;
-      isDraggingSeekRef.current = true;
-      seekPointerId = e.pointerId;
-      wrapper.setPointerCapture(e.pointerId);
-      applySeek(getRelX(e));
-    };
-    const onPointerMove = (e: PointerEvent) => {
-      if (!isDraggingSeekRef.current || e.pointerId !== seekPointerId) return;
-      applySeek(getRelX(e));
-    };
-    const endDragSeek = (rel: number) => {
-      applySeek(rel);
-      const durMs = displayOnly
-        ? (slotTimelineDurMs ?? fallbackDurationMs ?? (displayDurationS ?? 0) * 1000)
-        : (timelineDurationMsRef.current ?? 0);
-      onWaveformClickRef.current?.(rel * durMs);
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          isDraggingSeekRef.current = false;
-        });
-      });
-    };
-    const onPointerUp = (e: PointerEvent) => {
-      if (!isDraggingSeekRef.current || e.pointerId !== seekPointerId) return;
-      seekPointerId = null;
-      endDragSeek(getRelX(e));
-    };
-    const onPointerCancel = (e: PointerEvent) => {
-      if (seekPointerId !== null && e.pointerId !== seekPointerId) return;
-      seekPointerId = null;
-      isDraggingSeekRef.current = false;
-    };
-
-    wrapper.addEventListener('pointerdown', onPointerDown, true);
-    wrapper.addEventListener('pointermove', onPointerMove, true);
-    wrapper.addEventListener('pointerup', onPointerUp, true);
-    wrapper.addEventListener('pointercancel', onPointerCancel, true);
-    wrapper.setAttribute('data-drag-seek-bound', 'WAVEFORM_DRAG_SEEK_V2');
-
-    return () => {
-      wrapper.removeAttribute('data-drag-seek-bound');
-      wrapper.removeEventListener('pointerdown', onPointerDown, true);
-      wrapper.removeEventListener('pointermove', onPointerMove, true);
-      wrapper.removeEventListener('pointerup', onPointerUp, true);
-      wrapper.removeEventListener('pointercancel', onPointerCancel, true);
-    };
+    return bindWaveformSeekController({
+      wrapper,
+      wsRef,
+      timeAuthority: timeAuthorityRef.current,
+      isDraggingSeekRef,
+      lastScrubMsRef,
+      linkedVideoRef,
+      useSharedLinkedMediaRef,
+      onWaveformClickRef,
+      withLinkedVideoSuppress,
+      publishPlayheadMs,
+      resolveDurationMs: () => {
+        if (displayOnly) {
+          return (
+            slotTimelineDurMs ??
+            fallbackDurationMs ??
+            (displayDurationS ?? 0) * 1000
+          );
+        }
+        return timelineDurationMsRef.current ?? 0;
+      },
+      displayOnly,
+      onMasterSeek,
+    });
   }, [
     audioSrc,
     isReady,
@@ -1041,10 +967,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     fallbackDurationMs,
     displayDurationS,
     onMasterSeek,
-    syncPlayUi,
-    waveformHeight,
-    linkedVideoScrubOnly,
     withLinkedVideoSuppress,
+    publishPlayheadMs,
   ]);
 
   const emitCueRange = (cueId: string, offsetMs: number, durationMs: number) => {

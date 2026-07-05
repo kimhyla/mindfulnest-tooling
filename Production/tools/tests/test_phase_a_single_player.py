@@ -19,7 +19,7 @@ def test_phase_a_single_player_marker_and_no_duplicate_stitched_video() -> None:
     src = _producer_src()
     assert "PHASE_A_SINGLE_PLAYER_V1" in src
     assert "phaseAPreviewFile" in src
-    assert "priorityAudioFileForPhase" in src
+    assert "waveformAudioForPhase" in src
     assert 'data-testid="phase-a-stitched-preview"' not in src
     assert "mn-phase-stitched-video" not in src
     assert "Stitched preview (lipsync + ambient bed):" not in src
