@@ -83,6 +83,23 @@ function validateEventId(id: string): string | null {
   return null;
 }
 
+interface NextOptionItem {
+  kind: 'module' | 'milestone' | string;
+  label: string;
+  suggested_id?: string | null;
+  arc_number?: number;
+  m_number?: number;
+  confidence?: string;
+}
+
+interface NextOptionsResponse {
+  ok: boolean;
+  options?: NextOptionItem[];
+  anomalies?: unknown[];
+}
+
+const UNEXPECTED_PLAN_VALUE = '__unexpected__';
+
 interface NewEventModalProps {
   open: boolean;
   onClose: () => void;
@@ -94,29 +111,78 @@ function NewEventModal({ open, onClose, onCreated }: NewEventModalProps) {
   const [eventLabel, setEventLabel] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [planOptions, setPlanOptions] = useState<NextOptionItem[]>([]);
+  const [selectedPlan, setSelectedPlan] = useState('');
+  const [useUnexpected, setUseUnexpected] = useState(false);
+  const [loadingPlans, setLoadingPlans] = useState(false);
 
-  const liveError = eventId.length > 0 ? validateEventId(eventId) : null;
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingPlans(true);
+      setError(null);
+      const res = await apiGet<NextOptionsResponse>('production_next_options');
+      if (cancelled) return;
+      setLoadingPlans(false);
+      const modules = (res.data?.options ?? []).filter((o) => o.kind === 'module');
+      setPlanOptions(modules);
+      if (modules.length === 0) {
+        setUseUnexpected(true);
+        setSelectedPlan(UNEXPECTED_PLAN_VALUE);
+        setEventId('');
+      } else {
+        setUseUnexpected(false);
+        const first = modules[0]?.suggested_id ?? '';
+        setSelectedPlan(first);
+        setEventId(first);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const liveError = useUnexpected && eventId.length > 0 ? validateEventId(eventId) : null;
+
+  const onPlanChange = (value: string) => {
+    setSelectedPlan(value);
+    if (value === UNEXPECTED_PLAN_VALUE) {
+      setUseUnexpected(true);
+      setEventId('');
+    } else {
+      setUseUnexpected(false);
+      setEventId(value);
+    }
+  };
 
   const onSubmit = async () => {
-    const idError = validateEventId(eventId);
-    if (idError) {
-      setError(idError);
+    const idToCreate = useUnexpected ? eventId : selectedPlan;
+    if (useUnexpected) {
+      const idError = validateEventId(idToCreate);
+      if (idError) {
+        setError(idError);
+        return;
+      }
+    } else if (!idToCreate) {
+      setError('Select an expected event or choose unexpected');
       return;
     }
     setSubmitting(true);
     setError(null);
     const result = await pathappPatch<{ ok: boolean; event_id?: string; event_dir?: string; error?: string }>(
       activeScope.value, 'event_create', {
-        event_id: eventId,
+        event_id: idToCreate,
         event_label: eventLabel || undefined,
+        ...(useUnexpected ? { unexpected: true } : {}),
       },
     );
     setSubmitting(false);
     if (result.ok && result.data?.ok) {
-      pushToast({ kind: 'success', message: `Event "${eventId}" created`, source: 'event-create' });
+      pushToast({ kind: 'success', message: `Event "${idToCreate}" created`, source: 'event-create' });
       setEventId('');
       setEventLabel('');
-      onCreated(eventId);
+      setSelectedPlan('');
+      setUseUnexpected(false);
+      onCreated(idToCreate);
     } else {
       const msg = result.data?.error ?? result.error ?? `HTTP ${result.status}`;
       setError(msg);
@@ -145,7 +211,7 @@ function NewEventModal({ open, onClose, onCreated }: NewEventModalProps) {
             class="mn-btn mn-btn-primary"
             data-testid="new-event-create"
             onClick={onSubmit}
-            disabled={submitting || !eventId || liveError !== null}
+            disabled={submitting || (useUnexpected ? (!eventId || liveError !== null) : !selectedPlan)}
           >
             {submitting ? 'Creating…' : 'Create'}
           </button>
@@ -153,30 +219,54 @@ function NewEventModal({ open, onClose, onCreated }: NewEventModalProps) {
       }
     >
       <p class="mn-dim">
-        Events are top-level production scopes (e.g. "Event_3", "M5E1").
+        Events are top-level production scopes (e.g. "Event_7", "M5E1").
         They live at <code>Production/Event_&lt;id&gt;/</code>.
       </p>
-      <label class="mn-select-label" for="new-event-id">Event ID:</label>
-      <input
-        id="new-event-id"
+      <label class="mn-select-label" for="new-event-plan">Next expected event:</label>
+      <select
+        id="new-event-plan"
         class="mn-project-modal-input"
-        type="text"
-        placeholder="Event_3"
-        value={eventId}
-        onInput={(e) => setEventId((e.target as HTMLInputElement).value)}
-        data-testid="new-event-id-input"
-        autofocus
-      />
-      <p class="mn-project-modal-help">
-        PascalCase, 3–64 chars, alphanumeric + <code>_</code>. First char
-        uppercase. Cannot start with reserved prefixes
-        (<code>Test_</code>, <code>_</code>, <code>Tmp_</code>).
-      </p>
-      {liveError ? (
-        <p class="mn-project-modal-error" data-testid="new-event-id-error">
-          {liveError}
+        value={selectedPlan}
+        onChange={(e) => onPlanChange((e.target as HTMLSelectElement).value)}
+        data-testid="new-event-plan-select"
+        disabled={loadingPlans || submitting}
+      >
+        {planOptions.map((opt) => (
+          <option key={opt.suggested_id ?? opt.label} value={opt.suggested_id ?? ''}>
+            {opt.label}{opt.kind === 'module' ? ' (module)' : ''}
+          </option>
+        ))}
+        <option value={UNEXPECTED_PLAN_VALUE}>Add an unexpected video…</option>
+      </select>
+      {useUnexpected ? (
+        <>
+          <label class="mn-select-label" for="new-event-id">Event ID:</label>
+          <input
+            id="new-event-id"
+            class="mn-project-modal-input"
+            type="text"
+            placeholder="Event_3"
+            value={eventId}
+            onInput={(e) => setEventId((e.target as HTMLInputElement).value)}
+            data-testid="new-event-id-input"
+            autofocus
+          />
+          <p class="mn-project-modal-help">
+            PascalCase, 3–64 chars, alphanumeric + <code>_</code>. First char
+            uppercase. Cannot start with reserved prefixes
+            (<code>Test_</code>, <code>_</code>, <code>Tmp_</code>).
+          </p>
+          {liveError ? (
+            <p class="mn-project-modal-error" data-testid="new-event-id-error">
+              {liveError}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p class="mn-project-modal-help" data-testid="new-event-id-input">
+          Selected: <code>{selectedPlan}</code> — creates a dedicated Event folder when applicable.
         </p>
-      ) : null}
+      )}
 
       <label class="mn-select-label" for="new-event-label">Display label (optional):</label>
       <input
@@ -209,30 +299,78 @@ function NewMilestoneModal({ open, onClose, onCreated }: NewMilestoneModalProps)
   const [milestoneLabel, setMilestoneLabel] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [planOptions, setPlanOptions] = useState<NextOptionItem[]>([]);
+  const [selectedPlan, setSelectedPlan] = useState('');
+  const [useUnexpected, setUseUnexpected] = useState(false);
+  const [loadingPlans, setLoadingPlans] = useState(false);
 
-  // Live regex feedback as the user types.
-  const liveError = milestoneId.length > 0 ? validateMilestoneId(milestoneId) : null;
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    (async () => {
+      setLoadingPlans(true);
+      setError(null);
+      const res = await apiGet<NextOptionsResponse>('production_next_options');
+      if (cancelled) return;
+      setLoadingPlans(false);
+      const milestones = (res.data?.options ?? []).filter((o) => o.kind === 'milestone');
+      setPlanOptions(milestones);
+      if (milestones.length === 0) {
+        setUseUnexpected(true);
+        setSelectedPlan(UNEXPECTED_PLAN_VALUE);
+        setMilestoneId('');
+      } else {
+        setUseUnexpected(false);
+        const first = milestones[0]?.suggested_id ?? '';
+        setSelectedPlan(first);
+        setMilestoneId(first);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open]);
+
+  const liveError = useUnexpected && milestoneId.length > 0 ? validateMilestoneId(milestoneId) : null;
+
+  const onPlanChange = (value: string) => {
+    setSelectedPlan(value);
+    if (value === UNEXPECTED_PLAN_VALUE) {
+      setUseUnexpected(true);
+      setMilestoneId('');
+    } else {
+      setUseUnexpected(false);
+      setMilestoneId(value);
+    }
+  };
 
   const onSubmit = async () => {
-    const idError = validateMilestoneId(milestoneId);
-    if (idError) {
-      setError(idError);
+    const idToCreate = useUnexpected ? milestoneId : selectedPlan;
+    if (useUnexpected) {
+      const idError = validateMilestoneId(idToCreate);
+      if (idError) {
+        setError(idError);
+        return;
+      }
+    } else if (!idToCreate) {
+      setError('Select an expected milestone or choose unexpected');
       return;
     }
     setSubmitting(true);
     setError(null);
     const result = await pathappPatch<{ ok: boolean; milestone_id?: string; error?: string }>(
       activeScope.value, 'milestones_create', {
-        milestone_id: milestoneId,
+        milestone_id: idToCreate,
         milestone_label: milestoneLabel || undefined,
+        ...(useUnexpected ? { unexpected: true } : {}),
       },
     );
     setSubmitting(false);
     if (result.ok && result.data?.ok) {
-      pushToast({ kind: 'success', message: `Milestone "${milestoneId}" created`, source: 'milestone-create' });
+      pushToast({ kind: 'success', message: `Milestone "${idToCreate}" created`, source: 'milestone-create' });
       setMilestoneId('');
       setMilestoneLabel('');
-      onCreated(milestoneId);
+      setSelectedPlan('');
+      setUseUnexpected(false);
+      onCreated(idToCreate);
     } else {
       const msg = result.data?.error ?? result.error ?? `HTTP ${result.status}`;
       setError(msg);
@@ -261,7 +399,7 @@ function NewMilestoneModal({ open, onClose, onCreated }: NewMilestoneModalProps)
             class="mn-btn mn-btn-primary"
             data-testid="new-milestone-create"
             onClick={onSubmit}
-            disabled={submitting || !milestoneId || liveError !== null}
+            disabled={submitting || (useUnexpected ? (!milestoneId || liveError !== null) : !selectedPlan)}
           >
             {submitting ? 'Creating…' : 'Create'}
           </button>
@@ -272,27 +410,51 @@ function NewMilestoneModal({ open, onClose, onCreated }: NewMilestoneModalProps)
         Milestones are standalone single-video projects (e.g. trailers, app intro).
         They live at <code>Production/Milestones/&lt;id&gt;/</code>.
       </p>
-      <label class="mn-select-label" for="new-milestone-id">Milestone ID:</label>
-      <input
-        id="new-milestone-id"
+      <label class="mn-select-label" for="new-milestone-plan">Next expected milestone:</label>
+      <select
+        id="new-milestone-plan"
         class="mn-project-modal-input"
-        type="text"
-        placeholder="my_milestone_id"
-        value={milestoneId}
-        onInput={(e) => setMilestoneId((e.target as HTMLInputElement).value)}
-        data-testid="new-milestone-id-input"
-        autofocus
-      />
-      <p class="mn-project-modal-help">
-        Lowercase, 3–64 chars, alphanumeric + <code>_</code> + <code>-</code>.
-        First char must be alphanumeric. Cannot start with reserved prefixes
-        (event_, module_, arc_, phase_, scene_, milestone_, test_, system_, admin_, api_).
-      </p>
-      {liveError ? (
-        <p class="mn-project-modal-error" data-testid="new-milestone-id-error">
-          {liveError}
+        value={selectedPlan}
+        onChange={(e) => onPlanChange((e.target as HTMLSelectElement).value)}
+        data-testid="new-milestone-plan-select"
+        disabled={loadingPlans || submitting}
+      >
+        {planOptions.map((opt) => (
+          <option key={opt.suggested_id ?? opt.label} value={opt.suggested_id ?? ''}>
+            {opt.label}{opt.kind === 'milestone' ? ' (milestone)' : ''}
+          </option>
+        ))}
+        <option value={UNEXPECTED_PLAN_VALUE}>Add an unexpected video…</option>
+      </select>
+      {useUnexpected ? (
+        <>
+          <label class="mn-select-label" for="new-milestone-id">Milestone ID:</label>
+          <input
+            id="new-milestone-id"
+            class="mn-project-modal-input"
+            type="text"
+            placeholder="my_milestone_id"
+            value={milestoneId}
+            onInput={(e) => setMilestoneId((e.target as HTMLInputElement).value)}
+            data-testid="new-milestone-id-input"
+            autofocus
+          />
+          <p class="mn-project-modal-help">
+            Lowercase, 3–64 chars, alphanumeric + <code>_</code> + <code>-</code>.
+            First char must be alphanumeric. Cannot start with reserved prefixes
+            (event_, module_, arc_, phase_, scene_, milestone_, test_, system_, admin_, api_).
+          </p>
+          {liveError ? (
+            <p class="mn-project-modal-error" data-testid="new-milestone-id-error">
+              {liveError}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <p class="mn-project-modal-help" data-testid="new-milestone-id-input">
+          Selected: <code>{selectedPlan}</code>
         </p>
-      ) : null}
+      )}
 
       <label class="mn-select-label" for="new-milestone-label">Display label (optional):</label>
       <input

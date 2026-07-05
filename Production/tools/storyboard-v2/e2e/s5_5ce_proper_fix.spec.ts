@@ -434,8 +434,21 @@ test.describe('R5 — library tile sizing', () => {
 // + NewEvent — modal + server endpoint
 // ----------------------------------------------------------------------------
 
+const EMPTY_NEXT_OPTIONS = { ok: true, options: [], anomalies: [] };
+
+async function mockEmptyNextOptions(page: Page): Promise<void> {
+  await page.route('**/api/production/next-options**', async (r) => {
+    await r.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(EMPTY_NEXT_OPTIONS),
+    });
+  });
+}
+
 test.describe('+ NewEvent — modal + server endpoint', () => {
   test('+NewEvent.1 — modal opens; reserved-word prefix rejected with regex error', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await gotoApp(page);
     const projectSelect = page.locator('[data-testid="project-selector"] select');
     await projectSelect.selectOption('__new_event__');
@@ -450,6 +463,7 @@ test.describe('+ NewEvent — modal + server endpoint', () => {
   });
 
   test('+NewEvent.2 — valid event_id POSTs to /api/event/create; succeeds (200) or already-exists (409)', async ({ page }) => {
+    await mockEmptyNextOptions(page);
     await gotoApp(page);
     const projectSelect = page.locator('[data-testid="project-selector"] select');
     await projectSelect.selectOption('__new_event__');
@@ -470,6 +484,7 @@ test.describe('+ NewEvent — modal + server endpoint', () => {
     const posted = createReqs[0]!.req.postDataJSON() as Record<string, unknown>;
     // pathappPatch must not clobber body.event_id with the pinned scope (Event_4-on-5114 bug).
     expect(posted['event_id']).toBe(eventId);
+    expect(posted['unexpected']).toBe(true);
     expect([200, 409]).toContain(createReqs[0]!.status);
   });
 });

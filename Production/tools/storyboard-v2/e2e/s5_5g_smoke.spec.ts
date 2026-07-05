@@ -831,12 +831,20 @@ interface MockMapRow {
 }
 
 async function mockProductionMap(page: Page, modules: MockMapRow[]): Promise<void> {
+  const timeline = modules.map((m, i) => ({
+    kind: 'module' as const,
+    arc_number: 1,
+    play_order: i + 1,
+    label: `M${m.m_number}`,
+    ...m,
+  }));
   await page.route('**/api/production/map', async (r) => {
     await r.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({
         ok: true,
+        timeline,
         modules,
         cache_ttl_s: 60,
         generated_at: '2026-05-04T22:00:00Z',
