@@ -43,4 +43,12 @@ grep -q 'REMOUNT-1' "$ROOT/Production/tools/storyboard-v2/e2e/phase_waveform_pla
 grep -q 'AMBIENT-HYDRATE-1' "$ROOT/Production/tools/storyboard-v2/e2e/phase_waveform_playback.spec.ts" \
   || fail "phase_waveform_playback.spec.ts missing AMBIENT-HYDRATE-1"
 
+echo "[waveform-time-authority] pass 5/5 — fleet deploy parity (all ports + fanout)"
+grep -q 'STORYBOARD_FLEET_BUNDLE_PARITY_V1' "$ROOT/Production/scripts/verify_storyboard_fleet_bundle_parity.sh" \
+  || fail "missing verify_storyboard_fleet_bundle_parity.sh"
+grep -q 'STORYBOARD_FLEET_RESTART_V1' "$ROOT/Production/scripts/restart_storyboard_fleet.sh" \
+  || fail "missing restart_storyboard_fleet.sh"
+grep -q 'verify_storyboard_fleet_bundle_parity.sh' "$ROOT/Production/scripts/deploy_storyboard_v59.sh" \
+  || fail "deploy_storyboard_v59.sh must gate fleet bundle parity after fanout"
+
 echo "[waveform-time-authority] OK"

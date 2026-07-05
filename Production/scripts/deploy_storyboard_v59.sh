@@ -494,6 +494,21 @@ bash "$SRC_TOOLING/Production/scripts/install_production_server_launchagent.sh" 
 echo "[deploy] (f) launchd server ready on :${SERVER_PORT}"
 
 # ----------------------------------------------------------------
+# (f.5) STORYBOARD_FLEET_RESTART_V1 — reload bundle on every dedicated port
+# Partial deploy class: fanout updated Event_5 only while :5111–:5114 stayed stale.
+# ----------------------------------------------------------------
+FLEET_RESTART_SCRIPT="$SRC_TOOLING/Production/scripts/restart_storyboard_fleet.sh"
+if [[ -x "$FLEET_RESTART_SCRIPT" ]]; then
+    echo "[deploy] (f.5) fleet restart — all dedicated Event_N servers (STORYBOARD_FLEET_RESTART_V1) ..."
+    MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" \
+        bash "$FLEET_RESTART_SCRIPT" || exit 1
+    echo "[deploy] (f.5) fleet restart ok"
+else
+    echo "FATAL: missing $FLEET_RESTART_SCRIPT" >&2
+    exit 1
+fi
+
+# ----------------------------------------------------------------
 # (g) Post-deploy curl smoke — verify served HTML carries fresh build-sha
 # SERVER_PORT already set from event_id (EVENT_DEDICATED_PORT_V1).
 # ----------------------------------------------------------------
@@ -523,6 +538,20 @@ if [[ "$MARKER_COUNT" -lt 1 ]]; then
     exit 1
 fi
 echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA, marker_matches=$MARKER_COUNT)"
+
+# ----------------------------------------------------------------
+# (g.2) STORYBOARD_FLEET_BUNDLE_PARITY_V1 — every fanout + every live port == HEAD
+# ----------------------------------------------------------------
+FLEET_PARITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_storyboard_fleet_bundle_parity.sh"
+if [[ -x "$FLEET_PARITY_SCRIPT" ]]; then
+    echo "[deploy] (g.2) fleet bundle parity (Dropbox fanout + :5111–:5116 live) ..."
+    MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" MN_EXPECT_BUILD_SHA="$BUILD_SHA" \
+        bash "$FLEET_PARITY_SCRIPT" || exit 1
+    echo "[deploy] (g.2) fleet bundle parity ok"
+else
+    echo "FATAL: missing $FLEET_PARITY_SCRIPT" >&2
+    exit 1
+fi
 
 echo "[deploy] (g.3) library panel_tabs live contract on :${SERVER_PORT} (${event_id}) ..."
 MN_LIBRARY_PANEL_LIVE_EVENT="$event_id" MN_SERVER_PORT="$SERVER_PORT" \
