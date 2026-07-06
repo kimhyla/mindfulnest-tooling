@@ -144,8 +144,8 @@ MARKERS=(
     "PHASE_LIPSYNC|pane-phase-b-keepalive"
     # Phase waveform playback — keep-alive mounts A+B; pause hidden + playback bus (2026-06-12)
     "PHASE_WAVEFORM_PLAY|Playback failed"
+    "PHASE_WAVEFORM_PLAY|WTA-31"
     "PHASE_WAVEFORM_PLAY|mn-waveform-source-label"
-    "PHASE_WAVEFORM_PLAY|do not drag the waveform at the same time"
     "PHASE_WAVEFORM_PLAY|waveform-play-btn"
     "PHASE_WAVEFORM_PLAY|attributeFilter"
     "PHASE_WAVEFORM_PLAY|stop-all-audio-btn"

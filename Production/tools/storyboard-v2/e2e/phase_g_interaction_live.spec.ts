@@ -175,6 +175,46 @@ test('DROP-WC-LIVE-1 — watercolor tile → cue on live waveform', async ({ pag
   ).toBeVisible({ timeout: 15_000 });
 });
 
+test('PLAY-DROP-LIVE-1 — watercolor drop after play/pause cycles (WTA-31)', async ({
+  page,
+  request,
+}) => {
+  await page.goto(`${LIVE}/?event=${LIVE_EVENT}&tab=phase_b`);
+  await expect(page.locator('[data-testid="phase-producer-b"]')).toBeVisible({ timeout: 60_000 });
+
+  const waveform = page.locator(
+    '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-timeline"]',
+  );
+  await expect(waveform).toBeVisible({ timeout: 30_000 });
+  await expect.poll(async () => {
+    const v = await waveform.getAttribute('data-loaded-duration-ms');
+    return v ? Number(v) : 0;
+  }, { timeout: 60_000 }).toBeGreaterThan(0);
+
+  const playBtn = waveform.locator('[data-testid="waveform-play-btn"]');
+  for (let i = 0; i < 4; i += 1) {
+    await playBtn.click();
+    await page.waitForTimeout(600);
+    if ((await playBtn.innerText()).includes('Pause')) {
+      await playBtn.click();
+      await page.waitForTimeout(250);
+    }
+  }
+  await expect(waveform.locator('.mn-waveform-error')).toHaveCount(0);
+
+  const dropKey = await pickUnusedWatercolorKey(request, page, waveform);
+  const tile = page.locator(`[data-testid="phase-b-watercolor-tile-${dropKey}"]`);
+  await expect(tile).toBeVisible({ timeout: 30_000 });
+  const cueBefore = Number((await waveform.getAttribute('data-cue-count')) ?? '0');
+  await tile.dragTo(waveform, { targetPosition: { x: 0.45, y: 0.5 }, force: true });
+  let cueAfter = Number((await waveform.getAttribute('data-cue-count')) ?? '0');
+  if (cueAfter <= cueBefore) {
+    await liveHtml5WatercolorDrop(page, tile, waveform, dropKey);
+    cueAfter = Number((await waveform.getAttribute('data-cue-count')) ?? '0');
+  }
+  expect(cueAfter).toBeGreaterThan(cueBefore);
+});
+
 test('SEEK-DRAG-B-STEM-LIVE-1 — Phase B stem drag release holds position (WTA-030)', async ({ page }) => {
   await page.goto(`${LIVE}/?event=${LIVE_EVENT}&tab=phase_b`);
   await expect(page.locator('[data-testid="phase-producer-b"]')).toBeVisible({ timeout: 60_000 });

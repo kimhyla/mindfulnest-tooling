@@ -562,6 +562,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('play', () => {
       if (stopPlaybackIfHiddenPane()) return;
       lastScrubMsRef.current = null;
+      setLoadError(null);
       setIsPlaying(true);
       onPlayStateChange?.(true);
     });
@@ -1276,6 +1277,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const dropHandlers = useMemo(
     () => makeDropTarget(
       (payload: DragPayload, e: DragEvent) => {
+        setLoadError(null);
         const assessment = assessWaveformInteractionReady({
           isReady: isReadyRef.current,
           durationMs: resolveTimelineDurationMs(),
@@ -1369,27 +1371,15 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
       pauseOtherWaveformPlayback(playbackControlRef);
       setLoadError(null);
-      void ws.play()
-        .then(() => {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              if (ws.isPlaying()) {
-                setIsPlaying(true);
-                onPlayStateChange?.(true);
-              } else if (!linkedVideoEventSuppressRef?.current) {
-                setLoadError(
-                  'Playback failed — try ▶ Play again (do not drag the waveform at the same time).',
-                );
-              }
-            });
-          });
-        })
-        .catch((err: unknown) => {
-          if (isIgnorableWaveformLoadError(err)) return;
-          const msg = err instanceof Error ? err.message : String(err);
-          setLoadError(`Playback failed: ${msg}`);
-          setIsPlaying(false);
-        });
+      // WTA-31 — never infer playback failure from isPlaying() in rAF after play().
+      // Stem mp3 often resolves play() before the 'play' event; false loadError told
+      // operators "do not drag" while drop/seek still worked (intermittent after ▶).
+      void ws.play().catch((err: unknown) => {
+        if (isIgnorableWaveformLoadError(err)) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setLoadError(`Playback failed: ${msg}`);
+        setIsPlaying(false);
+      });
       if (lv && lv.paused && !linkedVideoScrubOnly && !useSharedLinkedMedia) {
         withLinkedVideoSuppress(() => {
           lv.muted = true;
@@ -1563,6 +1553,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-phase-waveform-pause-v1="PHASE_WAVEFORM_PAUSE_V1"
       data-waveform-cue-handle-v1="WAVEFORM_CUE_HANDLE_V1"
       data-waveform-cue-move-v1="CUE-MOVE-1"
+      data-wta-playback-truth-v1="WTA-31"
       data-mix-extracting={mixExtracting ? 'true' : 'false'}
       {...(displayOnly ? { 'data-display-only-waveform': 'STITCH_UNIFIED_PLAYBACK_V1' } : {})}
       {...(displayOnly && masterVideoSrc ? { 'data-stitch-composer-master-video-sync': 'STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1' } : {})}
