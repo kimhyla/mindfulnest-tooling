@@ -35,6 +35,7 @@
 //           leaves drop + cue drag as silent no-ops while WS decodes (durMs<=0 guard).
 //   WTA-5   Rejected drops MUST toast — never silent return (waveformInteractionPolicy).
 //   WTA-32  Drop + ▶ Play share playhead authority — commitPlayheadMs on drop; play
+//           uses playbackAnchorMsRef until WS catches up (legacy scrub clears on play).
 //           seeks WS to authority ms before ws.play() (TECH_SPEC §3 goal 1).
 //   WTA-1   Paused playhead: waveformTimeAuthority.resolvePausedPlayheadMs — never
 //           let WS/video clocks at 0 clobber scrub authority on drag release.
@@ -295,6 +296,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   };
   /** Authoritative scrub target while paused — WS getCurrentTime() lags on lipsync mp4. */
   const lastScrubMsRef = useRef<number | null>(null);
+  /** WTA-32 — ▶ Play from scrub: hold until WS clock catches up (lastScrubMsRef clears on play). */
+  const playbackAnchorMsRef = useRef<number | null>(null);
   const timeAuthorityRef = useRef(createWaveformTimeAuthority());
   /** Survives seek-effect rebind — local isDragging was lost mid-drag (flash to 0). */
   const isDraggingSeekRef = useRef<boolean>(false);
@@ -343,8 +346,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const commitPlayheadMs = useCallback((ms: number, syncWs = true) => {
     const durMs = timelineDurationMsRef.current ?? timeAuthorityRef.current.getDurationMs() ?? 0;
     const clamped = durMs > 0 ? Math.max(0, Math.min(durMs, ms)) : Math.max(0, ms);
-    lastScrubMsRef.current = clamped > 0 ? clamped : null;
-    timeAuthorityRef.current.scrubToMs(clamped);
+    if (clamped > 0) {
+      lastScrubMsRef.current = clamped;
+      timeAuthorityRef.current.endDragSeek(clamped);
+    } else {
+      lastScrubMsRef.current = null;
+      timeAuthorityRef.current.scrubToMs(0);
+    }
     publishPlayheadMs(clamped);
     if (!syncWs) return clamped;
     const ws = wsRef.current;
@@ -370,6 +378,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   }, [displayOnly, linkedVideo, onMasterSeek, publishPlayheadMs, useSharedLinkedMedia, withLinkedVideoSuppress]);
 
   const hardPause = useCallback(() => {
+    playbackAnchorMsRef.current = null;
     wsRef.current?.pause();
     withLinkedVideoSuppress(() => {
       linkedVideo?.current?.pause();
@@ -534,9 +543,16 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
     const reassertPlayheadIfStale = () => {
       const durMs = timelineDurationMsRef.current ?? 0;
-      const authMs = timeAuthorityRef.current.getPlayheadMs();
+      const anchorMs = playbackAnchorMsRef.current;
+      const authMs = anchorMs != null && anchorMs > 0
+        ? anchorMs
+        : timeAuthorityRef.current.getPlayheadMs();
       if (authMs <= 500 || durMs <= 0) return;
       const wsMs = msFromWsClock(ws) ?? 0;
+      if (wsMs >= authMs * 0.85) {
+        playbackAnchorMsRef.current = null;
+        return;
+      }
       if (wsMs >= authMs * 0.15) return;
       ws.seekTo(Math.min(1, authMs / durMs));
       publishPlayhead(authMs);
@@ -546,7 +562,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (!ws.isPlaying()) return;
       const durMs = timelineDurationMsRef.current ?? 0;
       const wsMs = msFromWsClock(ws) ?? 0;
-      const authMs = timeAuthorityRef.current.getPlayheadMs();
+      const anchorMs = playbackAnchorMsRef.current;
+      const authMs = anchorMs != null && anchorMs > 0
+        ? anchorMs
+        : timeAuthorityRef.current.getPlayheadMs();
+      if (authMs > 1000 && wsMs >= authMs * 0.85) {
+        playbackAnchorMsRef.current = null;
+      }
       // WTA-32 — long stem mp3: ws.play() can start near 0 while authority holds scrub ms.
       if (authMs > 1000 && wsMs < authMs * 0.15 && durMs > 0) {
         ws.seekTo(Math.min(1, authMs / durMs));
@@ -568,24 +590,39 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       );
       // WTA-12: while paused, never trust WS clock — stem mp3 + lipsync mp4 both lie on release.
       if (!ws.isPlaying()) {
-        if (authorityMs > 0) lastScrubMsRef.current = authorityMs;
-        publishPlayhead(authorityMs);
-        const durMs = timelineDurationMsRef.current ?? 0;
-        if (durMs > 0 && authorityMs > 0 && wsMs + 50 < authorityMs) {
-          ws.seekTo(Math.min(1, authorityMs / durMs));
+        const holdMs = Math.max(
+          authorityMs,
+          timeAuthorityRef.current.getPlayheadMs(),
+          lastScrubMsRef.current ?? 0,
+        );
+        if (holdMs > 0) {
+          lastScrubMsRef.current = holdMs;
+          publishPlayhead(holdMs);
+          const durMs = timelineDurationMsRef.current ?? 0;
+          if (durMs > 0 && wsMs + 50 < holdMs) {
+            ws.seekTo(Math.min(1, holdMs / durMs));
+          }
+        } else if (timeAuthorityRef.current.getPlayheadMs() <= 0) {
+          publishPlayhead(0);
         }
         return;
       }
-      // WTA-1 / WTA-32: playing-path stale zero — re-seek WS, not label-only.
-      if (authorityMs > 0 && wsMs < 50) {
-        if (authorityMs > 0) lastScrubMsRef.current = authorityMs;
-        publishPlayhead(authorityMs);
+      const anchorMs = playbackAnchorMsRef.current;
+      const holdMs = anchorMs != null && anchorMs > 0
+        ? anchorMs
+        : authorityMs;
+      if (holdMs > 0 && wsMs < Math.max(50, holdMs * 0.15)) {
+        lastScrubMsRef.current = holdMs;
+        publishPlayhead(holdMs);
         const durMs = timelineDurationMsRef.current ?? 0;
-        if (durMs > 0) ws.seekTo(Math.min(1, authorityMs / durMs));
+        if (durMs > 0) ws.seekTo(Math.min(1, holdMs / durMs));
         return;
       }
       const ms = msFromWsClock(ws);
       if (ms == null) return;
+      if (anchorMs != null && ms >= anchorMs * 0.85) {
+        playbackAnchorMsRef.current = null;
+      }
       lastScrubMsRef.current = null;
       timeAuthorityRef.current.scrubToMs(ms);
       publishPlayhead(ms);
@@ -613,6 +650,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
     ws.on('play', () => {
       if (stopPlaybackIfHiddenPane()) return;
+      lastScrubMsRef.current = null;
       setLoadError(null);
       setIsPlaying(true);
       onPlayStateChange?.(true);
@@ -1353,8 +1391,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         const relativeX = timelineRelXFromClientX(wrapper.getBoundingClientRect(), e.clientX);
         const offsetMs = Math.round(relativeX * durMs);
         if (payload.kind === 'lib-watercolor') {
-          onWatercolorDropRef.current?.(payload.lib_key, offsetMs);
           commitPlayheadMs(offsetMs);
+          onWatercolorDropRef.current?.(payload.lib_key, offsetMs);
           return;
         }
         if (payload.kind === 'lib-sfx' && onSfxDropRef.current) {
@@ -1362,8 +1400,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
             MIN_CUE_DURATION_MS,
             Math.min(3000, durMs - offsetMs),
           );
-          onSfxDropRef.current(payload.lib_key, payload.source_path, offsetMs, defaultDur);
           commitPlayheadMs(offsetMs);
+          onSfxDropRef.current(payload.lib_key, payload.source_path, offsetMs, defaultDur);
         }
       },
       (payload) => {
@@ -1416,6 +1454,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       let startMs = 0;
       if (fromStart) {
         startMs = 0;
+        playbackAnchorMsRef.current = null;
         lastScrubMsRef.current = null;
         timeAuthorityRef.current.scrubToMs(0);
       } else {
@@ -1427,6 +1466,9 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         if (startMs > 0 && durMs > 0) {
           lastScrubMsRef.current = startMs;
           timeAuthorityRef.current.scrubToMs(startMs);
+          playbackAnchorMsRef.current = startMs;
+        } else {
+          playbackAnchorMsRef.current = null;
         }
       }
       timeAuthorityRef.current.onPlaybackStart();
