@@ -41,7 +41,7 @@ echo "[waveform-interaction-closure] pass 5/5 — fixture e2e (drop reject + ste
 (
   cd "$SB"
   npx playwright test e2e/phase_waveform_playback.spec.ts \
-    -g "DROP-REJECT-1|DROP-WC-2|SEEK-DRAG-B-STEM-1|REMOUNT-STEM-2"
+    -g "DROP-REJECT-1|DROP-WC-2|DROP-PLAY-1|SEEK-DRAG-B-STEM-1|SEEK-PLAY-1|REMOUNT-STEM-2"
 ) || fail "fixture waveform interaction e2e failed"
 
 if curl -sf --max-time 5 "http://localhost:5113/api/event/current" >/dev/null 2>&1; then
@@ -51,7 +51,7 @@ if curl -sf --max-time 5 "http://localhost:5113/api/event/current" >/dev/null 2>
     STORYBOARD_LIVE_BASE_URL=http://localhost:5113 \
       npx playwright test --config playwright.live.config.ts \
       e2e/phase_g_interaction_live.spec.ts \
-      -g "DROP-WC-LIVE-1|PLAY-DROP-LIVE-1|SEEK-DRAG-B-STEM-LIVE-1"
+      -g "DROP-WC-LIVE-1|PLAY-DROP-LIVE-1|SEEK-PLAY-LIVE-1|SEEK-DRAG-B-STEM-LIVE-1"
   ) || fail "Event_3 live interaction proof failed"
 else
   echo "[waveform-interaction-closure] WARN pass 6/6 skipped — :5113 down (start Event_3 for live proof)"

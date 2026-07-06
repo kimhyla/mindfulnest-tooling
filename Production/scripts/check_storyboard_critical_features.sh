@@ -145,6 +145,7 @@ MARKERS=(
     # Phase waveform playback — keep-alive mounts A+B; pause hidden + playback bus (2026-06-12)
     "PHASE_WAVEFORM_PLAY|Playback failed"
     "PHASE_WAVEFORM_PLAY|WTA-31"
+    "PHASE_WAVEFORM_PLAY|WTA-32"
     "PHASE_WAVEFORM_PLAY|mn-waveform-source-label"
     "PHASE_WAVEFORM_PLAY|waveform-play-btn"
     "PHASE_WAVEFORM_PLAY|attributeFilter"

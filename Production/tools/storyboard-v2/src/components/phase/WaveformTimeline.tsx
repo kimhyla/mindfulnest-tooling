@@ -34,6 +34,8 @@
 //   WTA-13  Never zero timeline/authority duration on audioSrc remount — stem regen
 //           leaves drop + cue drag as silent no-ops while WS decodes (durMs<=0 guard).
 //   WTA-5   Rejected drops MUST toast — never silent return (waveformInteractionPolicy).
+//   WTA-32  Drop + ▶ Play share playhead authority — commitPlayheadMs on drop; play
+//           seeks WS to authority ms before ws.play() (TECH_SPEC §3 goal 1).
 //   WTA-1   Paused playhead: waveformTimeAuthority.resolvePausedPlayheadMs — never
 //           let WS/video clocks at 0 clobber scrub authority on drag release.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
@@ -336,6 +338,36 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       });
     }
   }, [linkedVideoEventSuppressRef]);
+
+  /** Single transaction: authority + label + optional WS seek (WTA-32). */
+  const commitPlayheadMs = useCallback((ms: number, syncWs = true) => {
+    const durMs = timelineDurationMsRef.current ?? timeAuthorityRef.current.getDurationMs() ?? 0;
+    const clamped = durMs > 0 ? Math.max(0, Math.min(durMs, ms)) : Math.max(0, ms);
+    lastScrubMsRef.current = clamped > 0 ? clamped : null;
+    timeAuthorityRef.current.scrubToMs(clamped);
+    publishPlayheadMs(clamped);
+    if (!syncWs) return clamped;
+    const ws = wsRef.current;
+    if (ws && durMs > 0) {
+      ws.seekTo(Math.min(1, clamped / durMs));
+    }
+    if (displayOnly) {
+      onMasterSeek?.(clamped);
+      return clamped;
+    }
+    const lv = linkedVideo?.current;
+    if (lv && !useSharedLinkedMedia) {
+      withLinkedVideoSuppress(() => {
+        lv.muted = true;
+        try {
+          lv.currentTime = clamped / 1000;
+        } catch {
+          // ignore seek on unloaded media
+        }
+      });
+    }
+    return clamped;
+  }, [displayOnly, linkedVideo, onMasterSeek, publishPlayheadMs, useSharedLinkedMedia, withLinkedVideoSuppress]);
 
   const hardPause = useCallback(() => {
     wsRef.current?.pause();
@@ -1301,6 +1333,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         const offsetMs = Math.round(relativeX * durMs);
         if (payload.kind === 'lib-watercolor') {
           onWatercolorDropRef.current?.(payload.lib_key, offsetMs);
+          commitPlayheadMs(offsetMs);
           return;
         }
         if (payload.kind === 'lib-sfx' && onSfxDropRef.current) {
@@ -1309,6 +1342,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
             Math.min(3000, durMs - offsetMs),
           );
           onSfxDropRef.current(payload.lib_key, payload.source_path, offsetMs, defaultDur);
+          commitPlayheadMs(offsetMs);
         }
       },
       (payload) => {
@@ -1317,7 +1351,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         return false;
       },
     ),
-    [audioSrc, displayOnly, displayPeaks],
+    [audioSrc, displayOnly, displayPeaks, commitPlayheadMs],
   );
 
   useEffect(() => {
@@ -1357,14 +1391,35 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
       pauseOtherWaveformPlayback(playbackControlRef);
 
-      if (fromStart) ws.seekTo(0);
-      lastScrubMsRef.current = null;
+      const durMs = timelineDurationMsRef.current ?? timeAuthorityRef.current.getDurationMs() ?? 0;
+      let startMs = 0;
+      if (fromStart) {
+        startMs = 0;
+        lastScrubMsRef.current = null;
+        timeAuthorityRef.current.scrubToMs(0);
+      } else {
+        startMs = Math.round(
+          lastScrubMsRef.current
+          ?? timeAuthorityRef.current.getPlayheadMs()
+          ?? 0,
+        );
+        if (startMs > 0 && durMs > 0) {
+          lastScrubMsRef.current = startMs;
+          timeAuthorityRef.current.scrubToMs(startMs);
+        }
+      }
       timeAuthorityRef.current.onPlaybackStart();
+      if (durMs > 0) {
+        ws.seekTo(Math.min(1, startMs / durMs));
+        if (startMs > 0) {
+          publishPlayheadMs(startMs);
+        }
+      }
       const lv = linkedVideo?.current;
       if (lv && !useSharedLinkedMedia) {
         withLinkedVideoSuppress(() => {
           lv.muted = true;
-          lv.currentTime = ws.getCurrentTime();
+          lv.currentTime = durMs > 0 ? startMs / 1000 : ws.getCurrentTime();
           if (linkedVideoScrubOnly && !lv.paused) lv.pause();
         });
       }
@@ -1388,7 +1443,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       }
       return true;
     },
-    [linkedVideo, linkedVideoScrubOnly, useSharedLinkedMedia, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress, mixExtracting],
+    [linkedVideo, linkedVideoScrubOnly, useSharedLinkedMedia, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress, mixExtracting, publishPlayheadMs],
   );
 
   const togglePlayback = useCallback(() => {
@@ -1554,6 +1609,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-waveform-cue-handle-v1="WAVEFORM_CUE_HANDLE_V1"
       data-waveform-cue-move-v1="CUE-MOVE-1"
       data-wta-playback-truth-v1="WTA-31"
+      data-wta-play-from-authority-v1="WTA-32"
       data-mix-extracting={mixExtracting ? 'true' : 'false'}
       {...(displayOnly ? { 'data-display-only-waveform': 'STITCH_UNIFIED_PLAYBACK_V1' } : {})}
       {...(displayOnly && masterVideoSrc ? { 'data-stitch-composer-master-video-sync': 'STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1' } : {})}

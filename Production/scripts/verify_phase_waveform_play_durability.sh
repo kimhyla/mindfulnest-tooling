@@ -140,5 +140,11 @@ grep -q 'onSeekDragStart' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils
   || fail "waveformSeekController must clear stale errors on drag start"
 grep -q 'pointer-events: none' "$CSS" \
   || fail "mn-waveform-error must not steal pointer hits (WTA-13)"
+grep -q 'commitPlayheadMs' "$WS" \
+  || fail "WaveformTimeline must commit playhead on drop (WTA-32 commitPlayheadMs)"
+grep -q 'WTA-32' "$WS" \
+  || fail "WaveformTimeline must document WTA-32 play-from-authority"
+grep -q 'SEEK-PLAY-1' "$E2E" \
+  || fail "e2e must include scrub-then-play regression (SEEK-PLAY-1 / WTA-32)"
 
 echo "[waveform-play-durability] OK — source patterns + e2e spec present"

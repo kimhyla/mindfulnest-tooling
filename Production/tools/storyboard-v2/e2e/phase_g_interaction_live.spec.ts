@@ -175,6 +175,46 @@ test('DROP-WC-LIVE-1 — watercolor tile → cue on live waveform', async ({ pag
   ).toBeVisible({ timeout: 15_000 });
 });
 
+test('SEEK-PLAY-LIVE-1 — ▶ Play starts from scrubbed position on Event_3 stem (WTA-32)', async ({
+  page,
+}) => {
+  await page.goto(`${LIVE}/?event=${LIVE_EVENT}&tab=phase_b`);
+  await expect(page.locator('[data-testid="phase-producer-b"]')).toBeVisible({ timeout: 60_000 });
+
+  const waveform = page.locator(
+    '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-timeline"]',
+  );
+  await expect(waveform).toBeVisible({ timeout: 30_000 });
+  await expect(waveform).toHaveAttribute('data-wta-play-from-authority-v1', 'WTA-32');
+  await expect.poll(async () => {
+    const v = await waveform.getAttribute('data-loaded-duration-ms');
+    return v ? Number(v) : 0;
+  }, { timeout: 60_000 }).toBeGreaterThan(0);
+
+  const playBtn = waveform.locator('[data-testid="waveform-play-btn"]');
+  const box = await waveform.boundingBox();
+  expect(box).not.toBeNull();
+  const y = box!.y + box!.height * 0.55;
+  const x0 = box!.x + box!.width * 0.25;
+  const x1 = box!.x + box!.width * 0.7;
+  await page.mouse.move(x0, y);
+  await page.mouse.down();
+  await page.mouse.move(x1, y, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+
+  const durMs = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+  const scrubMs = Number(await waveform.getAttribute('data-current-time-ms'));
+  expect(scrubMs).toBeGreaterThan(durMs * 0.2);
+
+  await playBtn.click();
+  await expect(playBtn).toHaveText(/⏸ Pause/, { timeout: 5_000 });
+  await page.waitForTimeout(700);
+  const playMs = Number(await waveform.getAttribute('data-current-time-ms'));
+  expect(playMs).toBeGreaterThan(durMs * 0.12);
+  expect(playMs).toBeGreaterThan(scrubMs * 0.45);
+});
+
 test('PLAY-DROP-LIVE-1 — watercolor drop after play/pause cycles (WTA-31)', async ({
   page,
   request,
