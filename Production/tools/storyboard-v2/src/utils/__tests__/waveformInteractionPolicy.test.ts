@@ -29,6 +29,17 @@ describe('waveformInteractionPolicy', () => {
     if (!out.ok) assert.equal(out.reason, 'no_duration');
   });
 
+  it('accepts stitcher drop-only strip without WaveSurfer isReady (S5.5g G3)', () => {
+    const out = assessWaveformInteractionReady({
+      isReady: false,
+      durationMs: 45_000,
+      hasAudioSrc: false,
+      dropOnlyWithDuration: true,
+    });
+    assert.equal(out.ok, true);
+    if (out.ok) assert.equal(out.durationMs, 45_000);
+  });
+
   it('accepts when ready with duration', () => {
     const out = assessWaveformInteractionReady({
       isReady: true,

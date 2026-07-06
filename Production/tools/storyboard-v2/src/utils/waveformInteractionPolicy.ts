@@ -15,6 +15,8 @@ export type WaveformInteractionReadyInput = {
   hasAudioSrc: boolean;
   displayOnly?: boolean;
   hasDisplayPeaks?: boolean;
+  /** Stitcher SFX strip — fallbackDurationMs only, no WaveSurfer decode (S5.5g G3). */
+  dropOnlyWithDuration?: boolean;
 };
 
 export type WaveformInteractionAssessment =
@@ -24,8 +26,11 @@ export type WaveformInteractionAssessment =
 export function assessWaveformInteractionReady(
   input: WaveformInteractionReadyInput,
 ): WaveformInteractionAssessment {
+  const dropOnlyReady = input.dropOnlyWithDuration === true && input.durationMs > 0;
   const hasSurface =
-    input.hasAudioSrc || (input.displayOnly === true && input.hasDisplayPeaks === true);
+    input.hasAudioSrc
+    || (input.displayOnly === true && input.hasDisplayPeaks === true)
+    || dropOnlyReady;
   if (!hasSurface) {
     return {
       ok: false,
@@ -33,7 +38,7 @@ export function assessWaveformInteractionReady(
       userMessage: 'No audio on the waveform yet — generate a stem or load lipsync first.',
     };
   }
-  if (!input.isReady) {
+  if (!input.isReady && !dropOnlyReady) {
     return {
       ok: false,
       reason: 'waveform_loading',

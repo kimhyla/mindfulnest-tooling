@@ -1371,12 +1371,20 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     () => makeDropTarget(
       (payload: DragPayload, e: DragEvent) => {
         setLoadError(null);
+        const resolvedDurMs = resolveTimelineDurationMs();
+        const dropOnlyStrip = Boolean(
+          onSfxDropRef.current
+          && !audioSrc
+          && !(displayOnly && displayPeaks?.length && displayDurationS)
+          && resolvedDurMs > 0,
+        );
         const assessment = assessWaveformInteractionReady({
           isReady: isReadyRef.current,
-          durationMs: resolveTimelineDurationMs(),
+          durationMs: resolvedDurMs,
           hasAudioSrc: Boolean(audioSrc),
           displayOnly,
           hasDisplayPeaks: Boolean(displayPeaks?.length),
+          dropOnlyWithDuration: dropOnlyStrip,
         });
         if (!assessment.ok) {
           pushToast({
@@ -1412,7 +1420,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         return false;
       },
     ),
-    [audioSrc, displayOnly, displayPeaks, commitPlayheadMs],
+    [audioSrc, displayOnly, displayPeaks, displayDurationS, commitPlayheadMs],
   );
 
   useEffect(() => {
