@@ -58,6 +58,16 @@ describe('waveformTimeAuthority', () => {
     assert.equal(ta.resolvePausedPlayheadMs(0, null), 12_000);
   });
 
+  it('resolvePausedPlayheadMs prefers playhead at stale zero; legacy only while media ~0 (WTA-32)', () => {
+    const ta = createWaveformTimeAuthority(0, 163_550);
+    ta.scrubToMs(115_100);
+    assert.equal(ta.resolvePausedPlayheadMs(0, null), 115_100);
+    assert.equal(ta.resolvePausedPlayheadMs(0, 115_100), 115_100);
+    assert.equal(ta.resolvePausedPlayheadMs(5000, null), 5000);
+    assert.equal(ta.resolvePausedPlayheadMs(8000, 115_100), 8000);
+    assert.equal(ta.resolvePausedPlayheadMs(40, 115_100), 115_100);
+  });
+
   it('timelineRelXFromClientX respects track insets', () => {
     const box = { left: 100, width: 200 };
     assert.equal(timelineRelXFromClientX(box, 100), 0);

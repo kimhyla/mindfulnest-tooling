@@ -53,7 +53,17 @@ if curl -sf "http://localhost:5114/api/event/current" >/dev/null 2>&1; then
     cd "$SB"
     STORYBOARD_LIVE_BASE_URL=http://localhost:5114 \
       npx playwright test --config playwright.live.config.ts e2e/phase_g_interaction_live.spec.ts
-  ) || fail "phase_g_live_interaction live E2E failed"
+  ) || fail "phase_g_live_interaction Event_4 failed"
+fi
+
+if curl -sf "http://localhost:5113/api/event/current" >/dev/null 2>&1; then
+  echo "[live-fleet-interaction] Playwright DROP-WC-LIVE-1 + SEEK-DRAG-B-STEM-LIVE-1 on Event_3 :5113 ..."
+  (
+    cd "$SB"
+    STORYBOARD_LIVE_BASE_URL=http://localhost:5113 \
+      npx playwright test --config playwright.live.config.ts e2e/phase_g_interaction_live.spec.ts \
+        -g "DROP-WC-LIVE-1|SEEK-DRAG-B-STEM-LIVE-1"
+  ) || fail "phase_g_live_interaction Event_3 failed"
 fi
 
 echo "[live-fleet-interaction] OK — fleet build-sha + watercolor catalog + live drag proof"

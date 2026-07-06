@@ -603,6 +603,47 @@ test.describe('PHASE_WAVEFORM_PLAY — drag-seek must not snap to 0 (WAVEFORM_DR
     expect(ms).toBeGreaterThan(durMs * 0.35);
     expect(ms).toBeLessThan(durMs * 0.95);
   });
+
+  test('SEEK-PLAY-1 — ▶ Play starts from scrubbed position, not 0 (WTA-32)', async ({ page }) => {
+    await mockAudioFiles(page, 40);
+    await mockPhaseState(page, {
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_lipsync_requires_regen: true,
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    const playBtn = page.locator(
+      '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-play-btn"]',
+    );
+    const box = await waveform.boundingBox();
+    expect(box).not.toBeNull();
+    const y = box!.y + box!.height * 0.72;
+    const x0 = box!.x + box!.width * 0.2;
+    const x1 = box!.x + box!.width * 0.65;
+    await page.mouse.move(x0, y);
+    await page.mouse.down();
+    for (let i = 1; i <= 12; i += 1) {
+      await page.mouse.move(x0 + ((x1 - x0) * i) / 12, y);
+      await page.waitForTimeout(20);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+
+    const durMs = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    const scrubMs = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(scrubMs).toBeGreaterThan(durMs * 0.25);
+
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/⏸ Pause/, { timeout: 3_000 });
+    await page.waitForTimeout(600);
+
+    const playMs = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(playMs).toBeGreaterThan(durMs * 0.15);
+    expect(playMs).toBeGreaterThan(scrubMs * 0.5);
+  });
 });
 
 test.describe('PHASE_WAVEFORM_PLAY — WTA remount preserves playhead (REMOUNT-1)', () => {
@@ -1006,6 +1047,61 @@ test.describe('WTA-018 — watercolor drop timing (DROP-WC-1)', () => {
     });
   });
 
+  test('DROP-PLAY-1 — drop moves playhead; ▶ Play starts near cue (WTA-32)', async ({ page }) => {
+    await mockAudioFiles(page, 30);
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+      phase_b_watercolor_cues_json: [],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator('[data-testid="waveform-timeline"]');
+    await expect.poll(async () => {
+      const v = await waveform.getAttribute('data-loaded-duration-ms');
+      return v ? Number(v) : 0;
+    }, { timeout: 15_000 }).toBeGreaterThan(0);
+
+    const wfBox = await waveform.boundingBox();
+    expect(wfBox).not.toBeNull();
+    const dropX = wfBox!.x + wfBox!.width * 0.62;
+    const dropY = wfBox!.y + wfBox!.height * 0.5;
+
+    await waveform.evaluate((el: Element, args: { x: number; y: number }) => {
+      const dt = new DataTransfer();
+      const payload = JSON.stringify({
+        kind: 'lib-watercolor',
+        lib_key: 'wc_test',
+        animation_type: 'fade_in',
+      });
+      dt.setData('application/x-mn-drag', payload);
+      dt.setData('text/plain', payload);
+      el.dispatchEvent(new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: dt,
+        clientX: args.x,
+        clientY: args.y,
+      }));
+    }, { x: dropX, y: dropY });
+
+    await expect(waveform).toHaveAttribute('data-cue-count', '1', { timeout: 5_000 });
+    const durMs = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    const afterDropMs = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(afterDropMs).toBeGreaterThan(durMs * 0.45);
+    expect(afterDropMs).toBeLessThan(durMs * 0.8);
+
+    const playBtn = waveform.locator('[data-testid="waveform-play-btn"]');
+    await playBtn.click();
+    await expect(playBtn).toHaveText(/⏸ Pause/, { timeout: 3_000 });
+    await page.waitForTimeout(800);
+    const playMs = Number(await waveform.getAttribute('data-current-time-ms'));
+    expect(playMs).toBeGreaterThan(afterDropMs * 0.75);
+  });
+
   test('DROP-WC-2 — capture drop on canvas + non-draggable watercolor thumb (DROP-CAPTURE-1)', async ({ page }) => {
     await mockAudioFiles(page, 30);
     await mockModulePatch(page);
@@ -1056,5 +1152,92 @@ test.describe('WTA-018 — watercolor drop timing (DROP-WC-1)', () => {
     );
 
     await expect(waveform).toHaveAttribute('data-cue-count', '1', { timeout: 5_000 });
+  });
+
+  test('DROP-REJECT-1 — drop before waveform ready shows warning toast (WTA-5)', async ({ page }) => {
+    let releaseHeldAudio: (() => void) | null = null;
+    const audioHeld = new Promise<void>((resolve) => {
+      releaseHeldAudio = resolve;
+    });
+    await page.route(/\/files\?path=.*\.(mp3|mp4|wav|m4a|ogg)/, async (route) => {
+      await audioHeld;
+      await route.fulfill({
+        status: 200,
+        contentType: 'audio/wav',
+        body: silentWavBytes(30, 8000),
+      });
+    });
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+      phase_b_watercolor_cues_json: [],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator(
+      '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-timeline"]',
+    );
+    await expect(waveform).toBeVisible();
+    await expect(waveform.locator('[data-testid="waveform-play-btn"]')).toBeDisabled();
+
+    const wfBox = await waveform.boundingBox();
+    expect(wfBox).not.toBeNull();
+
+    await waveform.evaluate(
+      (el: Element, args: { x: number; y: number }) => {
+        const dt = new DataTransfer();
+        const payload = JSON.stringify({
+          kind: 'lib-watercolor',
+          lib_key: 'wc_test',
+          animation_type: 'fade_in',
+        });
+        dt.setData('application/x-mn-drag', payload);
+        dt.setData('text/plain', payload);
+        el.dispatchEvent(new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt,
+          clientX: args.x,
+          clientY: args.y,
+        }));
+      },
+      { x: wfBox!.x + wfBox!.width * 0.5, y: wfBox!.y + wfBox!.height * 0.5 },
+    );
+
+    await expect(page.locator('[data-testid="toast-host"]')).toContainText(/drop skipped/i, {
+      timeout: 5_000,
+    });
+    await expect(waveform).toHaveAttribute('data-cue-count', '0');
+    releaseHeldAudio?.();
+  });
+});
+
+test.describe('PHASE_WAVEFORM_PLAY — remount duration carry (WTA-13)', () => {
+  test('REMOUNT-STEM-2 — stem review keeps duration ms through trim toggle (WTA-13)', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page, 40);
+    await mockPhaseState(page, {
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_lipsync_requires_regen: true,
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    await expect(waveform).toHaveAttribute('data-source-label', 'stem');
+    const durBefore = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    expect(durBefore).toBeGreaterThan(10_000);
+
+    await page.locator('[data-testid="phase-b-trim-voice-stem-btn"]').click();
+    await expect(page.locator('[data-testid="phase-b-stem-trim-mode-badge"]')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    const durDuring = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    expect(durDuring).toBeGreaterThan(10_000);
   });
 });

@@ -888,6 +888,7 @@ canvas.mn-lipsync-watercolor-overlay {
   margin-top: 4px;
   font-size: 11px;
   color: #c33;
+  pointer-events: none; /* WTA-13 — must not steal drag/drop hits inside timeline wrapper */
 }
 
 /* CuePopover — S5.5f / CUE_POPOVER_INSPECTOR_V1 */

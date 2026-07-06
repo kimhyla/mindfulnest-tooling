@@ -31,6 +31,12 @@
 //           pointer-events:auto — drag-body in shouldSkipSeek for cue-move only.
 //   WTA-12  endDragSeek must not call endDragSeek(0) when resolveDurationMs flickers;
 //           onSeeking while paused always publishes authority + re-seeks WS cursor.
+//   WTA-13  Never zero timeline/authority duration on audioSrc remount — stem regen
+//           leaves drop + cue drag as silent no-ops while WS decodes (durMs<=0 guard).
+//   WTA-5   Rejected drops MUST toast — never silent return (waveformInteractionPolicy).
+//   WTA-32  Drop + ▶ Play share playhead authority — commitPlayheadMs on drop; play
+//           uses playbackAnchorMsRef until WS catches up (legacy scrub clears on play).
+//           seeks WS to authority ms before ws.play() (TECH_SPEC §3 goal 1).
 //   WTA-1   Paused playhead: waveformTimeAuthority.resolvePausedPlayheadMs — never
 //           let WS/video clocks at 0 clobber scrub authority on drag release.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
@@ -64,6 +70,17 @@ import {
   timelineRelXFromClientX,
 } from '../../utils/waveformTimeAuthority.ts';
 import { bindWaveformSeekController } from '../../utils/waveformSeekController.ts';
+import {
+  assessWaveformInteractionReady,
+  waveformDropRejectMessage,
+} from '../../utils/waveformInteractionPolicy.ts';
+import {
+  pausedPlayheadHoldMs,
+  resolvePlaybackAuthorityMs,
+  shouldClearPlaybackAnchor,
+  shouldReassertPlayheadFromAuthority,
+} from '../../utils/waveformPlaybackAnchor.ts';
+import { pushToast } from '../ui/Toast';
 
 /** Intentional ws.destroy() during audioSrc / shared-media transitions aborts in-flight load. */
 function isIgnorableWaveformLoadError(err: unknown): boolean {
@@ -285,6 +302,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   };
   /** Authoritative scrub target while paused — WS getCurrentTime() lags on lipsync mp4. */
   const lastScrubMsRef = useRef<number | null>(null);
+  /** WTA-32 — ▶ Play from scrub: hold until WS clock catches up (lastScrubMsRef clears on play). */
+  const playbackAnchorMsRef = useRef<number | null>(null);
   const timeAuthorityRef = useRef(createWaveformTimeAuthority());
   /** Survives seek-effect rebind — local isDragging was lost mid-drag (flash to 0). */
   const isDraggingSeekRef = useRef<boolean>(false);
@@ -329,7 +348,43 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     }
   }, [linkedVideoEventSuppressRef]);
 
+  /** Single transaction: authority + label + optional WS seek (WTA-32). */
+  const commitPlayheadMs = useCallback((ms: number, syncWs = true) => {
+    const durMs = timelineDurationMsRef.current ?? timeAuthorityRef.current.getDurationMs() ?? 0;
+    const clamped = durMs > 0 ? Math.max(0, Math.min(durMs, ms)) : Math.max(0, ms);
+    if (clamped > 0) {
+      lastScrubMsRef.current = clamped;
+      timeAuthorityRef.current.endDragSeek(clamped);
+    } else {
+      lastScrubMsRef.current = null;
+      timeAuthorityRef.current.scrubToMs(0);
+    }
+    publishPlayheadMs(clamped);
+    if (!syncWs) return clamped;
+    const ws = wsRef.current;
+    if (ws && durMs > 0) {
+      ws.seekTo(Math.min(1, clamped / durMs));
+    }
+    if (displayOnly) {
+      onMasterSeek?.(clamped);
+      return clamped;
+    }
+    const lv = linkedVideo?.current;
+    if (lv && !useSharedLinkedMedia) {
+      withLinkedVideoSuppress(() => {
+        lv.muted = true;
+        try {
+          lv.currentTime = clamped / 1000;
+        } catch {
+          // ignore seek on unloaded media
+        }
+      });
+    }
+    return clamped;
+  }, [displayOnly, linkedVideo, onMasterSeek, publishPlayheadMs, useSharedLinkedMedia, withLinkedVideoSuppress]);
+
   const hardPause = useCallback(() => {
+    playbackAnchorMsRef.current = null;
     wsRef.current?.pause();
     withLinkedVideoSuppress(() => {
       linkedVideo?.current?.pause();
@@ -425,8 +480,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ta.preserveAcrossRemount();
     const restoredMs = ta.restoreAfterRemount();
     setLoadError(null);
-    setDurationMs(null);
-    timeAuthorityRef.current.setDurationMs(0);
+    // WTA-13 — carry last timeline duration through remount (new stem / lipsync swap).
+    // Zeroing here made drop + cue-drag silently fail until onReady (durMs<=0 guards).
+    const carryDurMs = timelineDurationMsRef.current ?? ta.getDurationMs() ?? 0;
+    setDurationMs(carryDurMs > 0 ? carryDurMs : null);
+    if (carryDurMs > 0) ta.setDurationMs(carryDurMs);
     setCurrentMs(restoredMs);
     if (restoredMs > 0) lastScrubMsRef.current = restoredMs;
     setIsPlaying(false);
@@ -481,15 +539,6 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (t > 1) return t * 1000;
       return null;
     };
-    const onAudioProcess = () => {
-      if (stopPlaybackIfHiddenPane()) return;
-      if (!ws.isPlaying()) return;
-      const ms = msFromWsClock(ws);
-      if (ms == null) return;
-      setCurrentMs(ms);
-      onTimeUpdate?.(ms);
-      syncPlayUi();
-    };
     // Paused scrub: applySeek + lastScrubMsRef own the label. WS 'seeking' /
     // getCurrentTime() often reports 0 on mp4/lipsync until decode catches up —
     // accepting that clock zeros the red playhead on drag release.
@@ -497,6 +546,45 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       const rounded = Math.round(ms);
       setCurrentMs(rounded);
       onTimeUpdateRef.current?.(rounded);
+    };
+    const reassertPlayheadIfStale = () => {
+      const durMs = timelineDurationMsRef.current ?? 0;
+      const authMs = resolvePlaybackAuthorityMs(
+        playbackAnchorMsRef.current,
+        timeAuthorityRef.current.getPlayheadMs(),
+      );
+      if (authMs <= 500 || durMs <= 0) return;
+      const wsMs = msFromWsClock(ws) ?? 0;
+      if (shouldClearPlaybackAnchor(playbackAnchorMsRef.current, wsMs)) {
+        playbackAnchorMsRef.current = null;
+        return;
+      }
+      if (!shouldReassertPlayheadFromAuthority(authMs, wsMs)) return;
+      ws.seekTo(Math.min(1, authMs / durMs));
+      publishPlayhead(authMs);
+    };
+    const onAudioProcess = () => {
+      if (stopPlaybackIfHiddenPane()) return;
+      if (!ws.isPlaying()) return;
+      const durMs = timelineDurationMsRef.current ?? 0;
+      const wsMs = msFromWsClock(ws) ?? 0;
+      const authMs = resolvePlaybackAuthorityMs(
+        playbackAnchorMsRef.current,
+        timeAuthorityRef.current.getPlayheadMs(),
+      );
+      if (shouldClearPlaybackAnchor(playbackAnchorMsRef.current, wsMs)) {
+        playbackAnchorMsRef.current = null;
+      }
+      if (shouldReassertPlayheadFromAuthority(authMs, wsMs) && durMs > 0) {
+        ws.seekTo(Math.min(1, authMs / durMs));
+        publishPlayhead(authMs);
+        return;
+      }
+      const ms = msFromWsClock(ws);
+      if (ms == null) return;
+      setCurrentMs(ms);
+      onTimeUpdate?.(ms);
+      syncPlayUi();
     };
     const onSeeking = () => {
       if (isDraggingSeekRef.current || timeAuthorityRef.current.isDraggingSeek()) return;
@@ -507,22 +595,36 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       );
       // WTA-12: while paused, never trust WS clock — stem mp3 + lipsync mp4 both lie on release.
       if (!ws.isPlaying()) {
-        if (authorityMs > 0) lastScrubMsRef.current = authorityMs;
-        publishPlayhead(authorityMs);
-        const durMs = timelineDurationMsRef.current ?? 0;
-        if (durMs > 0 && authorityMs > 0 && wsMs + 50 < authorityMs) {
-          ws.seekTo(Math.min(1, authorityMs / durMs));
+        const holdMs = pausedPlayheadHoldMs(
+          authorityMs,
+          timeAuthorityRef.current.getPlayheadMs(),
+          lastScrubMsRef.current,
+        );
+        if (holdMs > 0) {
+          lastScrubMsRef.current = holdMs;
+          publishPlayhead(holdMs);
+          const durMs = timelineDurationMsRef.current ?? 0;
+          if (durMs > 0 && wsMs + 50 < holdMs) {
+            ws.seekTo(Math.min(1, holdMs / durMs));
+          }
+        } else if (timeAuthorityRef.current.getPlayheadMs() <= 0) {
+          publishPlayhead(0);
         }
         return;
       }
-      // WTA-1: playing-path stale zero after drag release (isPlaying() may still lie briefly).
-      if (authorityMs > 0 && wsMs < 50) {
-        if (authorityMs > 0) lastScrubMsRef.current = authorityMs;
-        publishPlayhead(authorityMs);
+      const holdMs = resolvePlaybackAuthorityMs(playbackAnchorMsRef.current, authorityMs);
+      if (holdMs > 0 && shouldReassertPlayheadFromAuthority(holdMs, wsMs)) {
+        lastScrubMsRef.current = holdMs;
+        publishPlayhead(holdMs);
+        const durMs = timelineDurationMsRef.current ?? 0;
+        if (durMs > 0) ws.seekTo(Math.min(1, holdMs / durMs));
         return;
       }
       const ms = msFromWsClock(ws);
       if (ms == null) return;
+      if (shouldClearPlaybackAnchor(playbackAnchorMsRef.current, ms)) {
+        playbackAnchorMsRef.current = null;
+      }
       lastScrubMsRef.current = null;
       timeAuthorityRef.current.scrubToMs(ms);
       publishPlayhead(ms);
@@ -551,8 +653,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ws.on('play', () => {
       if (stopPlaybackIfHiddenPane()) return;
       lastScrubMsRef.current = null;
+      setLoadError(null);
       setIsPlaying(true);
       onPlayStateChange?.(true);
+      reassertPlayheadIfStale();
+      requestAnimationFrame(() => reassertPlayheadIfStale());
     });
     ws.on('pause', () => {
       setIsPlaying(false);
@@ -970,6 +1075,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       onWaveformClickRef,
       withLinkedVideoSuppress,
       publishPlayheadMs,
+      onSeekDragStart: () => setLoadError(null),
       resolveDurationMs: () => {
         if (displayOnly) {
           return (
@@ -1264,13 +1370,38 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const dropHandlers = useMemo(
     () => makeDropTarget(
       (payload: DragPayload, e: DragEvent) => {
-        const durMs = resolveTimelineDurationMs();
-        if (durMs <= 0) return;
+        setLoadError(null);
+        const resolvedDurMs = resolveTimelineDurationMs();
+        const dropOnlyStrip = Boolean(
+          onSfxDropRef.current
+          && !audioSrc
+          && !(displayOnly && displayPeaks?.length && displayDurationS)
+          && resolvedDurMs > 0,
+        );
+        const assessment = assessWaveformInteractionReady({
+          isReady: isReadyRef.current,
+          durationMs: resolvedDurMs,
+          hasAudioSrc: Boolean(audioSrc),
+          displayOnly,
+          hasDisplayPeaks: Boolean(displayPeaks?.length),
+          dropOnlyWithDuration: dropOnlyStrip,
+        });
+        if (!assessment.ok) {
+          pushToast({
+            kind: 'warning',
+            message: waveformDropRejectMessage(assessment.reason),
+            source: 'waveform-drop-reject',
+            ttlMs: 4000,
+          });
+          return;
+        }
+        const durMs = assessment.durationMs;
         const wrapper = wrapperRef.current;
         if (!wrapper) return;
         const relativeX = timelineRelXFromClientX(wrapper.getBoundingClientRect(), e.clientX);
         const offsetMs = Math.round(relativeX * durMs);
         if (payload.kind === 'lib-watercolor') {
+          commitPlayheadMs(offsetMs);
           onWatercolorDropRef.current?.(payload.lib_key, offsetMs);
           return;
         }
@@ -1279,6 +1410,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
             MIN_CUE_DURATION_MS,
             Math.min(3000, durMs - offsetMs),
           );
+          commitPlayheadMs(offsetMs);
           onSfxDropRef.current(payload.lib_key, payload.source_path, offsetMs, defaultDur);
         }
       },
@@ -1288,7 +1420,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         return false;
       },
     ),
-    [],
+    [audioSrc, displayOnly, displayPeaks, displayDurationS, commitPlayheadMs],
   );
 
   useEffect(() => {
@@ -1328,41 +1460,54 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
       pauseOtherWaveformPlayback(playbackControlRef);
 
-      if (fromStart) ws.seekTo(0);
-      lastScrubMsRef.current = null;
+      const durMs = timelineDurationMsRef.current ?? timeAuthorityRef.current.getDurationMs() ?? 0;
+      let startMs = 0;
+      if (fromStart) {
+        startMs = 0;
+        playbackAnchorMsRef.current = null;
+        lastScrubMsRef.current = null;
+        timeAuthorityRef.current.scrubToMs(0);
+      } else {
+        startMs = Math.round(
+          lastScrubMsRef.current
+          ?? timeAuthorityRef.current.getPlayheadMs()
+          ?? 0,
+        );
+        if (startMs > 0 && durMs > 0) {
+          lastScrubMsRef.current = startMs;
+          timeAuthorityRef.current.scrubToMs(startMs);
+          playbackAnchorMsRef.current = startMs;
+        } else {
+          playbackAnchorMsRef.current = null;
+        }
+      }
       timeAuthorityRef.current.onPlaybackStart();
+      if (durMs > 0) {
+        ws.seekTo(Math.min(1, startMs / durMs));
+        if (startMs > 0) {
+          publishPlayheadMs(startMs);
+        }
+      }
       const lv = linkedVideo?.current;
       if (lv && !useSharedLinkedMedia) {
         withLinkedVideoSuppress(() => {
           lv.muted = true;
-          lv.currentTime = ws.getCurrentTime();
+          lv.currentTime = durMs > 0 ? startMs / 1000 : ws.getCurrentTime();
           if (linkedVideoScrubOnly && !lv.paused) lv.pause();
         });
       }
 
       pauseOtherWaveformPlayback(playbackControlRef);
       setLoadError(null);
-      void ws.play()
-        .then(() => {
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              if (ws.isPlaying()) {
-                setIsPlaying(true);
-                onPlayStateChange?.(true);
-              } else if (!linkedVideoEventSuppressRef?.current) {
-                setLoadError(
-                  'Playback failed — try ▶ Play again (do not drag the waveform at the same time).',
-                );
-              }
-            });
-          });
-        })
-        .catch((err: unknown) => {
-          if (isIgnorableWaveformLoadError(err)) return;
-          const msg = err instanceof Error ? err.message : String(err);
-          setLoadError(`Playback failed: ${msg}`);
-          setIsPlaying(false);
-        });
+      // WTA-31 — never infer playback failure from isPlaying() in rAF after play().
+      // Stem mp3 often resolves play() before the 'play' event; false loadError told
+      // operators "do not drag" while drop/seek still worked (intermittent after ▶).
+      void ws.play().catch((err: unknown) => {
+        if (isIgnorableWaveformLoadError(err)) return;
+        const msg = err instanceof Error ? err.message : String(err);
+        setLoadError(`Playback failed: ${msg}`);
+        setIsPlaying(false);
+      });
       if (lv && lv.paused && !linkedVideoScrubOnly && !useSharedLinkedMedia) {
         withLinkedVideoSuppress(() => {
           lv.muted = true;
@@ -1371,7 +1516,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       }
       return true;
     },
-    [linkedVideo, linkedVideoScrubOnly, useSharedLinkedMedia, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress, mixExtracting],
+    [linkedVideo, linkedVideoScrubOnly, useSharedLinkedMedia, linkedVideoEventSuppressRef, playbackControlRef, onPlayStateChange, withLinkedVideoSuppress, mixExtracting, publishPlayheadMs],
   );
 
   const togglePlayback = useCallback(() => {
@@ -1536,6 +1681,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       data-phase-waveform-pause-v1="PHASE_WAVEFORM_PAUSE_V1"
       data-waveform-cue-handle-v1="WAVEFORM_CUE_HANDLE_V1"
       data-waveform-cue-move-v1="CUE-MOVE-1"
+      data-wta-playback-truth-v1="WTA-31"
+      data-wta-play-from-authority-v1="WTA-32"
       data-mix-extracting={mixExtracting ? 'true' : 'false'}
       {...(displayOnly ? { 'data-display-only-waveform': 'STITCH_UNIFIED_PLAYBACK_V1' } : {})}
       {...(displayOnly && masterVideoSrc ? { 'data-stitch-composer-master-video-sync': 'STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1' } : {})}

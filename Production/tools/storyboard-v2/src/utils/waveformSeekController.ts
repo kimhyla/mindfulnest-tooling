@@ -25,6 +25,8 @@ export type WaveformSeekControllerBindings = {
   resolveDurationMs: () => number;
   displayOnly: boolean;
   onMasterSeek?: ((ms: number) => void) | undefined;
+  /** Clears stale playback errors when operator starts a drag-scrub (PLAY-1 class). */
+  onSeekDragStart?: () => void;
 };
 
 export function shouldSkipWaveformSeek(target: EventTarget | null): boolean {
@@ -51,6 +53,7 @@ export function bindWaveformSeekController(
     resolveDurationMs,
     displayOnly,
     onMasterSeek,
+    onSeekDragStart,
   } = bindings;
 
   let seekPointerId: number | null = null;
@@ -105,6 +108,7 @@ export function bindWaveformSeekController(
     const live = wsRef.current;
     const durMs = resolveDurationMs();
     if (!live || durMs <= 0) return;
+    onSeekDragStart?.();
     isDraggingSeekRef.current = true;
     timeAuthority.beginDragSeek();
     seekPointerId = e.pointerId;
