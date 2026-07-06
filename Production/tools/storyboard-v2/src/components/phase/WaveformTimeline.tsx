@@ -31,6 +31,9 @@
 //           pointer-events:auto — drag-body in shouldSkipSeek for cue-move only.
 //   WTA-12  endDragSeek must not call endDragSeek(0) when resolveDurationMs flickers;
 //           onSeeking while paused always publishes authority + re-seeks WS cursor.
+//   WTA-13  Never zero timeline/authority duration on audioSrc remount — stem regen
+//           leaves drop + cue drag as silent no-ops while WS decodes (durMs<=0 guard).
+//   WTA-5   Rejected drops MUST toast — never silent return (waveformInteractionPolicy).
 //   WTA-1   Paused playhead: waveformTimeAuthority.resolvePausedPlayheadMs — never
 //           let WS/video clocks at 0 clobber scrub authority on drag release.
 //   CUE-RESIZE-1  cue handle drag math MUST read timelineDurationMsRef.current —
@@ -64,6 +67,11 @@ import {
   timelineRelXFromClientX,
 } from '../../utils/waveformTimeAuthority.ts';
 import { bindWaveformSeekController } from '../../utils/waveformSeekController.ts';
+import {
+  assessWaveformInteractionReady,
+  waveformDropRejectMessage,
+} from '../../utils/waveformInteractionPolicy.ts';
+import { pushToast } from '../ui/Toast';
 
 /** Intentional ws.destroy() during audioSrc / shared-media transitions aborts in-flight load. */
 function isIgnorableWaveformLoadError(err: unknown): boolean {
@@ -425,8 +433,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     ta.preserveAcrossRemount();
     const restoredMs = ta.restoreAfterRemount();
     setLoadError(null);
-    setDurationMs(null);
-    timeAuthorityRef.current.setDurationMs(0);
+    // WTA-13 — carry last timeline duration through remount (new stem / lipsync swap).
+    // Zeroing here made drop + cue-drag silently fail until onReady (durMs<=0 guards).
+    const carryDurMs = timelineDurationMsRef.current ?? ta.getDurationMs() ?? 0;
+    setDurationMs(carryDurMs > 0 ? carryDurMs : null);
+    if (carryDurMs > 0) ta.setDurationMs(carryDurMs);
     setCurrentMs(restoredMs);
     if (restoredMs > 0) lastScrubMsRef.current = restoredMs;
     setIsPlaying(false);
@@ -970,6 +981,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       onWaveformClickRef,
       withLinkedVideoSuppress,
       publishPlayheadMs,
+      onSeekDragStart: () => setLoadError(null),
       resolveDurationMs: () => {
         if (displayOnly) {
           return (
@@ -1264,8 +1276,23 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const dropHandlers = useMemo(
     () => makeDropTarget(
       (payload: DragPayload, e: DragEvent) => {
-        const durMs = resolveTimelineDurationMs();
-        if (durMs <= 0) return;
+        const assessment = assessWaveformInteractionReady({
+          isReady: isReadyRef.current,
+          durationMs: resolveTimelineDurationMs(),
+          hasAudioSrc: Boolean(audioSrc),
+          displayOnly,
+          hasDisplayPeaks: Boolean(displayPeaks?.length),
+        });
+        if (!assessment.ok) {
+          pushToast({
+            kind: 'warning',
+            message: waveformDropRejectMessage(assessment.reason),
+            source: 'waveform-drop-reject',
+            ttlMs: 4000,
+          });
+          return;
+        }
+        const durMs = assessment.durationMs;
         const wrapper = wrapperRef.current;
         if (!wrapper) return;
         const relativeX = timelineRelXFromClientX(wrapper.getBoundingClientRect(), e.clientX);
@@ -1288,7 +1315,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         return false;
       },
     ),
-    [],
+    [audioSrc, displayOnly, displayPeaks],
   );
 
   useEffect(() => {

@@ -130,5 +130,15 @@ grep -q 'draggable={false}' "${REPO_ROOT}/Production/tools/storyboard-v2/src/com
   || fail "PhaseProducer watercolor thumb must set draggable={false} (DROP-IMG-1)"
 grep -q 'DROP-WC-2' "$E2E" \
   || fail "e2e must include tile drag regression (DROP-WC-2)"
+grep -q 'carryDurMs' "$WS" \
+  || fail "WaveformTimeline must carry duration on audioSrc remount (WTA-13 carryDurMs)"
+grep -q 'waveformDropRejectMessage' "$WS" \
+  || fail "WaveformTimeline must toast on rejected drop (WTA-5)"
+grep -q 'WTA-5' "$WS" \
+  || fail "WaveformTimeline must document WTA-5 loud drop reject"
+grep -q 'onSeekDragStart' "${REPO_ROOT}/Production/tools/storyboard-v2/src/utils/waveformSeekController.ts" \
+  || fail "waveformSeekController must clear stale errors on drag start"
+grep -q 'pointer-events: none' "$CSS" \
+  || fail "mn-waveform-error must not steal pointer hits (WTA-13)"
 
 echo "[waveform-play-durability] OK — source patterns + e2e spec present"

@@ -1,0 +1,29 @@
+---
+description: Waveform drag/drop/seek invariants — mandatory when touching WaveformTimeline or interaction policy
+globs:
+  - Production/tools/storyboard-v2/src/components/phase/WaveformTimeline.tsx
+  - Production/tools/storyboard-v2/src/utils/waveform*.ts
+  - Production/tools/storyboard-v2/src/app.css
+  - Production/scripts/verify_waveform*.sh
+  - Production/scripts/verify_phase_waveform*.sh
+  - Production/scripts/verify_live_fleet_interaction.sh
+---
+
+# Waveform interaction invariants (WAVEFORM_INTERACTION_CLOSURE_V1)
+
+## Before marking done
+
+1. Run `bash Production/scripts/verify_waveform_interaction_closure.sh`
+2. If UI ships: deploy + fleet build-sha parity + live Event_3 `:5113` proof (not fixture-only)
+
+## Never
+
+- Silent `return` on drop when `!isReady` or `durationMs <= 0` — use `waveformInteractionPolicy` + toast (WTA-5)
+- Zero `timeAuthority.setDurationMs(0)` on audioSrc remount (WTA-13)
+- Drag-seek handlers inside WaveSurfer mount `useEffect`
+- `pointer-events: auto` on full `.mn-waveform-cue-block` without handles auto
+- Mark WTA rows "shipped" with grep-only proof — require behavioral e2e or live Event_3
+
+## Spec
+
+`Production/docs/TECH_SPEC_WAVEFORM_INTERACTION_CLOSURE_v1.md`

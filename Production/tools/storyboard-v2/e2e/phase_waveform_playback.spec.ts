@@ -1057,4 +1057,91 @@ test.describe('WTA-018 — watercolor drop timing (DROP-WC-1)', () => {
 
     await expect(waveform).toHaveAttribute('data-cue-count', '1', { timeout: 5_000 });
   });
+
+  test('DROP-REJECT-1 — drop before waveform ready shows warning toast (WTA-5)', async ({ page }) => {
+    let releaseHeldAudio: (() => void) | null = null;
+    const audioHeld = new Promise<void>((resolve) => {
+      releaseHeldAudio = resolve;
+    });
+    await page.route(/\/files\?path=.*\.(mp3|mp4|wav|m4a|ogg)/, async (route) => {
+      await audioHeld;
+      await route.fulfill({
+        status: 200,
+        contentType: 'audio/wav',
+        body: silentWavBytes(30, 8000),
+      });
+    });
+    await mockModulePatch(page);
+    await mockWatercolorList(page);
+    await mockAmbientPresetList(page, []);
+    await mockPhaseState(page, {
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+      phase_b_watercolor_cues_json: [],
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = page.locator(
+      '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-timeline"]',
+    );
+    await expect(waveform).toBeVisible();
+    await expect(waveform.locator('[data-testid="waveform-play-btn"]')).toBeDisabled();
+
+    const wfBox = await waveform.boundingBox();
+    expect(wfBox).not.toBeNull();
+
+    await waveform.evaluate(
+      (el: Element, args: { x: number; y: number }) => {
+        const dt = new DataTransfer();
+        const payload = JSON.stringify({
+          kind: 'lib-watercolor',
+          lib_key: 'wc_test',
+          animation_type: 'fade_in',
+        });
+        dt.setData('application/x-mn-drag', payload);
+        dt.setData('text/plain', payload);
+        el.dispatchEvent(new DragEvent('drop', {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt,
+          clientX: args.x,
+          clientY: args.y,
+        }));
+      },
+      { x: wfBox!.x + wfBox!.width * 0.5, y: wfBox!.y + wfBox!.height * 0.5 },
+    );
+
+    await expect(page.locator('[data-testid="toast-host"]')).toContainText(/drop skipped/i, {
+      timeout: 5_000,
+    });
+    await expect(waveform).toHaveAttribute('data-cue-count', '0');
+    releaseHeldAudio?.();
+  });
+});
+
+test.describe('PHASE_WAVEFORM_PLAY — remount duration carry (WTA-13)', () => {
+  test('REMOUNT-STEM-2 — stem review keeps duration ms through trim toggle (WTA-13)', async ({
+    page,
+  }) => {
+    await mockAudioFiles(page, 40);
+    await mockPhaseState(page, {
+      phase_b_voice_stem_file: 'fix_phase_b_stem.mp3',
+      phase_b_lipsync_file: 'fix_lipsync.mp4',
+      phase_b_lipsync_requires_regen: true,
+    });
+    await gotoApp(page);
+    await openPhaseB(page);
+
+    const waveform = await waitForWaveformReady(page, 'b');
+    await expect(waveform).toHaveAttribute('data-source-label', 'stem');
+    const durBefore = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    expect(durBefore).toBeGreaterThan(10_000);
+
+    await page.locator('[data-testid="phase-b-trim-voice-stem-btn"]').click();
+    await expect(page.locator('[data-testid="phase-b-stem-trim-mode-badge"]')).toBeVisible();
+    await page.waitForTimeout(300);
+
+    const durDuring = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+    expect(durDuring).toBeGreaterThan(10_000);
+  });
 });

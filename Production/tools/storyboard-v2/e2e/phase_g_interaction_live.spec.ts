@@ -9,7 +9,18 @@
 import { test, expect, type APIRequestContext, type Locator, type Page } from '@playwright/test';
 
 const LIVE = process.env.STORYBOARD_LIVE_BASE_URL ?? 'http://127.0.0.1:5114';
-const LIVE_EVENT = 'Event_4';
+const PORT_EVENT: Record<string, string> = {
+  '5111': 'Event_1',
+  '5112': 'Event_2',
+  '5113': 'Event_3',
+  '5114': 'Event_4',
+  '5115': 'Event_5',
+  '5116': 'Event_6',
+};
+const LIVE_EVENT =
+  process.env.STORYBOARD_LIVE_EVENT
+  ?? PORT_EVENT[new URL(LIVE).port]
+  ?? 'Event_4';
 
 async function serverReachable(request: APIRequestContext): Promise<boolean> {
   try {
@@ -162,4 +173,37 @@ test('DROP-WC-LIVE-1 — watercolor tile → cue on live waveform', async ({ pag
   await expect(
     waveform.locator(`.mn-waveform-cue-block[title*="${dropKey}"]`).first(),
   ).toBeVisible({ timeout: 15_000 });
+});
+
+test('SEEK-DRAG-B-STEM-LIVE-1 — Phase B stem drag release holds position (WTA-030)', async ({ page }) => {
+  await page.goto(`${LIVE}/?event=${LIVE_EVENT}&tab=phase_b`);
+  await expect(page.locator('[data-testid="phase-producer-b"]')).toBeVisible({ timeout: 60_000 });
+
+  const waveform = page.locator(
+    '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-timeline"]',
+  );
+  await expect(waveform).toBeVisible({ timeout: 30_000 });
+  await expect(waveform).toHaveAttribute('data-drag-seek-bound', 'WAVEFORM_DRAG_SEEK_V2');
+  await expect.poll(async () => {
+    const v = await waveform.getAttribute('data-loaded-duration-ms');
+    return v ? Number(v) : 0;
+  }, { timeout: 60_000 }).toBeGreaterThan(0);
+
+  const box = await waveform.boundingBox();
+  expect(box).not.toBeNull();
+
+  const startX = box!.x + box!.width * 0.15;
+  const endX = box!.x + box!.width * 0.65;
+  const y = box!.y + box!.height * 0.55;
+
+  await page.mouse.move(startX, y);
+  await page.mouse.down();
+  await page.mouse.move(endX, y, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+
+  const durMs = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+  const ms = Number(await waveform.getAttribute('data-current-time-ms'));
+  expect(ms).toBeGreaterThan(durMs * 0.25);
+  expect(ms).toBeLessThan(durMs * 0.85);
 });
