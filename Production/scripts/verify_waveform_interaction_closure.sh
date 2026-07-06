@@ -22,6 +22,7 @@ grep -q 'WTA-INV-6' "$SPEC" || fail "spec must document WTA-INV-6 loud reject"
 echo "[waveform-interaction-closure] pass 2/5 — sub-gates (phase waveform + interaction platform)"
 bash "${SCRIPT_DIR}/verify_phase_waveform_play_durability.sh"
 bash "${SCRIPT_DIR}/verify_waveform_time_authority.sh"
+bash "${SCRIPT_DIR}/verify_wta32_playhead_durability.sh"
 
 echo "[waveform-interaction-closure] pass 3/5 — build dist + fixture fanout"
 (
@@ -51,7 +52,7 @@ if curl -sf --max-time 5 "http://localhost:5113/api/event/current" >/dev/null 2>
     STORYBOARD_LIVE_BASE_URL=http://localhost:5113 \
       npx playwright test --config playwright.live.config.ts \
       e2e/phase_g_interaction_live.spec.ts \
-      -g "DROP-WC-LIVE-1|PLAY-DROP-LIVE-1|SEEK-PLAY-LIVE-1|SEEK-DRAG-B-STEM-LIVE-1"
+      -g "DROP-WC-LIVE-1|DROP-PLAYHEAD-LIVE-1|PLAY-DROP-LIVE-1|SEEK-PLAY-LIVE-1|SEEK-DRAG-B-STEM-LIVE-1"
   ) || fail "Event_3 live interaction proof failed"
 else
   echo "[waveform-interaction-closure] WARN pass 6/6 skipped — :5113 down (start Event_3 for live proof)"

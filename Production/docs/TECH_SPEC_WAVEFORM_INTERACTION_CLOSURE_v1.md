@@ -1,9 +1,9 @@
 # TECH_SPEC — Waveform Interaction Closure v1
 
 **Marker:** `WAVEFORM_INTERACTION_CLOSURE_V1`  
-**Status:** Implementing  
+**Status:** Shipped (WTA-32 durability 2026-07-06)  
 **Date:** 2026-07-06  
-**Extends:** `TECH_SPEC_WAVEFORM_TIME_AUTHORITY_v1.md`, `TECH_SPEC_PHASE_G_INTERACTION_WARM_PATH_V1.md`  
+**Extends:** `TECH_SPEC_WAVEFORM_TIME_AUTHORITY_v1.md`, `TECH_SPEC_PHASE_G_INTERACTION_WARM_PATH_V1.md`, `LESSONS_LEARNED_20260706_WTA32_PLAYHEAD_AUTHORITY_v1.md`  
 **Symptom class:** WTA-001..030 (playhead snap, silent drop/seek no-op, proof-surface mismatch)
 
 ---
@@ -48,7 +48,12 @@
 | WTA-INV-4 | **Drop capture** on wrapper (`bindDropTargetCapture`) — never bubble-only on canvas child. |
 | WTA-INV-5 | **Cue body pass-through** — block `pointer-events: none`; handles `auto` (SEEK-4 / WAVEFORM_CUE_HANDLE_V1). |
 | WTA-INV-6 | **No silent reject** — drop when `!ready \|\| durationMs <= 0` → toast (WTA-5). |
-| WTA-INV-7 | **Live proof** on operator path: Event_3 `:5113` Phase B stem — DROP-WC-LIVE-1 + SEEK-DRAG-B-STEM-LIVE-1. |
+| WTA-INV-7 | **Live proof** on operator path: Event_3 `:5113` Phase B — DROP-WC-LIVE-1 + SEEK-DRAG-B-STEM-LIVE-1. |
+| WTA-INV-8 | **Legacy scrub** wins only when `mediaTimeMs < 50` — never unconditional (WTA-32). |
+| WTA-INV-9 | **`playbackAnchorMsRef`** on ▶ from scrub; cleared on pause / WS caught-up. |
+| WTA-INV-10 | **`lastScrubMsRef` cleared on `play`** — normal playback uses WS clock. |
+| WTA-INV-11 | **Paused `onSeeking`** uses `pausedPlayheadHoldMs` — never stomp positive hold to 0. |
+| WTA-INV-12 | **Drop order:** `commitPlayheadMs` before `onWatercolorDrop` / sfx handler. |
 
 ---
 
@@ -80,6 +85,7 @@ Pure functions:
 | DROP-REJECT-1 | Fixture | Drop before ready → toast visible |
 | REMOUNT-STEM-2 | Fixture | Mock audioSrc swap; duration attr stays > 0 during reload |
 | DROP-WC-LIVE-1 | Event_3 live | cue count increases |
+| DROP-PLAYHEAD-LIVE-1 | Event_3 live | playhead 45–80% after drop (no snap to 0) |
 | SEEK-DRAG-B-STEM-LIVE-1 | Event_3 live | playhead > 25% duration after drag |
 
 ---

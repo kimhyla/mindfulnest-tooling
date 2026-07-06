@@ -74,6 +74,12 @@ import {
   assessWaveformInteractionReady,
   waveformDropRejectMessage,
 } from '../../utils/waveformInteractionPolicy.ts';
+import {
+  pausedPlayheadHoldMs,
+  resolvePlaybackAuthorityMs,
+  shouldClearPlaybackAnchor,
+  shouldReassertPlayheadFromAuthority,
+} from '../../utils/waveformPlaybackAnchor.ts';
 import { pushToast } from '../ui/Toast';
 
 /** Intentional ws.destroy() during audioSrc / shared-media transitions aborts in-flight load. */
@@ -543,17 +549,17 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
     const reassertPlayheadIfStale = () => {
       const durMs = timelineDurationMsRef.current ?? 0;
-      const anchorMs = playbackAnchorMsRef.current;
-      const authMs = anchorMs != null && anchorMs > 0
-        ? anchorMs
-        : timeAuthorityRef.current.getPlayheadMs();
+      const authMs = resolvePlaybackAuthorityMs(
+        playbackAnchorMsRef.current,
+        timeAuthorityRef.current.getPlayheadMs(),
+      );
       if (authMs <= 500 || durMs <= 0) return;
       const wsMs = msFromWsClock(ws) ?? 0;
-      if (wsMs >= authMs * 0.85) {
+      if (shouldClearPlaybackAnchor(playbackAnchorMsRef.current, wsMs)) {
         playbackAnchorMsRef.current = null;
         return;
       }
-      if (wsMs >= authMs * 0.15) return;
+      if (!shouldReassertPlayheadFromAuthority(authMs, wsMs)) return;
       ws.seekTo(Math.min(1, authMs / durMs));
       publishPlayhead(authMs);
     };
@@ -562,15 +568,14 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (!ws.isPlaying()) return;
       const durMs = timelineDurationMsRef.current ?? 0;
       const wsMs = msFromWsClock(ws) ?? 0;
-      const anchorMs = playbackAnchorMsRef.current;
-      const authMs = anchorMs != null && anchorMs > 0
-        ? anchorMs
-        : timeAuthorityRef.current.getPlayheadMs();
-      if (authMs > 1000 && wsMs >= authMs * 0.85) {
+      const authMs = resolvePlaybackAuthorityMs(
+        playbackAnchorMsRef.current,
+        timeAuthorityRef.current.getPlayheadMs(),
+      );
+      if (shouldClearPlaybackAnchor(playbackAnchorMsRef.current, wsMs)) {
         playbackAnchorMsRef.current = null;
       }
-      // WTA-32 — long stem mp3: ws.play() can start near 0 while authority holds scrub ms.
-      if (authMs > 1000 && wsMs < authMs * 0.15 && durMs > 0) {
+      if (shouldReassertPlayheadFromAuthority(authMs, wsMs) && durMs > 0) {
         ws.seekTo(Math.min(1, authMs / durMs));
         publishPlayhead(authMs);
         return;
@@ -590,10 +595,10 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       );
       // WTA-12: while paused, never trust WS clock — stem mp3 + lipsync mp4 both lie on release.
       if (!ws.isPlaying()) {
-        const holdMs = Math.max(
+        const holdMs = pausedPlayheadHoldMs(
           authorityMs,
           timeAuthorityRef.current.getPlayheadMs(),
-          lastScrubMsRef.current ?? 0,
+          lastScrubMsRef.current,
         );
         if (holdMs > 0) {
           lastScrubMsRef.current = holdMs;
@@ -607,11 +612,8 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         }
         return;
       }
-      const anchorMs = playbackAnchorMsRef.current;
-      const holdMs = anchorMs != null && anchorMs > 0
-        ? anchorMs
-        : authorityMs;
-      if (holdMs > 0 && wsMs < Math.max(50, holdMs * 0.15)) {
+      const holdMs = resolvePlaybackAuthorityMs(playbackAnchorMsRef.current, authorityMs);
+      if (holdMs > 0 && shouldReassertPlayheadFromAuthority(holdMs, wsMs)) {
         lastScrubMsRef.current = holdMs;
         publishPlayhead(holdMs);
         const durMs = timelineDurationMsRef.current ?? 0;
@@ -620,7 +622,7 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       }
       const ms = msFromWsClock(ws);
       if (ms == null) return;
-      if (anchorMs != null && ms >= anchorMs * 0.85) {
+      if (shouldClearPlaybackAnchor(playbackAnchorMsRef.current, ms)) {
         playbackAnchorMsRef.current = null;
       }
       lastScrubMsRef.current = null;

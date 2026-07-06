@@ -146,5 +146,11 @@ grep -q 'WTA-32' "$WS" \
   || fail "WaveformTimeline must document WTA-32 play-from-authority"
 grep -q 'SEEK-PLAY-1' "$E2E" \
   || fail "e2e must include scrub-then-play regression (SEEK-PLAY-1 / WTA-32)"
+grep -q 'DROP-PLAY-1' "$E2E" \
+  || fail "e2e must include drop-then-play regression (DROP-PLAY-1 / WTA-32)"
+[[ -x "${SCRIPT_DIR}/verify_wta32_playhead_durability.sh" ]] \
+  || fail "missing verify_wta32_playhead_durability.sh"
+bash "${SCRIPT_DIR}/verify_wta32_playhead_durability.sh" \
+  || fail "WTA-32 playhead durability gate failed"
 
 echo "[waveform-play-durability] OK — source patterns + e2e spec present"

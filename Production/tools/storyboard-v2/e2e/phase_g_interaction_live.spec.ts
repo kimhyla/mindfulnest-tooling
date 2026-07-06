@@ -175,6 +175,43 @@ test('DROP-WC-LIVE-1 — watercolor tile → cue on live waveform', async ({ pag
   ).toBeVisible({ timeout: 15_000 });
 });
 
+test('DROP-PLAYHEAD-LIVE-1 — watercolor drop holds playhead position (WTA-32)', async ({
+  page,
+  request,
+}) => {
+  await page.goto(`${LIVE}/?event=${LIVE_EVENT}&tab=phase_b`);
+  await expect(page.locator('[data-testid="phase-producer-b"]')).toBeVisible({ timeout: 60_000 });
+
+  const waveform = page.locator(
+    '[data-testid="pane-phase-b-keepalive"] [data-testid="waveform-timeline"]',
+  );
+  await expect(waveform).toBeVisible({ timeout: 30_000 });
+  await expect(waveform).toHaveAttribute('data-wta-play-from-authority-v1', 'WTA-32');
+  await expect.poll(async () => {
+    const v = await waveform.getAttribute('data-loaded-duration-ms');
+    return v ? Number(v) : 0;
+  }, { timeout: 120_000 }).toBeGreaterThan(0);
+
+  const dropKey = await pickUnusedWatercolorKey(request, page, waveform);
+  const tile = page.locator(`[data-testid="phase-b-watercolor-tile-${dropKey}"]`);
+  await expect(tile).toBeVisible({ timeout: 30_000 });
+
+  const wfBox = await waveform.boundingBox();
+  expect(wfBox).not.toBeNull();
+  const dropX = wfBox!.x + wfBox!.width * 0.62;
+  const dropY = wfBox!.y + wfBox!.height * 0.55;
+
+  await liveHtml5WatercolorDrop(page, tile, waveform, dropKey);
+  await page.waitForTimeout(500);
+
+  const durMs = Number(await waveform.getAttribute('data-loaded-duration-ms'));
+  const afterDropMs = Number(await waveform.getAttribute('data-current-time-ms'));
+  expect(afterDropMs, `playhead should stay near drop, got ${afterDropMs}ms`).toBeGreaterThan(
+    durMs * 0.45,
+  );
+  expect(afterDropMs).toBeLessThan(durMs * 0.8);
+});
+
 test('SEEK-PLAY-LIVE-1 — ▶ Play starts from scrubbed position on Event_3 stem (WTA-32)', async ({
   page,
 }) => {
