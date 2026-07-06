@@ -58,6 +58,15 @@ describe('waveformTimeAuthority', () => {
     assert.equal(ta.resolvePausedPlayheadMs(0, null), 12_000);
   });
 
+  it('resolvePausedPlayheadMs prefers authority over early-play stale media clock (WTA-32)', () => {
+    const ta = createWaveformTimeAuthority(0, 163_550);
+    ta.scrubToMs(115_100);
+    ta.onPlaybackStart();
+    assert.equal(ta.resolvePausedPlayheadMs(1166, null), 115_100);
+    assert.equal(ta.resolvePausedPlayheadMs(5000, null), 115_100);
+    assert.equal(ta.resolvePausedPlayheadMs(20_000, null), 20_000);
+  });
+
   it('timelineRelXFromClientX respects track insets', () => {
     const box = { left: 100, width: 200 };
     assert.equal(timelineRelXFromClientX(box, 100), 0);

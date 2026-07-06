@@ -96,6 +96,8 @@ export function createWaveformTimeAuthority(
       const legacy = legacyScrubMs ?? null;
       if (legacy != null && legacy > 0) return legacy;
       if (playheadMs > 0 && mediaTimeMs < 50) return playheadMs;
+      // WTA-32 — stem mp3 play() often starts near 0 while authority holds scrub ms.
+      if (playheadMs > 1000 && mediaTimeMs < playheadMs * 0.15) return playheadMs;
       if (now() < pausedScrubHoldUntil && playheadMs > 0) return playheadMs;
       if (mediaTimeMs > 0) return mediaTimeMs;
       return playheadMs;

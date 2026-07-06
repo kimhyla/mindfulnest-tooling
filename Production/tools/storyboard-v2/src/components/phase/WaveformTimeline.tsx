@@ -524,15 +524,6 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (t > 1) return t * 1000;
       return null;
     };
-    const onAudioProcess = () => {
-      if (stopPlaybackIfHiddenPane()) return;
-      if (!ws.isPlaying()) return;
-      const ms = msFromWsClock(ws);
-      if (ms == null) return;
-      setCurrentMs(ms);
-      onTimeUpdate?.(ms);
-      syncPlayUi();
-    };
     // Paused scrub: applySeek + lastScrubMsRef own the label. WS 'seeking' /
     // getCurrentTime() often reports 0 on mp4/lipsync until decode catches up —
     // accepting that clock zeros the red playhead on drag release.
@@ -540,6 +531,33 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       const rounded = Math.round(ms);
       setCurrentMs(rounded);
       onTimeUpdateRef.current?.(rounded);
+    };
+    const reassertPlayheadIfStale = () => {
+      const durMs = timelineDurationMsRef.current ?? 0;
+      const authMs = timeAuthorityRef.current.getPlayheadMs();
+      if (authMs <= 500 || durMs <= 0) return;
+      const wsMs = msFromWsClock(ws) ?? 0;
+      if (wsMs >= authMs * 0.15) return;
+      ws.seekTo(Math.min(1, authMs / durMs));
+      publishPlayhead(authMs);
+    };
+    const onAudioProcess = () => {
+      if (stopPlaybackIfHiddenPane()) return;
+      if (!ws.isPlaying()) return;
+      const durMs = timelineDurationMsRef.current ?? 0;
+      const wsMs = msFromWsClock(ws) ?? 0;
+      const authMs = timeAuthorityRef.current.getPlayheadMs();
+      // WTA-32 — long stem mp3: ws.play() can start near 0 while authority holds scrub ms.
+      if (authMs > 1000 && wsMs < authMs * 0.15 && durMs > 0) {
+        ws.seekTo(Math.min(1, authMs / durMs));
+        publishPlayhead(authMs);
+        return;
+      }
+      const ms = msFromWsClock(ws);
+      if (ms == null) return;
+      setCurrentMs(ms);
+      onTimeUpdate?.(ms);
+      syncPlayUi();
     };
     const onSeeking = () => {
       if (isDraggingSeekRef.current || timeAuthorityRef.current.isDraggingSeek()) return;
@@ -558,10 +576,12 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         }
         return;
       }
-      // WTA-1: playing-path stale zero after drag release (isPlaying() may still lie briefly).
+      // WTA-1 / WTA-32: playing-path stale zero — re-seek WS, not label-only.
       if (authorityMs > 0 && wsMs < 50) {
         if (authorityMs > 0) lastScrubMsRef.current = authorityMs;
         publishPlayhead(authorityMs);
+        const durMs = timelineDurationMsRef.current ?? 0;
+        if (durMs > 0) ws.seekTo(Math.min(1, authorityMs / durMs));
         return;
       }
       const ms = msFromWsClock(ws);
@@ -593,10 +613,11 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
 
     ws.on('play', () => {
       if (stopPlaybackIfHiddenPane()) return;
-      lastScrubMsRef.current = null;
       setLoadError(null);
       setIsPlaying(true);
       onPlayStateChange?.(true);
+      reassertPlayheadIfStale();
+      requestAnimationFrame(() => reassertPlayheadIfStale());
     });
     ws.on('pause', () => {
       setIsPlaying(false);
