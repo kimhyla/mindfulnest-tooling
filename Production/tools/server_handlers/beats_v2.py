@@ -551,6 +551,20 @@ def handle_v2_event_state(h, path: str) -> None:
               f"falling through to server-pinned event.", flush=True)
     state = h.app.state.read_state()
     try:
+        from server_handlers.phases import heal_phase_base_clip_id_mirror  # noqa: WPS433
+
+        if heal_phase_base_clip_id_mirror(state):
+
+            def _heal_clip_mirror(s):
+                if heal_phase_base_clip_id_mirror(s):
+                    s["_module_version"] = int(s.get("_module_version", 0) or 0) + 1
+                return s.get("_module_version", 0)
+
+            h.app.state.mutate_state(_heal_clip_mirror)
+            state = h.app.state.read_state()
+    except Exception as _exc:
+        print(f"[v2-state] WARN: base clip mirror heal failed: {_exc!r}", flush=True)
+    try:
         event_dir_abs = str((DROPBOX_ROOT / h.app.event_dir).resolve())
         for _role, _part in (state.get("videos") or {}).items():
             if not isinstance(_part, dict):
@@ -737,7 +751,12 @@ def handle_v2_module_patch(h, body: dict) -> None:
                )
 
     def _apply(state, _f=field, _v=value):
-        state[_f] = _v
+        from server_handlers.phases import apply_phase_base_clip_id_patch  # noqa: WPS433
+
+        if _f in ("phase_a_chipper_sitting_clip_id", "phase_b_cedric_base_clip_id"):
+            apply_phase_base_clip_id_patch(state, _f, _v)
+        else:
+            state[_f] = _v
         state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
         return state["_module_version"]
 

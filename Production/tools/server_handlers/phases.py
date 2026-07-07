@@ -286,6 +286,45 @@ def _phase_set_voice_stem_keys(state: dict, phase: str, filename: str, mtime: in
         nested[f"phase_{phase}_voice_stem_mtime"] = mtime
 
 
+def apply_phase_base_clip_id_patch(state: dict, field: str, value: str) -> None:
+    """Mirror base-clip id to top-level + nested phase block; flag lipsync regen on change."""
+    phase = None
+    if field == "phase_a_chipper_sitting_clip_id":
+        phase = "a"
+    elif field == "phase_b_cedric_base_clip_id":
+        phase = "b"
+    if phase is None:
+        return
+    old = (state.get(field) or "").strip()
+    state[field] = value
+    nested = state.setdefault(f"phase_{phase}", {})
+    if isinstance(nested, dict):
+        nested[field] = value
+        if old and old != value:
+            state[f"phase_{phase}_lipsync_requires_regen"] = True
+            nested[f"phase_{phase}_lipsync_requires_regen"] = True
+
+
+def heal_phase_base_clip_id_mirror(state: dict) -> bool:
+    """If top-level base clip id drifted from nested mirror, sync nested to top."""
+    changed = False
+    for field, phase in (
+        ("phase_a_chipper_sitting_clip_id", "a"),
+        ("phase_b_cedric_base_clip_id", "b"),
+    ):
+        top = (state.get(field) or "").strip()
+        if not top:
+            continue
+        nested = _phase_nested_block(state, phase)
+        nested_id = (nested.get(field) or "").strip()
+        if nested_id != top:
+            block = state.setdefault(f"phase_{phase}", {})
+            if isinstance(block, dict):
+                block[field] = top
+                changed = True
+    return changed
+
+
 def _phase_voice_stem_mirror_drift(state: dict, phase: str) -> str | None:
     top = (state.get(f"phase_{phase}_voice_stem_file") or "").strip()
     nested_name = (_phase_nested_block(state, phase).get(f"phase_{phase}_voice_stem_file") or "").strip()
@@ -4487,8 +4526,13 @@ def handle_phase_a_regen_base_clip(h, body: dict) -> None:
             def _term(state, _rc=proc.returncode, _out=proc.stdout, _err=proc.stderr):
                 if _rc == 0:
                     state["phase_a_base_clip_regen_status"] = "done"
-                    state["phase_a_chipper_sitting_clip_id"] = clip_id
+                    apply_phase_base_clip_id_patch(
+                        state, "phase_a_chipper_sitting_clip_id", clip_id,
+                    )
                     state["phase_a_lipsync_requires_regen"] = True
+                    nested = state.setdefault("phase_a", {})
+                    if isinstance(nested, dict):
+                        nested["phase_a_lipsync_requires_regen"] = True
                 else:
                     state["phase_a_base_clip_regen_status"] = (
                         f"error: {(_err or _out or 'failed')[:120]}"
@@ -4576,8 +4620,13 @@ def handle_phase_b_regen_base_clip(h, body: dict) -> None:
             def _term(state, _rc=proc.returncode, _out=proc.stdout, _err=proc.stderr):
                 if _rc == 0:
                     state["phase_b_base_clip_regen_status"] = "done"
-                    state["phase_b_cedric_base_clip_id"] = clip_id
+                    apply_phase_base_clip_id_patch(
+                        state, "phase_b_cedric_base_clip_id", clip_id,
+                    )
                     state["phase_b_lipsync_requires_regen"] = True
+                    nested = state.setdefault("phase_b", {})
+                    if isinstance(nested, dict):
+                        nested["phase_b_lipsync_requires_regen"] = True
                 else:
                     state["phase_b_base_clip_regen_status"] = (
                         f"error: {(_err or _out or 'failed')[:120]}"
