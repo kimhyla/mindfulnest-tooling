@@ -20,9 +20,7 @@ if str(_CRED) not in sys.path:
     sys.path.insert(0, str(_CRED))
 
 from phase_a_chipper_bytedance_lipsync import ffprobe_duration  # noqa: E402
-from phase_b_kling_segmented_lipsync import (  # noqa: E402
-    compute_phase_b_kling_segments,
-)
+from phase_a_chipper_bytedance_lipsync import ffprobe_duration  # noqa: E402
 from phase_module_lipsync_delivery import finalize_phase_module_lipsync_delivery  # noqa: E402
 
 PHASE_B_SEGMENTED_TIMELINE_ASSEMBLE_V1 = "PHASE_B_SEGMENTED_TIMELINE_ASSEMBLE_V1"
@@ -210,21 +208,27 @@ def _loop_from_tail(src: Path, out: Path, hold_s: float, *, loop_s: float = 2.0)
 
 
 def _load_chunk_specs(work_dir: Path, audio: Path) -> tuple[float, list[dict]]:
-    audio_dur, specs = compute_phase_b_kling_segments(audio)
+    """Authoritative windows from ``seg_*_meta.json`` on disk (not re-segmentation)."""
+    work_dir = work_dir.expanduser().resolve()
+    audio = audio.expanduser().resolve()
+    audio_dur = ffprobe_duration(audio)
+    meta_paths = sorted(
+        work_dir.glob("seg_*_meta.json"),
+        key=lambda p: int(p.stem.split("_")[1]),
+    )
+    if not meta_paths:
+        raise FileNotFoundError(f"no seg_*_meta.json in {work_dir}")
     rows: list[dict] = []
-    for spec in specs:
-        meta_path = work_dir / f"seg_{spec.index}_meta.json"
-        raw_path = work_dir / f"seg_{spec.index}_kling_raw.mp4"
-        if meta_path.is_file():
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
-            start_s = float(meta.get("start_s", spec.start_s))
-            end_s = float(meta.get("end_s", spec.end_s))
-        else:
-            start_s, end_s = spec.start_s, spec.end_s
+    for meta_path in meta_paths:
+        idx = int(meta_path.stem.split("_")[1])
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        start_s = float(meta["start_s"])
+        end_s = float(meta["end_s"])
+        raw_path = work_dir / f"seg_{idx}_kling_raw.mp4"
         if not raw_path.is_file():
             raise FileNotFoundError(f"missing chunk raw: {raw_path}")
         rows.append({
-            "index": spec.index,
+            "index": idx,
             "start_s": start_s,
             "end_s": end_s,
             "duration_s": end_s - start_s,
