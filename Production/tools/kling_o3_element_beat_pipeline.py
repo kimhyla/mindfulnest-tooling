@@ -896,23 +896,65 @@ def main() -> int:
             "traceback": _tb.format_exc()[-4000:],
         }), flush=True)
         job_id = ""
+        event_id = "Event_1"
+        intent = {}
         if intent_path:
             try:
-                from o3_generation_intent import load_generation_intent, write_intent_terminal
+                from o3_generation_intent import close_o3_attempt, load_generation_intent
 
                 intent = load_generation_intent(Path(intent_path))
                 job_id = str(intent.get("job_id") or "")
                 event_id = str(intent.get("event_id") or "Event_1")
+            except Exception:
+                pass
+        if job_id:
+            try:
+                from o3_recovery_seal import seal_o3_recovery_before_terminal
+
                 prod_root = _runtime_prod_root()
-                if job_id:
+                ev_dir = prod_root / event_id
+                clips = ev_dir / "kling_o3_clips"
+                gen_slot = str(intent.get("generation_slot") or intent.get("generation") or "")
+                master = None
+                delivery = None
+                if gen_slot:
+                    master = clips / f"{args.beat_id}_{gen_slot}_element_o3_master.mp4"
+                    delivery = clips / f"{args.beat_id}_{gen_slot}_element_o3_master_delivery.mp4"
+                log_path = os.environ.get("MN_O3_JOB_LOG", "").strip() or None
+                seal = seal_o3_recovery_before_terminal(
+                    args.beat_id,
+                    ev_dir,
+                    master_path=master if master and master.is_file() else None,
+                    delivery_path=delivery if delivery and delivery.is_file() else None,
+                    log_path=log_path,
+                    failure_phase="pipeline_exception",
+                    failure_message=str(exc)[:1500],
+                )
+                from o3_generation_intent import close_o3_attempt
+
+                term_status = str(seal.get("terminal_status") or "failed")
+                close_o3_attempt(
+                    job_id,
+                    args.beat_id,
+                    ev_dir,
+                    term_status,
+                    reason=str(exc)[:1500],
+                    phase_last="pipeline_exception",
+                    intent=intent,
+                    persist_beat=bool(seal.get("sidecar_persist_ok") or term_status != "failed"),
+                )
+            except Exception:
+                try:
+                    from o3_generation_intent import write_intent_terminal
+
                     write_intent_terminal(job_id, prod_root / event_id, {
                         "intent_id": intent.get("intent_id"),
                         "status": "failed",
                         "sidecar_persist_ok": False,
                         "failure": {"message": str(exc)[:1500]},
                     })
-            except Exception:
-                pass
+                except Exception:
+                    pass
         return 1
 
 

@@ -19,9 +19,9 @@ grep -q 'resolve_beat_o3_truth' server_handlers/background.py \
   && mark 'O3 poll uses truth resolver' \
   || err 'background poll missing truth resolver'
 
-grep -q 'resolve_beat_o3_truth_for_session_compose' o3_session_terminal_reconcile.py \
-  && mark 'session GET compose uses truth resolver' \
-  || err 'compose_session_terminal_view missing truth resolver'
+grep -q 'def _run_o3_terminal_reconcile_at_startup' server_handlers/background.py \
+  && mark 'startup terminal reconcile wired (off session GET hot path)' \
+  || err 'startup terminal reconcile missing'
 
 # Phase 1 gate: session GET compose uses truth. Full voice_fix read allowlist — Phase 7.
 grep -q 'if session_read_only:' server_handlers/background.py \

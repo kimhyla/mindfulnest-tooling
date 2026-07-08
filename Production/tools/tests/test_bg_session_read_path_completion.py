@@ -26,12 +26,12 @@ def _handler_block(name: str) -> str:
     return text[start : start + 1 + end_offset]
 
 
-def test_handle_bg_session_state_uses_compose_not_apply_persist():
+def test_handle_bg_session_state_read_only_no_compose_on_get():
     block = _handler_block("handle_bg_session_state")
-    assert "_compose_o3_session_terminal_view(" in block
-    assert "_apply_o3_session_terminal_reconcile(" not in block.split(
-        "def handle_bg_session_state", 1
-    )[1].split("def handle_bg_poll", 1)[0]
+    assert "_compose_o3_session_terminal_view(" not in block
+    assert "Session GET is read-only for gallery" in block
+    full = BACKGROUND.read_text(encoding="utf-8")
+    assert "def _run_o3_terminal_reconcile_at_startup" in full
 
 
 def test_compose_session_terminal_view_never_calls_mutate_sidecar(tmp_path: Path, monkeypatch):

@@ -2239,6 +2239,29 @@ def _apply_o3_session_terminal_reconcile(
     return outcomes
 
 
+def _run_o3_terminal_reconcile_at_startup(h, scope_event_id: str) -> int:
+    """Persist terminal/disk gallery heals once per event at startup (off session GET hot path)."""
+    bg = _bg_module()
+    sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
+    bg.ensure_sidecar_schema_defaults(sidecar)
+    beats = list(_iter_bg_beats(sidecar))
+    if not beats:
+        return 0
+    outcomes = _apply_o3_session_terminal_reconcile(
+        h,
+        beats,
+        sidecar,
+        scope_arc=None,
+        scope_event_id=scope_event_id,
+        scope_phase=None,
+    )
+    for row in outcomes:
+        row["source"] = "startup_reconcile"
+        if row.get("reconciled"):
+            row["persisted"] = True
+    return len([o for o in outcomes if o.get("persisted")])
+
+
 def _normalize_o3_event_dirs(
     event_dirs: Path | list[Path] | tuple[Path, ...],
 ) -> list[Path]:
@@ -2427,6 +2450,12 @@ def schedule_o3_gallery_repair_at_startup(app, *, force: bool = False) -> None:
                     f"[startup:o3-gallery-repair] {scope_event_id}: repaired {changed} beat(s)",
                     flush=True,
                 )
+            tr = _run_o3_terminal_reconcile_at_startup(h_stub, scope_event_id)
+            if tr:
+                print(
+                    f"[startup:o3-terminal-reconcile] {scope_event_id}: persisted {tr} beat(s)",
+                    flush=True,
+                )
         except Exception as exc:
             print(f"[startup:o3-gallery-repair] {scope_event_id} failed: {exc}", flush=True)
 
@@ -2591,15 +2620,8 @@ def handle_bg_session_state(h)-> None:
         })
 
     o3_terminal_outcomes: list[dict] = []
-    if beats:
-        try:
-            o3_terminal_outcomes = _compose_o3_session_terminal_view(
-                h,
-                beats,
-                sidecar,
-            )
-        except Exception as exc:
-            print(f"[BG] session terminal compose failed: {exc}", flush=True)
+    # Session GET is read-only for gallery — terminal/disk heal persists at startup only
+    # (TECH_SPEC_O3_LIFECYCLE_SEAL_v1 F4; BG_BEAT_JOB_TRUTH_GALLERY_SPEC §6.1).
 
     all_done = beats and all(b.get("flux_options") for b in beats)
     video_role = scope_video_role or ""
@@ -6783,23 +6805,21 @@ def _ensure_o3_job_metadata(job_id: str, job: dict) -> None:
 
 def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = None, error: str | None = None) -> None:
     try:
+        from o3_job_status_contract import clear_o3_job_cache_fields
+
         bg = _bg_module()
         def _clear(sidecar: dict) -> None:
             for beat in _iter_bg_beats(sidecar):
                 if beat.get("kling_o3_voice_fix_ui_job_id") != job_id:
                     continue
                 if status == "done":
-                    beat.pop("kling_o3_voice_fix_ui_job_id", None)
-                    beat.pop("kling_o3_voice_fix_job_pid", None)
-                    beat.pop("kling_o3_voice_fix_job_started_at", None)
+                    clear_o3_job_cache_fields(beat)
                     beat["kling_o3_voice_fix_job_completed_at"] = datetime.now(timezone.utc).isoformat()
                     beat["kling_o3_voice_fix_phase"] = "done"
                     if result:
                         beat["kling_o3_voice_fix_job_result"] = result
                 elif status == "failed":
-                    beat.pop("kling_o3_voice_fix_ui_job_id", None)
-                    beat.pop("kling_o3_voice_fix_job_pid", None)
-                    beat.pop("kling_o3_voice_fix_job_started_at", None)
+                    clear_o3_job_cache_fields(beat)
                     beat["kling_o3_voice_fix_status"] = "failed"
                     beat["kling_o3_voice_fix_error_code"] = beat.get("kling_o3_voice_fix_error_code") or "SUBPROCESS_FAILED"
                     beat["kling_o3_voice_fix_phase"] = "failed"

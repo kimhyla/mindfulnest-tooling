@@ -5631,9 +5631,26 @@ _STILL_INSERT_BOGUS_SPEAKERS = _STILL_INSERT_NON_DELIVERY_VERBS | _STILL_INSERT_
 })
 
 
+def _still_insert_voice_ready_character_names() -> list[str]:
+    """Registry characters with Element+voice — longest names first for safe word-boundary match."""
+    names: list[str] = []
+    try:
+        from tools import kling_character_registry as reg
+
+        for name in (reg.load_character_subjects().get("characters") or {}):
+            if reg.is_speaker_voice_ready(name):
+                names.append(name)
+    except Exception:
+        pass
+    for alias in _STILL_INSERT_SPEAKER_ALIASES:
+        if alias not in names:
+            names.append(alias)
+    return sorted(set(names), key=len, reverse=True)
+
+
 def _still_insert_named_speaker_from_source(source: str) -> str:
     """First registered character name in prompt — beats pronoun extraction (``she says:``)."""
-    for name in _STILL_INSERT_SPEAKER_ALIASES:
+    for name in _still_insert_voice_ready_character_names():
         if re.search(rf"\b{re.escape(name)}\b", source, flags=re.I):
             return _canon_speaker(name) or name
     return ""
@@ -5643,7 +5660,13 @@ def _resolve_still_insert_speaker(source: str, beat: dict, extracted: str | None
     """Speaker for still TTS — beat sidecar wins over bogus colon tokens like ``whispering:``."""
     beat_sp = _canon_speaker((beat.get("speaker") or "").strip()) or (beat.get("speaker") or "").strip()
     if beat_sp and beat_sp not in ("Character", "[Stage Direction]"):
-        return beat_sp
+        try:
+            from tools import kling_character_registry as reg
+
+            if reg.is_speaker_voice_ready(beat_sp):
+                return beat_sp
+        except Exception:
+            return beat_sp
     named = _still_insert_named_speaker_from_source(source)
     if named:
         return named

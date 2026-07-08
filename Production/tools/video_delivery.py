@@ -7,11 +7,17 @@ profile: 1280x720, H.264 High, yuv420p, 24fps, AAC, +faststart, <=1.9 Mbps.
 """
 from __future__ import annotations
 
+import contextlib
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
+
+_PROD_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROD_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROD_ROOT))
+
+from lib.ffmpeg_io import commit_local_file_to_dest, local_staging_temp_path  # noqa: E402
 
 _CRED_LIB = Path(__file__).resolve().parent / "credentials_lib"
 if str(_CRED_LIB) not in sys.path:
@@ -336,7 +342,6 @@ def encode_delivery_video(
     src = Path(src)
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
     profile = (delivery_profile or "standard").strip().lower()
     use_lean_quality_encode = profile == "module_final_lean"
 
@@ -372,17 +377,17 @@ def encode_delivery_video(
                      DELIVERY_MAX_BITRATE_BPS)]
 
     last_err: RuntimeError | None = None
+    local_tmp: Path | None = None
     try:
         for vf, video_bitrate, maxrate, bufsize, max_bitrate_bps in attempts:
-            try:
-                if tmp.exists():
-                    tmp.unlink()
-            except OSError:
-                pass
+            local_tmp = local_staging_temp_path(
+                suffix=dst.suffix or ".mp4",
+                prefix=f"mn_del_{dst.stem}_",
+            )
             try:
                 _run_single_delivery_encode(
                     src,
-                    tmp,
+                    local_tmp,
                     vf=vf_factory if profile == "module_final_lean" else vf,
                     video_bitrate=video_bitrate,
                     maxrate=maxrate,
@@ -392,7 +397,8 @@ def encode_delivery_video(
                     use_lean_quality_encode=use_lean_quality_encode,
                     timeout_s=timeout_s,
                 )
-                os.replace(tmp, dst)
+                commit_local_file_to_dest(local_tmp, dst)
+                local_tmp = None
                 ensure_mp4_playback_timestamps(
                     dst,
                     timeout_s=timeout_s,
@@ -406,6 +412,10 @@ def encode_delivery_video(
                     )
                 return dst
             except RuntimeError as exc:
+                if local_tmp is not None and local_tmp.exists():
+                    with contextlib.suppress(OSError):
+                        local_tmp.unlink()
+                    local_tmp = None
                 if "bitrate" in str(exc) and profile in ("voice_first_upscale", "module_final_lean"):
                     last_err = exc
                     continue
@@ -414,11 +424,9 @@ def encode_delivery_video(
             raise last_err
         raise RuntimeError("encode_delivery_video: no attempts configured")
     finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+        if local_tmp is not None and local_tmp.exists():
+            with contextlib.suppress(OSError):
+                local_tmp.unlink()
 
 
 def encode_module_final_lean(src: Path, dst: Path, *, timeout_s: int = 900) -> Path:
@@ -443,7 +451,7 @@ def encode_lipsync_input(src: Path, dst: Path) -> Path:
     src = Path(src)
     dst = Path(dst)
     dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.parent / f"{dst.stem}.tmp.{os.getpid()}{dst.suffix}"
+    local_tmp = local_staging_temp_path(suffix=dst.suffix or ".mp4", prefix=f"mn_lipsync_{dst.stem}_")
     vf = (
         f"scale={LIPSYNC_INPUT_WIDTH}:{LIPSYNC_INPUT_HEIGHT}:force_original_aspect_ratio=decrease,"
         f"pad={LIPSYNC_INPUT_WIDTH}:{LIPSYNC_INPUT_HEIGHT}:(ow-iw)/2:(oh-ih)/2,"
@@ -461,15 +469,14 @@ def encode_lipsync_input(src: Path, dst: Path) -> Path:
         "-bufsize", LIPSYNC_INPUT_BUFSIZE,
         "-an",
         "-movflags", "+faststart",
-        str(tmp),
+        str(local_tmp),
     ]
     try:
         subprocess.run(cmd, check=True, capture_output=True, timeout=300)
-        os.replace(tmp, dst)
+        commit_local_file_to_dest(local_tmp, dst)
+        local_tmp = None
         return dst
     finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+        if local_tmp is not None and local_tmp.exists():
+            with contextlib.suppress(OSError):
+                local_tmp.unlink()

@@ -469,7 +469,6 @@ def restore_last_good_o3_delivery_after_failed_attempt(
         "o3_active_intent_job_id",
     ):
         beat.pop(key, None)
-    bg.refresh_o3_ui_slot_layout(beat)
     return True
 
 
@@ -487,8 +486,8 @@ _ACTIVE_PIPELINE_LOG_PHASES = frozenset({
 _TERMINAL_PIPELINE_LOG_PHASES = frozenset({"done", "failed", "error"})
 
 
-def job_id_from_beat(beat: dict | None) -> str:
-    """UI poll id or ``{job_id}_`` prefix from ``kling_o3_voice_fix_job_log_path``."""
+def job_id_from_beat_legacy_reconcile(beat: dict | None) -> str:
+    """Admin/startup only — UI id or log-path regex. Not session/poll lifecycle authority."""
     if not beat:
         return ""
     ui = str(beat.get("kling_o3_voice_fix_ui_job_id") or "").strip()
@@ -497,6 +496,11 @@ def job_id_from_beat(beat: dict | None) -> str:
     log_path = str(beat.get("kling_o3_voice_fix_job_log_path") or "")
     match = _JOB_ID_FROM_LOG_RE.search(log_path)
     return match.group(1) if match else ""
+
+
+def job_id_from_beat(beat: dict | None) -> str:
+    """Deprecated alias — prefer ``resolve_o3_job_id_for_lifecycle`` or legacy reconcile."""
+    return job_id_from_beat_legacy_reconcile(beat)
 
 
 def _pid_is_running(pid_value) -> bool:
