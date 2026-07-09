@@ -86,10 +86,11 @@ def test_playback_event_dir_for_milestone_library_clip(tmp_path: Path) -> None:
     assert resolved.name == "Event_1"
 
 
-def test_session_get_wires_terminal_reconcile() -> None:
+def test_session_get_read_only_outcomes_empty_on_get() -> None:
     src = (Path(__file__).resolve().parent.parent / "server_handlers" / "background.py").read_text(
         encoding="utf-8",
     )
     block = src.split("def handle_bg_session_state", 1)[1].split("\ndef ", 1)[0]
-    assert "_compose_o3_session_terminal_view" in block or "_apply_o3_session_terminal_reconcile" in block
+    assert "_compose_o3_session_terminal_view" not in block
     assert "o3_terminal_outcomes" in block
+    assert "def _run_o3_terminal_reconcile_at_startup" in src

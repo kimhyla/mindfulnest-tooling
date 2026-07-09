@@ -119,7 +119,9 @@ def test_session_state_read_only_no_legacy_terminal_heal_on_get():
     src = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
     block = src.split("def handle_bg_session_state", 1)[1].split("\ndef ", 1)[0]
     assert "reconcile_o3_terminal_attempt_fields_all_events" not in block
-    assert "_apply_o3_session_terminal_reconcile" in block
+    assert "_compose_o3_session_terminal_view(" not in block
+    full = src
+    assert "def _run_o3_terminal_reconcile_at_startup" in full
 
 
 def test_ts_poll_map_stale_when_sidecar_has_error():

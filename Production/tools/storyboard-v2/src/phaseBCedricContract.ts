@@ -1,6 +1,14 @@
 /** Phase B Cedric base clip — mirrors phase_b_cedric_contract.py */
 export const PHASE_B_CEDRIC_BASE_CLIP_CANONICAL = 'cedric_idle_newstyle_v6';
 
+/** Approved ~29s bookend unit — auto-looped to stem length at lipsync send. */
+export const PHASE_B_CEDRIC_LOOP_UNIT_CLIP_ID = 'cedric_idle_bookend_unit_v1';
+
+export const PHASE_B_CEDRIC_LOOP_UNIT_FALLBACK_IDS = [
+  'cedric_idle_test_2x15_bookend_v2_notrim',
+  'cedric_idle_newstyle_v13_200s_7xloop',
+] as const;
+
 const DEPRECATED_PREFIXES = [
   'cedric_idle_camera_',
   'cedric_idle_study_',

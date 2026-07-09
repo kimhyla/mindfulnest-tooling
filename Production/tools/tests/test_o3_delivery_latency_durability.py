@@ -118,6 +118,18 @@ def test_migrate_sidecar_heal_trim_optional(monkeypatch):
     assert calls == []
 
 
+def test_delivery_encode_stages_ffmpeg_output_locally():
+    """L1 — O3 delivery encode must not write growing tmp files on Dropbox."""
+    text = VIDEO_DELIVERY.read_text(encoding="utf-8")
+    delivery_block = text.split("def encode_delivery_video", 1)[1].split("\ndef ", 1)[0]
+    lipsync_block = text.split("def encode_lipsync_input", 1)[1].split("\ndef ", 1)[0]
+    for block in (delivery_block, lipsync_block):
+        assert "local_staging_temp_path" in block
+        assert "commit_local_file_to_dest" in block
+        assert ".tmp." not in block or "dst.stem}.tmp" not in block
+    assert "from lib.ffmpeg_io import" in text
+
+
 def test_delivery_encode_uses_medium_preset():
     text = VIDEO_DELIVERY.read_text(encoding="utf-8")
     block = text.split("def _run_single_delivery_encode", 1)[1].split("\ndef ", 1)[0]

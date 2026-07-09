@@ -105,7 +105,7 @@ ELEVENLABS_VOICE_ROSTER: dict[str, dict[str, Any]] = {
         "stability": 0.20,
         "similarity_boost": 0.80,
         "style": 0.40,
-        "speed": 0.95,
+        "speed": 1.0,
         "model": "eleven_v3",
     },
     "Oliver": {

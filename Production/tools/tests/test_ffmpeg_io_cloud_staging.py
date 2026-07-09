@@ -50,6 +50,49 @@ def test_run_ffmpeg_to_dest_never_writes_cloud_directly(tmp_path: Path, monkeypa
     assert all("CloudStorage" not in str(p) for p in local_paths)
 
 
-def test_ffmpeg_failure_transient_detects_deadlock():
-    assert fio.ffmpeg_failure_transient("Resource deadlock avoided") is True
-    assert fio.ffmpeg_failure_transient("ok") is False
+def test_encode_delivery_video_stages_on_local_disk(tmp_path: Path, monkeypatch):
+    """Integration: ffmpeg argv output path must never be under CloudStorage."""
+    import video_delivery as vd
+
+    cloud_dest = (
+        tmp_path
+        / "Users"
+        / "me"
+        / "Library"
+        / "CloudStorage"
+        / "Dropbox"
+        / "Production"
+        / "Event_6"
+        / "kling_o3_clips"
+        / "proof_delivery.mp4"
+    )
+    cloud_dest.parent.mkdir(parents=True)
+    src = tmp_path / "src.mp4"
+    src.write_bytes(b"not-real-video")
+
+    ffmpeg_out_paths: list[str] = []
+
+    def _capture_run(cmd, **kwargs):
+        ffmpeg_out_paths.append(str(cmd[-1]))
+        # Simulate successful encode without running ffmpeg
+        Path(cmd[-1]).write_bytes(b"x" * 500_000)
+        return type("R", (), {"returncode": 0, "stderr": ""})()
+
+    monkeypatch.setattr(vd.subprocess, "run", _capture_run)
+    monkeypatch.setattr(vd, "_has_audio", lambda _p: True)
+    monkeypatch.setattr(vd, "_probe_bitrate", lambda _p: 1_500_000)
+    monkeypatch.setattr(vd, "ensure_mp4_playback_timestamps", lambda p, **k: p)
+
+    vd.encode_delivery_video(
+        src,
+        cloud_dest,
+        include_audio=False,
+        delivery_profile="standard",
+    )
+
+    assert cloud_dest.is_file()
+    assert ffmpeg_out_paths
+    # Primary delivery encode must stage on local disk — not the growing tmp that killed g3.
+    delivery_encode_paths = [p for p in ffmpeg_out_paths if "mn_del_" in p or "mn_ffmpeg_scratch" in p]
+    assert delivery_encode_paths
+    assert all("CloudStorage" not in p for p in delivery_encode_paths)

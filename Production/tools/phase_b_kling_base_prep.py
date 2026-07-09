@@ -1,9 +1,8 @@
-"""Phase B Kling lipsync base prep — crossfade-loop short idle bases before submit.
+"""Phase B Kling lipsync base prep — auto-size video to match audio stem.
 
-PHASE_B_KLING_CROSSFADE_LOOP_V1: Kling's internal loop of a ~10s Cedric idle base
-produces visible background rippling after the first cycle. Phase A already
-crossfade-loops before ByteDance/Kling; Phase B must do the same, then re-encode
-to stay under WaveSpeed's ~22MB raw data-URI ceiling.
+Uses the approved Cedric bookend loop unit (~29s) when the selected base is
+shorter than the stem. Never loops arbitrary short Kling idles (pleat source).
+Long pre-built bases are trimmed only.
 """
 from __future__ import annotations
 
@@ -14,7 +13,29 @@ from phase_a_av_post import crossfade_loop_video
 from production_server import _ffprobe_duration
 
 WAVESPEED_RAW_MB_CEILING = 22.0
-_PREP_CODE = "PHASE_B_KLING_CROSSFADE_LOOP_V1"
+_PREP_CODE = "PHASE_B_KLING_AUTO_BOOKEND_UNIT_V1"
+
+
+class PhaseBLoopUnitMissingError(FileNotFoundError):
+    """Bookend loop unit not found under lipsync_bases."""
+
+
+def resolve_phase_b_loop_unit(bases_dir: Path) -> Path:
+    """Return the approved ~29s bookend unit used for auto extension."""
+    from phase_b_cedric_contract import (  # noqa: WPS433
+        PHASE_B_CEDRIC_LOOP_UNIT_CLIP_ID,
+        PHASE_B_CEDRIC_LOOP_UNIT_FALLBACK_IDS,
+    )
+
+    bases_dir = bases_dir.expanduser().resolve()
+    for clip_id in (PHASE_B_CEDRIC_LOOP_UNIT_CLIP_ID, *PHASE_B_CEDRIC_LOOP_UNIT_FALLBACK_IDS):
+        candidate = bases_dir / f"{clip_id}.mp4"
+        if candidate.is_file():
+            return candidate
+    raise PhaseBLoopUnitMissingError(
+        f"Phase B bookend loop unit not found under {bases_dir}. "
+        f"Expected {PHASE_B_CEDRIC_LOOP_UNIT_CLIP_ID}.mp4"
+    )
 
 
 def kling_submit_video_bitrate_bps(duration_s: float, *, mb_ceiling: float = WAVESPEED_RAW_MB_CEILING) -> int:
@@ -45,64 +66,83 @@ def _reencode_for_kling_submit(src: Path, dst: Path, *, video_bitrate_bps: int) 
     return dst
 
 
+def _trim_to_duration(src: Path, dst: Path, duration_s: float) -> Path:
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        [
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+            "-i", str(src),
+            "-t", f"{duration_s:.3f}",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "18",
+            "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart",
+            str(dst),
+        ],
+        check=True,
+        capture_output=True,
+        timeout=300,
+    )
+    return dst
+
+
+def _fit_submit_size(src: Path, work_path: Path, *, duration_s: float) -> tuple[Path, dict]:
+    """Return a path under 22MB for Kling upload, re-encoding if needed."""
+    size_mb = src.stat().st_size / 1024 / 1024
+    if size_mb <= WAVESPEED_RAW_MB_CEILING:
+        return src, {"submit_size_mb": round(size_mb, 2)}
+    out = work_path.with_name(f"{work_path.stem}_reenc{work_path.suffix}")
+    bps = kling_submit_video_bitrate_bps(duration_s)
+    _reencode_for_kling_submit(src, out, video_bitrate_bps=bps)
+    return out, {
+        "submit_size_mb": round(out.stat().st_size / 1024 / 1024, 2),
+        "video_bitrate_bps": bps,
+    }
+
+
 def prep_phase_b_kling_base_video(
     base_path: Path,
     target_video_s: float,
     work_path: Path,
+    *,
+    bases_dir: Path | None = None,
 ) -> tuple[Path, dict]:
-    """Crossfade-loop (when needed) and size-cap encode for Kling Sync submit."""
+    """Build Kling submit video exactly sized to ``target_video_s`` (stem + tailroom)."""
     base_path = base_path.expanduser().resolve()
     work_path = work_path.expanduser().resolve()
     work_path.parent.mkdir(parents=True, exist_ok=True)
+    target = float(target_video_s)
+    bases_dir = (bases_dir or base_path.parent).expanduser().resolve()
 
-    raw_dur = _ffprobe_duration(base_path)
-    raw_size_mb = base_path.stat().st_size / 1024 / 1024
+    base_dur = _ffprobe_duration(base_path)
     meta: dict = {
         "code": _PREP_CODE,
-        "base_duration_s": round(raw_dur, 3),
-        "target_video_s": round(float(target_video_s), 3),
-        "raw_size_mb": round(raw_size_mb, 2),
+        "base_clip": base_path.name,
+        "base_duration_s": round(base_dur, 3),
+        "target_video_s": round(target, 3),
     }
 
-    looped = work_path.with_name(f"{work_path.stem}_xfade{work_path.suffix}")
-    if raw_dur + 0.05 >= float(target_video_s):
-        if raw_size_mb <= WAVESPEED_RAW_MB_CEILING:
-            meta["strategy"] = "send_raw_trimmed_base"
-            return base_path, meta
-        out = work_path.with_name(f"{work_path.stem}_reenc{work_path.suffix}")
-        bps = kling_submit_video_bitrate_bps(raw_dur)
-        _reencode_for_kling_submit(base_path, out, video_bitrate_bps=bps)
+    if base_dur + 0.05 >= target:
+        trimmed = work_path.with_name(f"{work_path.stem}_trim{work_path.suffix}")
+        _trim_to_duration(base_path, trimmed, target)
+        submit, size_meta = _fit_submit_size(trimmed, work_path, duration_s=target)
         meta.update({
-            "strategy": "reencode_short_base",
-            "submit_path": out.name,
-            "video_bitrate_bps": bps,
-            "submit_size_mb": round(out.stat().st_size / 1024 / 1024, 2),
+            "strategy": "trim_long_base",
+            "submit_path": submit.name,
+            **size_meta,
         })
-        return out, meta
+        return submit, meta
 
-    crossfade_loop_video(base_path, looped, float(target_video_s))
-    looped_mb = looped.stat().st_size / 1024 / 1024
+    unit = resolve_phase_b_loop_unit(bases_dir)
+    unit_dur = _ffprobe_duration(unit)
+    looped = work_path.with_name(f"{work_path.stem}_from_unit{work_path.suffix}")
+    crossfade_loop_video(unit, looped, target, xfade_s=0.7)
     looped_dur = _ffprobe_duration(looped)
-    meta["looped_size_mb"] = round(looped_mb, 2)
-    meta["looped_duration_s"] = round(looped_dur, 3)
-
-    if looped_mb <= WAVESPEED_RAW_MB_CEILING:
-        meta["strategy"] = "crossfade_loop_send"
-        meta["submit_path"] = looped.name
-        return looped, meta
-
-    bps = kling_submit_video_bitrate_bps(looped_dur)
-    _reencode_for_kling_submit(looped, work_path, video_bitrate_bps=bps)
-    submit_mb = work_path.stat().st_size / 1024 / 1024
-    if submit_mb > WAVESPEED_RAW_MB_CEILING:
-        raise RuntimeError(
-            f"crossfade-looped base still {submit_mb:.1f}MB > "
-            f"{WAVESPEED_RAW_MB_CEILING}MB after {bps:,} bps re-encode"
-        )
+    submit, size_meta = _fit_submit_size(looped, work_path, duration_s=looped_dur)
     meta.update({
-        "strategy": "crossfade_loop_reencode",
-        "submit_path": work_path.name,
-        "video_bitrate_bps": bps,
-        "submit_size_mb": round(submit_mb, 2),
+        "strategy": "auto_loop_bookend_unit",
+        "loop_unit": unit.name,
+        "loop_unit_duration_s": round(unit_dur, 3),
+        "looped_duration_s": round(looped_dur, 3),
+        "submit_path": submit.name,
+        **size_meta,
     })
-    return work_path, meta
+    return submit, meta
