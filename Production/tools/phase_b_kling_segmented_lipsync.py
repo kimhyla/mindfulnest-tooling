@@ -33,7 +33,10 @@ from phase_b_kling_pause_aligned_segments import (  # noqa: E402
     PHASE_B_KLING_PAUSE_ALIGNED_V2,
     chunk_audio_pause_aligned,
 )
-from phase_b_segmented_timeline_assemble import assemble_segmented_timeline  # noqa: E402
+from phase_b_segmented_timeline_assemble import (  # noqa: E402
+    PHASE_B_KLING_TIMELINE_GAP_XFADE_S,
+    assemble_segmented_timeline,
+)
 from phase_module_lipsync_delivery import (  # noqa: E402
     PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
     finalize_phase_module_lipsync_delivery,
@@ -275,6 +278,7 @@ def resume_phase_b_kling_segmented_lipsync(
         audio,
         out_path,
         apply_delivery=False,
+        gap_xfade_s=PHASE_B_KLING_TIMELINE_GAP_XFADE_S,
     )
     return segment_paths, new_jobs
 

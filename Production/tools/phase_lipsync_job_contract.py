@@ -27,7 +27,8 @@ PHASE_LIPSYNC_TERMINAL_FAILURE_PREFIX = "error:"
 PHASE_LIPSYNC_QA_FAILED = "qa_failed"
 
 # Module Phase B: single Kling job when stem ≤ this; legacy_28s segmented above.
-LIPSYNC_SINGLE_PASS_MAX_S = 180.0
+# Padded stems gain ~3s tail pad — 185 keeps 178s raw stems on single-pass Kling.
+LIPSYNC_SINGLE_PASS_MAX_S = 185.0
 
 # Statuses that require a vendor task_id before UI shows in-flight (Kling path).
 _PHASE_LIPSYNC_TASK_BOUND = frozenset({"polling", "submitting", "submitted"})

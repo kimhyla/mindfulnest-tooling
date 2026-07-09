@@ -20,12 +20,15 @@ if str(_CRED) not in sys.path:
     sys.path.insert(0, str(_CRED))
 
 from phase_a_chipper_bytedance_lipsync import ffprobe_duration  # noqa: E402
-from phase_a_chipper_bytedance_lipsync import ffprobe_duration  # noqa: E402
 from phase_module_lipsync_delivery import finalize_phase_module_lipsync_delivery  # noqa: E402
 
 PHASE_B_SEGMENTED_TIMELINE_ASSEMBLE_V1 = "PHASE_B_SEGMENTED_TIMELINE_ASSEMBLE_V1"
 PHASE_B_SEGMENTED_TIMELINE_GAP_XFADE_V2 = "PHASE_B_SEGMENTED_TIMELINE_GAP_XFADE_V2"
+# Avatar gap polish only — Kling must use 0 or xfade eats the first ~0.9s of each
+# chunk's lip-sync while full stem audio still plays those syllables (desync after
+# every meditation gap, e.g. Event 5 ~53s).
 GAP_XFADE_S = 0.9
+PHASE_B_KLING_TIMELINE_GAP_XFADE_S = 0.0
 MIN_GAP_S = 0.05
 
 
@@ -311,8 +314,6 @@ def assemble_segmented_timeline(
         if used_xfade:
             gap_xfade_used.append(_gap_xfade_s(gap_s, trim_dur[nidx], gap_xfade_s))
             skip_next_chunk = True
-        else:
-            pieces.append(TimelinePiece(f"gap_{idx}", hold, gap_s))
 
     tail_s = audio_dur - float(chunks[-1]["end_s"])
     overlap_pad = sum(gap_xfade_used)
