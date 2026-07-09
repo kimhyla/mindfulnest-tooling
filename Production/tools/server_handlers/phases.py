@@ -3156,8 +3156,9 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     Module-level lipsync (no beat). Loads base clip from
     Production/assets/lipsync_bases/<base_clip_id> (auto .mp4 / .mov),
     mixed audio from state phase_{phase}_mixed_audio_file (fallback to
-    voice_stem). Applies silcomp, loops or trims base clip to audio
-    duration, submits to Kling Sync via LipSyncClient.submit_and_wait
+    voice_stem). prep_phase_b_kling_base_video auto-sizes idle to stem+2s:
+    trim long bases, or loop approved bookend unit (~29s) when shorter.
+    Submits to Kling Sync via LipSyncClient.submit_and_wait
     (synchronous). Route: wavespeed.ai/kwaivgi/kling-lipsync.
 
     Writes phase_{phase}_lipsync_<TS>.mp4 and patches state.

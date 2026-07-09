@@ -151,7 +151,10 @@ def _run_kling_segment(
     target_video_s = spec.duration_s + VIDEO_TAILROOM_S
     prep_work = work / f"seg_{spec.index}_kling_prep.mp4"
     video_for_kling, prep_meta = prep_phase_b_kling_base_video(
-        base_video, target_video_s, prep_work,
+        base_video,
+        target_video_s,
+        prep_work,
+        bases_dir=base_video.parent,
     )
     raw_out = work / f"seg_{spec.index}_kling_raw.mp4"
     print(
