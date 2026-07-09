@@ -10475,28 +10475,11 @@ def align_beat_reference_to_element(beat: dict) -> bool:
 
 
 def element_char_ref_gate(beat: dict) -> tuple[bool, str]:
-    """Element O3 requires @Image1 to match registered Element pose files."""
-    speaker = str(beat.get("speaker") or "").strip()
-    if not speaker:
-        return True, ""
-    try:
-        from tools import kling_character_registry as reg
+    """Element O3 char ref — ELEMENT_CHAR_REF_SUBMIT_PARITY_V1 (shared with session GET)."""
+    from operator_workbench_contract import resolve_beat_element_char_ref_gate
 
-        if not reg.is_speaker_voice_ready(speaker):
-            return True, ""
-        char_path = resolve_beat_char_ref_path(beat)
-        if not char_path:
-            return False, f"Missing character reference image for {speaker!r}"
-        aligned, detail = reg.char_ref_matches_element_images(
-            char_path,
-            speaker,
-            allow_pose_dir_fallback=not bool(beat.get("reference_image_locked")),
-        )
-        if not aligned:
-            return False, detail
-        return True, ""
-    except Exception as exc:
-        return False, str(exc)
+    ok, err = resolve_beat_element_char_ref_gate(beat)
+    return ok, err or ""
 
 
 def beat_o3_voice_job_running(beat: dict) -> bool:

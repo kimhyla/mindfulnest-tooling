@@ -151,52 +151,39 @@ def test_session_get_does_not_overwrite_kling_prompt(tmp_path: Path):
     assert derived["display_prompt"] == "stored prompt"
 
 
-def test_element_char_ref_gate_trusts_persisted_disk_when_pose_dir_strict_fails(
+def test_element_char_ref_gate_blocks_stale_sidecar_ok_when_submit_authority_fails(
     tmp_path: Path,
     monkeypatch,
 ):
-    """Event 2 beats 1/3: library char ref + disk ok must not block Generate."""
-    char = tmp_path / "library_char.png"
-    char.write_bytes(b"library-bytes")
+    """SUBMIT_PARITY_V1: persisted element_char_ref_ok must not override strict submit gate."""
+    char = tmp_path / "stale_megaphone.png"
+    char.write_bytes(b"wrong-bytes")
     beat = {
-        "beat_id": "bg_arc1_event2_post_beat_01",
-        "speaker": "Lorelai",
-        "reference_image": {"abs_path": str(char), "key": "library_char"},
+        "beat_id": "bg_arc1_event6_pre_beat_02",
+        "speaker": "Bork",
+        "reference_image": {"abs_path": str(char)},
+        "reference_image_locked": True,
         "element_char_ref_ok": True,
     }
     sidecar = {"arcs": {}}
 
-    def _strict_fail(_path, _speaker, allow_pose_dir_fallback=False):
-        return False, "strict pose-dir mismatch"
-
     monkeypatch.setattr(bg, "resolve_beat_char_ref_path", lambda _b: str(char))
-    monkeypatch.setattr(
-        "tools.kling_character_registry.char_ref_matches_element_images",
-        _strict_fail,
-    )
     monkeypatch.setattr(
         "tools.kling_character_registry.is_speaker_voice_ready",
         lambda _s: True,
     )
     monkeypatch.setattr(
-        "tools.kling_character_registry.get_character_entry",
-        lambda _s: {"refer_images": []},
-    )
-    monkeypatch.setattr(
-        "tools.kling_character_registry.refer_images_contain_path_or_hash",
-        lambda *_a, **_k: False,
-    )
-    monkeypatch.setattr(
-        "tools.kling_character_registry.find_pose_rel_by_hash",
-        lambda *_a, **_k: None,
+        "tools.kling_character_registry.char_ref_aligned_for_intent_commit",
+        lambda *_a, **_k: (False, "@Image1 bytes do not match canonical Element identity"),
     )
 
     ok, err = owc.resolve_beat_element_char_ref_gate(beat)
-    assert ok is True
-    assert err is None
+    assert ok is False
+    assert "canonical Element identity" in (err or "")
 
-    derived = owc.enrich_beat_operator_derived(beat, sidecar, event_id="2", phase="post")
-    assert derived["element_char_ref_ok"] is True
+    derived = owc.enrich_beat_operator_derived(beat, sidecar, event_id="Event_6", phase="pre")
+    assert derived["element_char_ref_ok"] is False
+    assert derived["can_generate"] is False
 
 
 def test_element_char_ref_gate_blocks_when_disk_false_and_no_match(

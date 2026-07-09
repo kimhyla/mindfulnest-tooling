@@ -218,7 +218,7 @@ def materialize_char_ref_abs_path(beat: dict, body_abs_path: str = "") -> str:
 
 
 def resolve_beat_element_char_ref_gate(beat: dict) -> tuple[bool, str | None]:
-    """Read-only char-ref gate — submit + registry authority, never stricter than persisted disk."""
+    """Read-only char-ref gate — ELEMENT_CHAR_REF_SUBMIT_PARITY_V1 (same as O3 intent commit)."""
     if bg._beat_pipeline_operator_busy(beat):
         return True, None
     speaker = str(beat.get("speaker") or "").strip()
@@ -232,33 +232,15 @@ def resolve_beat_element_char_ref_gate(beat: dict) -> tuple[bool, str | None]:
     char_path = bg.resolve_beat_char_ref_path(beat)
     if not char_path:
         return False, f"Missing character reference image for {speaker!r}"
-    detail = "Char ref does not match Element images"
     try:
         from tools import kling_character_registry as reg
 
-        aligned, detail = reg.char_ref_matches_element_images(
-            char_path,
-            speaker,
-            allow_pose_dir_fallback=True,
-        )
+        aligned, detail = reg.char_ref_aligned_for_intent_commit(char_path, speaker)
         if aligned:
             return True, None
-        entry = reg.get_character_entry(speaker) or {}
-        refer = [str(r) for r in (entry.get("refer_images") or [])]
-        if reg.refer_images_contain_path_or_hash(
-            refer,
-            char_path,
-            frontal_rel=entry.get("element_image"),
-        ):
-            return True, None
-        char_key = reg.resolve_registry_key(speaker) or speaker
-        if reg.find_pose_rel_by_hash(char_key, char_path):
-            return True, None
+        return False, detail or "Char ref does not match Element submit authority"
     except Exception as exc:
         return False, str(exc)
-    if beat.get("element_char_ref_ok") is True:
-        return True, None
-    return False, detail
 
 
 def resolve_beat_generation_gate(beat: dict, sidecar: dict) -> dict[str, Any]:
@@ -366,6 +348,11 @@ def enrich_beats_for_session_response(
             approved_roots=approved_roots,
         )
         row["generation_mode"] = row["_derived"]["generation_mode"]
+        derived = row["_derived"]
+        if derived.get("element_char_ref_ok") is not None:
+            row["element_char_ref_ok"] = derived["element_char_ref_ok"]
+        if derived.get("element_char_ref_error"):
+            row["element_char_ref_error"] = derived["element_char_ref_error"]
         # Recompute mismatch/active-clip pipeline on read — stale sidecar flags
         # must not survive pipeline toggle + delivery import (session GET is read-only).
         bg.sync_o3_selection_pipeline_fields(row, sidecar)
