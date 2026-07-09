@@ -8,6 +8,13 @@ from __future__ import annotations
 
 PHASE_B_CEDRIC_BASE_CLIP_CANONICAL = "cedric_idle_newstyle_v6"
 
+# Approved ~29s bookend unit (2×15s no-trim). Auto-looped to stem length at lipsync send.
+PHASE_B_CEDRIC_LOOP_UNIT_CLIP_ID = "cedric_idle_bookend_unit_v1"
+PHASE_B_CEDRIC_LOOP_UNIT_FALLBACK_IDS = (
+    "cedric_idle_test_2x15_bookend_v2_notrim",
+    "cedric_idle_newstyle_v13_200s_7xloop",
+)
+
 # Avatar Pro route uses canonical still — not idle base loop (see phase_b_avatar_lipsync.py).
 PHASE_B_LIPSYNC_METHOD_AVATAR = "kling_avatar_pro_v1"
 

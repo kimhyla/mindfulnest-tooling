@@ -3405,28 +3405,49 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     tmp_audio_path = h.app.event_dir / f"_tmp_silcomp_phase_{phase}_{ts}.mp3"
     tmp_video_path = h.app.state.clips_dir / f"_tmp_trim_phase_{phase}_{ts}.mp4"
     try:
-        raw_dur = _ffprobe_duration(base_path)
         target_video_s = audio_duration + _VIDEO_TAILROOM_S
-        raw_size_mb = base_path.stat().st_size / 1024 / 1024
-        from phase_b_kling_base_prep import prep_phase_b_kling_base_video  # noqa: PLC0415
+        prep_work = h.app.state.clips_dir / f"_tmp_kling_prep_phase_{phase}_{ts}.mp4"
+        from phase_b_kling_base_prep import (  # noqa: PLC0415
+            PhaseBLoopUnitMissingError,
+            prep_phase_b_kling_base_video,
+        )
 
-        if raw_dur < target_video_s:
-            prep_work = h.app.state.clips_dir / f"_tmp_kling_prep_phase_{phase}_{ts}.mp4"
+        try:
             video_for_lipsync, prep_meta = prep_phase_b_kling_base_video(
-                base_path, target_video_s, prep_work,
+                base_path,
+                target_video_s,
+                prep_work,
+                bases_dir=h._phase_assets_dir("lipsync_bases"),
             )
-            print(
-                f"[phase_b_lipsync] {prep_meta.get('code')} strategy="
-                f"{prep_meta.get('strategy')} base={raw_dur:.2f}s target={target_video_s:.2f}s "
-                f"submit={video_for_lipsync.name} ({prep_meta.get('submit_size_mb') or raw_size_mb:.1f}MB)",
-                flush=True,
+        except PhaseBLoopUnitMissingError as exc:
+            return h._send_error_v59(
+                404,
+                error_code="LOOP_UNIT_MISSING",
+                error_message=str(exc),
+                retry_safe=False,
+                extra={
+                    "hint": (
+                        "Register cedric_idle_bookend_unit_v1.mp4 under "
+                        "Production/assets/lipsync_bases/."
+                    ),
+                },
             )
-        else:
-            # Base clip is longer than audio — trim to avoid sending excess data.
-            video_for_lipsync, _, _, _ = _trim_video_to_audio(
-                base_path, tmp_video_path, audio_duration,
-                trim_start=0.0, trim_end=None,
-            )
+        print(
+            f"[phase_b_lipsync] {prep_meta.get('code')} strategy="
+            f"{prep_meta.get('strategy')} target={target_video_s:.2f}s "
+            f"submit={video_for_lipsync.name} ({prep_meta.get('submit_size_mb')}MB)",
+            flush=True,
+        )
+
+        def _apply_prep(st, _meta=prep_meta, _p=phase):
+            st[f"phase_{_p}_lipsync_base_prep"] = _meta
+            st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+            return st["_module_version"]
+
+        try:
+            h.app.state.mutate_state(_apply_prep)
+        except Exception:  # noqa: BLE001
+            pass  # non-fatal audit trail
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
             OSError, ValueError) as exc:
         traceback.print_exc()
