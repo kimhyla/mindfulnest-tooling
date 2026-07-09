@@ -4383,6 +4383,7 @@ function BeatGenCard({
           onClick={async () => {
             const saved = await promptField.flushSave();
             if (!saved) {
+              onAbortGenerateSubmit?.();
               if (beatSaveBlockedRef.current.has(beat.beat_id)) {
                 if (!beatSaveNotFoundToastRef.current.has(beat.beat_id)) {
                   beatSaveNotFoundToastRef.current.add(beat.beat_id);
