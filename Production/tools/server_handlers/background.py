@@ -6838,8 +6838,22 @@ def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = No
         print(f"[bg_o3_job] clear metadata failed for {job_id}: {exc}", flush=True)
 
 
+def _bg_o3_trim_audit_log_path(event_label: str) -> Path:
+    """Local APFS audit JSONL — never append to Dropbox Event_* (File Provider stall class)."""
+    root = Path(
+        os.environ.get("MN_STATE_ROOT", "").strip()
+        or (Path.home() / ".mindfulnest" / "state")
+    )
+    label = str(event_label or "unknown").strip() or "unknown"
+    # Keep only Event_N-safe dirname chars (no Dropbox path segments).
+    safe = "".join(c if (c.isalnum() or c in ("_", "-", ".")) else "_" for c in label)
+    d = root / "logs" / safe
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "_bg_o3_trim_audit.jsonl"
+
+
 def _bg_o3_trim_audit(h, audit_event: str, *, beat_id: str | None = None, **fields: object) -> None:
-    """Read-only Beat Gen O3 trim audit — stdout + event-dir JSONL (no sidecar writes)."""
+    """Read-only Beat Gen O3 trim audit — stdout + local state JSONL (no Dropbox I/O)."""
     row: dict[str, object] = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "event": audit_event,
@@ -6852,10 +6866,8 @@ def _bg_o3_trim_audit(h, audit_event: str, *, beat_id: str | None = None, **fiel
     line = json.dumps(row, default=str)
     print(f"[bg_o3_trim_audit] {line}", flush=True)
     try:
-        event_dir = Path(h.app.event_dir)
-        if not event_dir.is_absolute():
-            event_dir = _data_root(h) / event_dir
-        log_path = event_dir / "_bg_o3_trim_audit.jsonl"
+        event_label = Path(str(getattr(h.app, "event_dir", "") or "")).name or "unknown"
+        log_path = _bg_o3_trim_audit_log_path(event_label)
         with open(log_path, "a", encoding="utf-8") as audit_f:
             audit_f.write(line + "\n")
     except OSError:
@@ -6888,10 +6900,16 @@ def _bg_o3_trim_slot_context(
         ctx["slot_video"] = Path(slot_vp).name if slot_vp else None
         ctx["req_video"] = Path(req_vp).name if req_vp else None
         if req_vp and slot_vp:
-            ctx["path_match"] = slot_vp == req_vp
-            if slot_vp != req_vp:
+            paths_align = (
+                slot_vp == req_vp
+                or bg._o3_option_paths_same_clip_family(slot_vp, req_vp)
+            )
+            ctx["path_match"] = paths_align
+            if not paths_align:
                 direct = bg.find_o3_option_by_video_path(beat, req_vp)
                 ctx["direct_lookup"] = "ok" if direct else "missing"
+            else:
+                ctx["direct_lookup"] = "ok"
         registered = [
             Path(str(o.get("video_path") or "")).name
             for o in (beat.get("kling_o3_options") or [])
@@ -6963,25 +6981,29 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         cut_start_s=raw_cut_start,
         cut_end_s=raw_cut_end,
     )
-    try:
-        sidecar_snap = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=2)
-        sidecar_snap = bg._migrate_sidecar(sidecar_snap)
-        _, beat_snap = bg.find_beat(sidecar_snap, beat_id)
-        slot_ctx = _bg_o3_trim_slot_context(
-            bg,
-            beat_snap,
-            slot_index=slot_index,
-            req_video_path=req_video_path,
-        )
-        if slot_ctx:
-            _bg_o3_trim_audit(h, "SLOT_CONTEXT", beat_id=str(beat_id), **slot_ctx)
-    except Exception as exc:
-        _bg_o3_trim_audit(
-            h,
-            "SLOT_CONTEXT_SKIP",
-            beat_id=str(beat_id),
-            reason=str(exc),
-        )
+    # Apply-path forensic only. Preview folds SLOT_CONTEXT into its single light
+    # sidecar read — a second heavy _migrate_sidecar was the REQUEST→SLOT_CONTEXT
+    # multi-minute class (Dropbox busy checks inside heavy heal).
+    if not preview_only:
+        try:
+            sidecar_snap = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=2)
+            sidecar_snap = bg._migrate_sidecar(sidecar_snap, heavy_heal=False)
+            _, beat_snap = bg.find_beat(sidecar_snap, beat_id)
+            slot_ctx = _bg_o3_trim_slot_context(
+                bg,
+                beat_snap,
+                slot_index=slot_index,
+                req_video_path=req_video_path,
+            )
+            if slot_ctx:
+                _bg_o3_trim_audit(h, "SLOT_CONTEXT", beat_id=str(beat_id), **slot_ctx)
+        except Exception as exc:
+            _bg_o3_trim_audit(
+                h,
+                "SLOT_CONTEXT_SKIP",
+                beat_id=str(beat_id),
+                reason=str(exc),
+            )
 
     def _files_url_for_disk_path(abs_path: Path, event_dir: Path) -> str | None:
         if not abs_path.is_file():
@@ -7020,19 +7042,37 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         return _files_url_for_disk_path(Path(baked), event_dir)
 
     def _trim_preview_url(work_beat: dict) -> str | None:
-        vp = work_beat.get("kling_o3_video_path") or ""
-        if not vp or not Path(vp).is_file():
-            return None
         event_dir = Path(h.app.event_dir)
         if not event_dir.is_absolute():
             event_dir = _data_root(h) / event_dir
         dest = bg.kling_o3_ui_trim_preview_path(beat_id, event_dir, work_beat)
         # Token embeds trim/cut window — reuse scratch (no re-ffmpeg / Dropbox storm).
+        # Scratch may exist even when Dropbox master is not locally present yet.
         try:
             if dest.is_file() and dest.stat().st_size > 1024:
                 return _files_url_for_disk_path(dest, event_dir)
         except OSError:
             pass
+        # Basename vs absolute path changes clip-hash token — reuse by window.
+        if not bg.beat_has_o3_sidecar_cut(work_beat):
+            warm = bg.find_kling_o3_ui_trim_preview_by_window(
+                str(beat_id),
+                event_dir,
+                trim_start=float(work_beat.get("kling_o3_trim_start") or 0.0),
+                trim_back=work_beat.get("kling_o3_trim_back"),
+            )
+            if warm is not None:
+                _bg_o3_trim_audit(
+                    h,
+                    "SCRATCH_WINDOW_REUSE",
+                    beat_id=str(beat_id),
+                    preview_only=True,
+                    scratch=warm.name,
+                )
+                return _files_url_for_disk_path(warm, event_dir)
+        vp = work_beat.get("kling_o3_video_path") or ""
+        if not vp or not Path(vp).is_file():
+            return None
         # Serialize preview encodes — session refresh must not fan out N concurrent
         # Dropbox→ffmpeg jobs (HOT_SERVE_BAKE_V1 / TRIM_PREVIEW_SERIAL_V1).
         with _TRIM_PREVIEW_MATERIALIZE_LOCK:
@@ -7041,6 +7081,15 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     return _files_url_for_disk_path(dest, event_dir)
             except OSError:
                 pass
+            if not bg.beat_has_o3_sidecar_cut(work_beat):
+                warm = bg.find_kling_o3_ui_trim_preview_by_window(
+                    str(beat_id),
+                    event_dir,
+                    trim_start=float(work_beat.get("kling_o3_trim_start") or 0.0),
+                    trim_back=work_beat.get("kling_o3_trim_back"),
+                )
+                if warm is not None:
+                    return _files_url_for_disk_path(warm, event_dir)
             try:
                 if bg.beat_has_o3_sidecar_cut(work_beat):
                     bg.materialize_o3_cut_out_clip(
@@ -7248,10 +7297,11 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
             bg.mirror_beat_trim_from_option(work_beat, opt_for_preview)
         return None
 
-    # Preview path: snapshot read + ffmpeg only — must not wait on sidecar write lock.
+    # Preview path: one light sidecar read + ffmpeg only — must not wait on write
+    # lock and must not run heavy heal (Dropbox operator-busy probes).
     if preview_only:
         sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=5)
-        sidecar = bg._migrate_sidecar(sidecar)
+        sidecar = bg._migrate_sidecar(sidecar, heavy_heal=False)
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
             return h._send_error_v59(
@@ -7259,6 +7309,22 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 error_code="BEAT_NOT_FOUND",
                 error_message=f"beat {beat_id} not found",
                 retry_safe=False,
+            )
+        try:
+            slot_ctx = _bg_o3_trim_slot_context(
+                bg,
+                beat,
+                slot_index=slot_index,
+                req_video_path=req_video_path,
+            )
+            if slot_ctx:
+                _bg_o3_trim_audit(h, "SLOT_CONTEXT", beat_id=str(beat_id), **slot_ctx)
+        except Exception as exc:
+            _bg_o3_trim_audit(
+                h,
+                "SLOT_CONTEXT_SKIP",
+                beat_id=str(beat_id),
+                reason=str(exc),
             )
         work_beat = copy.deepcopy(beat)
         if use_cut:
@@ -7371,7 +7437,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         with production_bg_scope_lock():
             rebind_bg_paths_from_app(h.app)
             sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=10)
-        sidecar = bg._migrate_sidecar(sidecar)
+        sidecar = bg._migrate_sidecar(sidecar, heavy_heal=False)
         _, beat = bg.find_beat(sidecar, beat_id)
         if not beat:
             return h._send_error_v59(

@@ -6626,11 +6626,17 @@ def clear_o3_cut_fields(target: dict) -> None:
 
 
 def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
+    """Match an O3 option by absolute path, resolved path, or basename/clip family.
+
+    UI trim previews often send ``Path.name`` while sidecar stores the Dropbox
+    absolute path — exact/resolve alone misses; stem-family closes that class.
+    """
     vp = str(video_path or "").strip()
     if not vp:
         return None
     resolved_vp = _resolve_o3_video_path_for_match(vp)
     exact: dict | None = None
+    family_match: dict | None = None
     untrimmed_match: dict | None = None
     for opt in beat.get("kling_o3_options") or []:
         if not isinstance(opt, dict):
@@ -6641,13 +6647,16 @@ def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
         if op == vp or _resolve_o3_video_path_for_match(op) == resolved_vp:
             exact = opt
             break
+        if family_match is None and _o3_option_paths_same_clip_family(op, vp):
+            family_match = opt
         untrimmed = str(opt.get("o3_untrimmed_video_path") or "").strip()
-        if untrimmed and (
+        if untrimmed and untrimmed_match is None and (
             untrimmed == vp
             or _resolve_o3_video_path_for_match(untrimmed) == resolved_vp
+            or _o3_option_paths_same_clip_family(untrimmed, vp)
         ):
             untrimmed_match = opt
-    return exact or untrimmed_match
+    return exact or family_match or untrimmed_match
 
 
 def _o3_trim_stem(path: str) -> str:
@@ -7684,6 +7693,42 @@ def kling_o3_ui_trim_preview_path(
     gen = int(beat.get("kling_o3_generation") or 0)
     token = kling_o3_trim_scratch_token(beat, video_path=beat.get("kling_o3_video_path"))
     return scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4"
+
+
+def find_kling_o3_ui_trim_preview_by_window(
+    beat_id: str,
+    event_dir: str | Path,
+    *,
+    trim_start: float,
+    trim_back: float | None,
+) -> Path | None:
+    """Reuse any existing UI preview for this beat + trim window (ignore clip hash).
+
+    Token embeds sha1(video_path); basename vs absolute requests would otherwise
+    miss a warm scratch and re-ffmpeg under Dropbox contention.
+    """
+    scratch = kling_o3_trim_scratch_dir(event_dir)
+    bid = str(beat_id or "").strip()
+    if not bid or not scratch.is_dir():
+        return None
+    start = round(float(trim_start or 0.0), 2)
+    back_val = (
+        round(float(trim_back), 2)
+        if trim_back is not None and float(trim_back) > 0
+        else 0.0
+    )
+    pattern = f"{bid}_*_s{start}_b{back_val}_ui_preview.mp4"
+    hits: list[Path] = []
+    for path in scratch.glob(pattern):
+        try:
+            if path.is_file() and path.stat().st_size > 1024:
+                hits.append(path)
+        except OSError:
+            continue
+    if not hits:
+        return None
+    hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return hits[0]
 
 
 def invalidate_kling_o3_trim_scratch(beat_id: str, event_dir: str | Path) -> None:
