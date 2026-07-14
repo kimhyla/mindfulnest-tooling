@@ -6699,6 +6699,31 @@ def _resolve_o3_video_path_for_match(video_path: str) -> str:
         return vp
 
 
+def resolve_o3_option_disk_video_path(
+    opt: dict,
+    video_path: str | None = None,
+) -> str:
+    """Pick an on-disk clip path for trim/cut.
+
+    UI often sends ``Path.name`` while the option row stores the absolute Dropbox
+    path. ``video_path or opt["video_path"]`` wrongly preferred the basename and
+    failed ``isfile`` — always prefer the first existing candidate.
+    """
+    candidates = (
+        str(video_path or "").strip(),
+        str((opt or {}).get("video_path") or "").strip(),
+        str((opt or {}).get("o3_untrimmed_video_path") or "").strip(),
+    )
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            return cand
+    req = candidates[0]
+    stored = candidates[1]
+    if req and stored and _o3_option_paths_same_clip_family(req, stored):
+        return stored
+    return req or stored
+
+
 def is_user_selectable_o3_video(
     video_path: str | None,
     source: str | None = None,
@@ -6914,7 +6939,7 @@ def set_o3_option_cut(
     )
     if opt is None:
         raise ValueError(f"No O3 option in slot {slot_index}")
-    vp = str(video_path or opt.get("video_path") or "").strip()
+    vp = resolve_o3_option_disk_video_path(opt, video_path)
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before cutting")
     raw_dur = _ffprobe_duration(Path(vp))
@@ -7342,7 +7367,7 @@ def set_o3_option_trim(
     )
     if opt is None:
         raise ValueError(f"No O3 option in slot {slot_index}")
-    vp = str(video_path or opt.get("video_path") or "").strip()
+    vp = resolve_o3_option_disk_video_path(opt, video_path)
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before trimming")
     duration_path = _o3_trim_authority_path(beat, opt, vp)

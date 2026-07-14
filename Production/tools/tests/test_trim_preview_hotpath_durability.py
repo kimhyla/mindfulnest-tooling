@@ -95,3 +95,39 @@ def test_audit_log_path_under_state_root(tmp_path: Path, monkeypatch: pytest.Mon
     assert path.parent.is_dir()
     assert "CloudStorage" not in str(path)
     assert "Dropbox" not in str(path)
+
+
+def test_resolve_option_disk_path_prefers_absolute_over_basename(tmp_path: Path) -> None:
+    master = tmp_path / "clips" / "bg_arc1_event6_pre_beat_19_g1_element_o3_master_delivery.mp4"
+    master.parent.mkdir(parents=True)
+    master.write_bytes(b"\x00\x00\x00\x20ftypmp42" + b"x" * 200)
+    opt = {"video_path": str(master), "slot_index": 0}
+    resolved = bg.resolve_o3_option_disk_video_path(opt, master.name)
+    assert resolved == str(master)
+    assert Path(resolved).is_file()
+
+
+def test_set_o3_option_trim_accepts_basename_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    master = tmp_path / "clips" / "bg_arc1_event6_pre_beat_19_g1_element_o3_master_delivery.mp4"
+    master.parent.mkdir(parents=True)
+    master.write_bytes(b"\x00\x00\x00\x20ftypmp42" + b"x" * 200)
+    monkeypatch.setattr(bg, "_ffprobe_duration", lambda _p: 5.065)
+    beat = {
+        "beat_id": "bg_arc1_event6_pre_beat_19",
+        "kling_o3_video_path": str(master),
+        "kling_o3_options": [
+            {"slot_index": 0, "video_path": str(master), "generation": 1},
+        ],
+    }
+    out = bg.set_o3_option_trim(
+        beat,
+        slot_index=0,
+        trim_start=2.24,
+        trim_back=0.42,
+        video_path=master.name,
+    )
+    assert out["trim_start"] == 2.24
+    assert out["video_path"] == str(master)
+    assert out["effective_duration_s"] == pytest.approx(2.405, abs=0.01)
