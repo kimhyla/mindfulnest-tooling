@@ -8197,14 +8197,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        retry_safe=False,
                    )
         file_path = resolved
-        # 2. Containment — under Dropbox root OR checkout root (CI / Playwright cwd).
+        # 2. Containment — Dropbox / checkout / local media hot root (APFS).
         try:
+            from lib.path_serve_security import is_realpath_under_any_root
+
             drop_root = os.path.realpath(str(DROPBOX_ROOT))
             repo_root = os.path.realpath(str(_MN_REPO_ROOT))
+            roots = [drop_root, repo_root]
+            try:
+                from media_hot_root import media_hot_serve_roots
+
+                roots.extend(media_hot_serve_roots())
+            except Exception:
+                pass
             real_path = os.path.realpath(file_path)
-            under_drop = real_path == drop_root or real_path.startswith(drop_root + os.sep)
-            under_repo = real_path == repo_root or real_path.startswith(repo_root + os.sep)
-            if not (under_drop or under_repo):
+            if not is_realpath_under_any_root(real_path, roots):
                 return self._send_error_v59(
                            403,
                            error_code="PATH_OUTSIDE_PROJECT_ROOT",

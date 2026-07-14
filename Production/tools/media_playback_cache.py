@@ -1,7 +1,9 @@
 """Media Playback Cache (MPP) — local bytes for storyboard operator playback.
 
-PLAYBACK_CACHE_V1: Beat Gen + Stitcher serve warmed copies under Event_N/.playback_cache/
-with cache-friendly HTTP (not live Dropbox range reads per play).
+PLAYBACK_CACHE_V1: Beat Gen + Stitcher serve warmed copies under a local hot
+workspace (.playback_cache), not live Dropbox File Provider range reads.
+Cloud-backed Event dirs → ~/.mindfulnest/media/<Event_N>/.playback_cache
+(see media_hot_root.py). Local/tmp event dirs stay in-tree for pytest.
 """
 from __future__ import annotations
 
@@ -11,6 +13,7 @@ import re
 from pathlib import Path
 
 import beat_generator as bg
+from media_hot_root import playback_cache_dir_for_event
 
 PLAYBACK_CACHE_VERSION = "PLAYBACK_CACHE_V1"
 _LRU_KEEP = 50
@@ -18,9 +21,7 @@ _TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def playback_cache_dir(event_dir: Path) -> Path:
-    d = Path(event_dir) / ".playback_cache"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return playback_cache_dir_for_event(event_dir)
 
 
 def playback_cache_token(source_path: Path) -> str:

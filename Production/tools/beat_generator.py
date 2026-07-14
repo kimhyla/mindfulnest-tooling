@@ -7196,8 +7196,7 @@ def bake_o3_active_export_clip(
             clear_o3_baked_fields(opt)
         return {"baked": False, "baked_path": str(src.resolve())}
 
-    scratch_dir = event_dir / "assembled" / "_kling_o3_trim_scratch"
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    scratch_dir = kling_o3_trim_scratch_dir(event_dir)
     token = o3_baked_export_token(beat, video_path=src)
     dest = scratch_dir / f"{beat.get('beat_id')}_{token}.mp4"
     if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
@@ -7634,13 +7633,20 @@ def kling_o3_trim_scratch_token(beat: dict, *, video_path: str | None = None) ->
     return f"{clip_id}_s{start}_b{back_val}"
 
 
+def kling_o3_trim_scratch_dir(event_dir: str | Path) -> Path:
+    """Hot scratch dir for trim/cut preview + bake (local APFS when event is on Dropbox)."""
+    from media_hot_root import kling_o3_trim_scratch_dir as _hot_scratch  # noqa: PLC0415
+
+    return _hot_scratch(event_dir)
+
+
 def kling_o3_ui_trim_preview_path(
     beat_id: str,
     event_dir: str | Path,
     beat: dict,
 ) -> Path:
     """Scratch path for ffmpeg WYSIWYG trim/cut preview — unique per gen + window."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     if beat_has_o3_sidecar_cut(beat):
         token = kling_o3_cut_scratch_token(beat)
         return scratch / f"{beat_id}_{token}_ui_preview.mp4"
@@ -7651,7 +7657,7 @@ def kling_o3_ui_trim_preview_path(
 
 def invalidate_kling_o3_trim_scratch(beat_id: str, event_dir: str | Path) -> None:
     """Remove stale trim preview/export scratch files when trim clears or clip changes."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     if not scratch.is_dir():
         return
     bid = str(beat_id or "").strip()
@@ -7709,7 +7715,7 @@ def _trim_window_scratch_paths(
     video_path: str | None = None,
 ) -> set[Path]:
     """Preview/export scratch paths for one front/back trim window."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     gen = int(beat.get("kling_o3_generation") or 0)
     token = kling_o3_trim_scratch_token(
         {
@@ -7740,7 +7746,7 @@ def _kling_o3_trim_scratch_keep_paths(
     beat: dict,
 ) -> set[Path]:
     """Preview/export scratch paths for beat-level trim and every trimmed gallery option."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     keep: set[Path] = set()
     if beat_has_o3_sidecar_cut(beat):
         token = kling_o3_cut_scratch_token(beat)
@@ -7774,7 +7780,7 @@ def prune_stale_kling_o3_trim_scratch(
     beat: dict,
 ) -> int:
     """Drop legacy fixed-name and wrong-token trim scratch files for one beat."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     if not scratch.is_dir():
         return 0
     bid = str(beat_id or "").strip()
@@ -7837,7 +7843,7 @@ def reconcile_kling_o3_trim_all_events(sidecar: dict, prod_root: str | Path | No
         elif heal_invalid_kling_o3_trim(beat):
             changed += 1
         has_trim = beat_has_kling_o3_sidecar_trim(beat)
-        scratch = event_dir / "assembled" / "_kling_o3_trim_scratch"
+        scratch = kling_o3_trim_scratch_dir(event_dir)
         if not scratch.is_dir():
             continue
         has_stale = any(
@@ -8166,7 +8172,7 @@ def resolve_magic_video_source_path(
             return requested.resolve()
         except OSError:
             return requested
-    scratch = scratch_dir or (Path(event_dir) / "assembled" / "_kling_o3_trim_scratch")
+    scratch = scratch_dir or kling_o3_trim_scratch_dir(event_dir)
     return _kling_o3_export_clip_path(beat, event_dir, scratch)
 
 
@@ -14030,13 +14036,13 @@ def magic_still_tts_scratch_path(
 ) -> Path:
     """On-disk path for silent magic_still + TTS mix used at stitch export."""
     if scratch_dir is None:
-        scratch_dir = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+        scratch_dir = kling_o3_trim_scratch_dir(event_dir)
     return Path(scratch_dir) / f"{beat_id}_magic_still_tts_{MAGIC_STILL_TTS_EXPORT_RECIPE}.mp4"
 
 
 def invalidate_magic_still_tts_scratch(beat_id: str, event_dir: str | Path) -> None:
     """Drop cached TTS mix after magic_still redo so stitch export picks up the new clip."""
-    scratch_dir = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch_dir = kling_o3_trim_scratch_dir(event_dir)
     for name in (
         f"{beat_id}_magic_still_tts_{MAGIC_STILL_TTS_EXPORT_RECIPE}.mp4",
         f"{beat_id}_magic_still_tts.mp4",
@@ -14911,8 +14917,7 @@ def resolve_segment_stitch_export_clip_paths(
     event_dir = Path(event_dir)
     out_dir = event_dir / "assembled"
     out_dir.mkdir(parents=True, exist_ok=True)
-    scratch_dir = out_dir / "_kling_o3_trim_scratch"
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    scratch_dir = kling_o3_trim_scratch_dir(event_dir)
 
     canonical_tail: Path | None = None
     phase_l = str(phase or "").lower()
