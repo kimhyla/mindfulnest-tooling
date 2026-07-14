@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import time
 from pathlib import Path
 
 import beat_generator as bg
@@ -81,7 +82,20 @@ def ensure_hot_serve_file(
         if event_dir is not None
         else event_dir_from_media_path(src_resolved)
     )
-    return materialize_playback_cache(ed, src_resolved)
+    # File Provider often returns EDEADLK on concurrent master reads — retry
+    # before giving up so /files never falls back to streaming Dropbox bytes.
+    last_err: OSError | None = None
+    for attempt in range(12):
+        try:
+            return materialize_playback_cache(ed, src_resolved)
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in (11, 35) or attempt >= 11:
+                raise
+            time.sleep(min(4.0, 0.15 * (2 ** attempt)))
+    if last_err:
+        raise last_err
+    raise RuntimeError(f"hot-serve materialize failed: {src_resolved}")
 
 
 def playback_cache_token(source_path: Path) -> str:

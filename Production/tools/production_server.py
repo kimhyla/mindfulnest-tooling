@@ -11899,25 +11899,40 @@ body {{padding-top:44px!important;}}
 
     def _ensure_local_mp4_for_serve(self, path: Path) -> Path:
         """Remap Dropbox File Provider MP4s onto local APFS playback cache before range serve."""
-        try:
-            from media_playback_cache import ensure_hot_serve_file
+        from media_playback_cache import ensure_hot_serve_file
+        from lib.ffmpeg_io import path_is_cloud_storage_backed
 
-            local = ensure_hot_serve_file(path, event_dir=Path(self.app.event_dir))
-            if local != Path(path):
-                print(
-                    f"[hot-serve] cloud→local {Path(path).name} → {local}",
-                    flush=True,
-                )
-            return Path(local)
-        except Exception as exc:
-            print(f"[hot-serve] materialize failed for {path}: {exc}", flush=True)
-            return Path(path)
+        local = ensure_hot_serve_file(path, event_dir=Path(self.app.event_dir))
+        local_p = Path(local)
+        if local_p != Path(path):
+            print(
+                f"[hot-serve] cloud→local {Path(path).name} → {local_p}",
+                flush=True,
+            )
+        # Never stream cloud File Provider bytes — refresh retry if rematerialize failed.
+        if path_is_cloud_storage_backed(local_p):
+            raise OSError(
+                11,
+                f"hot-serve refused cloud path after materialize: {local_p}",
+            )
+        return local_p
 
     def _serve_mp4_with_range(self, path: Path, *, cache_immutable: bool = False) -> None:
         """Serve an MP4 file with Accept-Ranges support for browser <video> scrubbing."""
         from lib.http_response_safety import safe_etag_from_basename
 
-        path = self._ensure_local_mp4_for_serve(Path(path))
+        try:
+            path = self._ensure_local_mp4_for_serve(Path(path))
+        except OSError as exc:
+            print(f"[hot-serve] materialize failed for {path}: {exc}", flush=True)
+            return self._send_error_v59(
+                503,
+                error_code="HOT_SERVE_MATERIALIZE_FAILED",
+                error_message=(
+                    "Dropbox File Provider busy — local playback cache not ready; retry"
+                ),
+                retry_safe=True,
+            )
         file_size = path.stat().st_size
         range_header = self.headers.get("Range", "")
         ctype = "video/mp4"
