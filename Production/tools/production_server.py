@@ -11897,10 +11897,27 @@ body {{padding-top:44px!important;}}
 
         self._serve_mp4_with_range(Path(abs_path))
 
+    def _ensure_local_mp4_for_serve(self, path: Path) -> Path:
+        """Remap Dropbox File Provider MP4s onto local APFS playback cache before range serve."""
+        try:
+            from media_playback_cache import ensure_hot_serve_file
+
+            local = ensure_hot_serve_file(path, event_dir=Path(self.app.event_dir))
+            if local != Path(path):
+                print(
+                    f"[hot-serve] cloud→local {Path(path).name} → {local}",
+                    flush=True,
+                )
+            return Path(local)
+        except Exception as exc:
+            print(f"[hot-serve] materialize failed for {path}: {exc}", flush=True)
+            return Path(path)
+
     def _serve_mp4_with_range(self, path: Path, *, cache_immutable: bool = False) -> None:
         """Serve an MP4 file with Accept-Ranges support for browser <video> scrubbing."""
         from lib.http_response_safety import safe_etag_from_basename
 
+        path = self._ensure_local_mp4_for_serve(Path(path))
         file_size = path.stat().st_size
         range_header = self.headers.get("Range", "")
         ctype = "video/mp4"

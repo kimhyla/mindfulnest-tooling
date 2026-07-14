@@ -2,7 +2,9 @@
 
 Cloud-backed Event_* dirs keep durable masters on Dropbox, but hot operator paths
 (.playback_cache, trim/cut scratch) redirect to ~/.mindfulnest/media/<Event_N>
-(or MN_MEDIA_HOT_ROOT) so concurrent reads/writes do not hit File Provider EDEADLK.
+(or MN_MEDIA_HOT_ROOT). MP4/MOV /files serves also materialize through the
+playback cache (see media_playback_cache.ensure_hot_serve_file) so browser
+range reads never hit File Provider EDEADLK.
 """
 from __future__ import annotations
 
