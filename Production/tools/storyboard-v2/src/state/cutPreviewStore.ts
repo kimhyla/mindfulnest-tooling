@@ -18,6 +18,18 @@ function previewKey(
 
 const previewByKey = new Map<string, string>();
 
+/** TRIM_PREVIEW_SERIAL_V1 — queue auto-preview encodes (no session-load storm). */
+let autoPreviewTail: Promise<unknown> = Promise.resolve();
+
+export function enqueueAutoCutPreview<T>(fn: () => Promise<T>): Promise<T> {
+  const run = autoPreviewTail.then(fn, fn);
+  autoPreviewTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 export function rememberCutPreviewUrl(
   beatId: string,
   slotIndex: number,
@@ -50,4 +62,5 @@ export function forgetCutPreviewsForBeat(beatId: string): void {
 
 export function _resetCutPreviewStoreForTesting(): void {
   previewByKey.clear();
+  autoPreviewTail = Promise.resolve();
 }

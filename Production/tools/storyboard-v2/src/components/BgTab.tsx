@@ -52,6 +52,7 @@ import {
 } from '../utils/o3TrimApplyContract';
 import {
   forgetCutPreviewsForBeat,
+  enqueueAutoCutPreview,
   recallCutPreviewUrl,
   rememberCutPreviewUrl,
 } from '../state/cutPreviewStore';
@@ -5376,13 +5377,14 @@ function BgOptionTile({
   };
 
   // Saved trim/cut on disk — auto-load materialized preview when tile is selected.
+  // TRIM_PREVIEW_SERIAL_V1: enqueue so session remounts cannot fan out N concurrent encodes.
   useEffect(() => {
     if (!selected || !hasSavedCut || previewUrl || cutDraftDirty || cutBusy || pendingCut) return;
     if (!option.video_path || overlayTimelineDurationS <= 0) return;
     const trimBack = trimBackS > 0.009 ? trimBackS : cutPreviewTrimBackS();
     const sig = `${option.video_path}|${savedKeepStartS.toFixed(2)}|${trimBack.toFixed(2)}`;
     if (lastAutoPreviewRef.current === sig) return;
-    void refreshSavedCutPreview(savedKeepStartS, trimBack);
+    void enqueueAutoCutPreview(() => refreshSavedCutPreview(savedKeepStartS, trimBack));
   }, [
     selected,
     hasSavedCut,

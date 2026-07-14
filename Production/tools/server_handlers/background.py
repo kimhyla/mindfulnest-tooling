@@ -36,6 +36,9 @@ from datetime import datetime, timezone, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+# TRIM_PREVIEW_SERIAL_V1 — at most one preview-only ffmpeg materialize at a time.
+_TRIM_PREVIEW_MATERIALIZE_LOCK = threading.Lock()
+
 # V59 Phase 4 cross-review fix (body_key_contract CI failure):
 # missing module-level variable references that need re-import.
 from tools.production_server import (  # noqa: E402
@@ -7024,16 +7027,35 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
         if not event_dir.is_absolute():
             event_dir = _data_root(h) / event_dir
         dest = bg.kling_o3_ui_trim_preview_path(beat_id, event_dir, work_beat)
+        # Token embeds trim/cut window — reuse scratch (no re-ffmpeg / Dropbox storm).
         try:
-            if bg.beat_has_o3_sidecar_cut(work_beat):
-                bg.materialize_o3_cut_out_clip(work_beat, dest, source_path=Path(vp))
-            elif bg.kling_o3_trim_is_active(work_beat):
-                bg.materialize_kling_o3_trimmed_clip(work_beat, dest, source_path=Path(vp))
-            else:
-                bg.copy_file_durable(vp, dest)
-        except Exception as exc:
-            print(f"[bg_o3_trim] preview materialize failed for {beat_id}: {exc}", flush=True)
-            return None
+            if dest.is_file() and dest.stat().st_size > 1024:
+                return _files_url_for_disk_path(dest, event_dir)
+        except OSError:
+            pass
+        # Serialize preview encodes — session refresh must not fan out N concurrent
+        # Dropbox→ffmpeg jobs (HOT_SERVE_BAKE_V1 / TRIM_PREVIEW_SERIAL_V1).
+        with _TRIM_PREVIEW_MATERIALIZE_LOCK:
+            try:
+                if dest.is_file() and dest.stat().st_size > 1024:
+                    return _files_url_for_disk_path(dest, event_dir)
+            except OSError:
+                pass
+            try:
+                if bg.beat_has_o3_sidecar_cut(work_beat):
+                    bg.materialize_o3_cut_out_clip(
+                        work_beat, dest, source_path=Path(vp), event_dir=event_dir,
+                    )
+                elif bg.kling_o3_trim_is_active(work_beat):
+                    bg.materialize_kling_o3_trimmed_clip(
+                        work_beat, dest, source_path=Path(vp), event_dir=event_dir,
+                    )
+                else:
+                    local_src = bg.ensure_local_media(vp, event_dir=event_dir)
+                    bg.copy_file_durable(local_src, dest)
+            except Exception as exc:
+                print(f"[bg_o3_trim] preview materialize failed for {beat_id}: {exc}", flush=True)
+                return None
         if not dest.is_file():
             return None
         return _files_url_for_disk_path(dest, event_dir)

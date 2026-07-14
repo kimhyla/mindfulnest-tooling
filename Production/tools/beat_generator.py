@@ -24,8 +24,6 @@ from lib.ffmpeg_io import (
     run_ffmpeg_to_dest,
     sidecar_io_transient,
 )
-from lib.event_media_cache import ensure_local_media
-
 import base64
 import concurrent.futures
 import contextlib
@@ -7550,6 +7548,36 @@ def heal_invalid_o3_cut_all_options(beat: dict) -> bool:
     return changed
 
 
+def ensure_local_media(
+    path: str | Path,
+    *,
+    event_id: str = "",
+    event_dir: str | Path | None = None,
+) -> Path:
+    """Local APFS path for ffmpeg ``-i`` — same hot-serve cache as ``/files``.
+
+    HOT_SERVE_BAKE_V1: replaces the older ``~/.cache/mindfulnest/events`` mirror so
+    trim/cut bake and browser playback share one Dropbox→APFS materialize path.
+    """
+    from media_playback_cache import ensure_hot_serve_file, event_dir_from_media_path
+
+    src = Path(path)
+    if event_dir is not None:
+        ed = Path(event_dir)
+    else:
+        try:
+            ed = event_dir_from_media_path(src)
+        except ValueError:
+            name = str(event_id or "").strip() or "Event_unknown"
+            if not name.startswith("Event_") and not name.startswith("event_"):
+                name = f"Event_{name}" if name.isdigit() else name
+            from media_hot_root import default_media_hot_root
+
+            ed = default_media_hot_root() / name
+            ed.mkdir(parents=True, exist_ok=True)
+    return ensure_hot_serve_file(src, event_dir=ed)
+
+
 def materialize_o3_cut_out_clip(
     beat: dict,
     dest: Path,
@@ -7562,13 +7590,16 @@ def materialize_o3_cut_out_clip(
     if not src.is_file():
         raise FileNotFoundError(f"missing clip: {src}")
     cut_start, cut_end, raw_dur = resolve_o3_cut_window(beat, video_path=src)
+    ed = Path(event_dir) if event_dir is not None else None
     if not o3_cut_is_active(beat, raw_dur=raw_dur, video_path=src):
-        copy_file_durable(src, dest)
+        local_src = ensure_local_media(src, event_dir=ed)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        copy_file_durable(local_src, dest)
         return dest
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     event_id = _event_id_from_event_dir(event_dir or src.parent.parent)
-    local_src = ensure_local_media(src, event_id=event_id)
+    local_src = ensure_local_media(src, event_id=event_id, event_dir=ed)
 
     if cut_start <= 0.001:
         cmd = [
@@ -8060,14 +8091,17 @@ def materialize_kling_o3_trimmed_clip(
     if not src.is_file():
         raise FileNotFoundError(f"missing clip: {src}")
     trim_start, trim_end, raw_dur = resolve_kling_o3_trim_window(beat, video_path=src)
+    ed = Path(event_dir) if event_dir is not None else None
     if not kling_o3_trim_is_active(beat, raw_dur=raw_dur):
-        copy_file_durable(src, dest)
+        local_src = ensure_local_media(src, event_dir=ed)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        copy_file_durable(local_src, dest)
         return dest
 
     duration = trim_end - trim_start
     dest.parent.mkdir(parents=True, exist_ok=True)
     event_id = _event_id_from_event_dir(event_dir or src.parent.parent)
-    local_src = ensure_local_media(src, event_id=event_id)
+    local_src = ensure_local_media(src, event_id=event_id, event_dir=ed)
     # KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1 — output-side seek keeps A/V aligned for lipsync.
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
