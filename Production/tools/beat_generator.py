@@ -122,6 +122,31 @@ def _assert_milestone_sidecar_write_path() -> None:
         )
 
 
+def _sidecar_scope_pin() -> tuple[bool, str]:
+    """SIDECAR_SCOPE_PIN_V1 — identity of the sidecar target a transaction reads from."""
+    return (_MILESTONE_SIDECAR_JSON_ONLY, os.path.abspath(BG_SIDECAR_PATH or ""))
+
+
+def _assert_sidecar_scope_unchanged(pin: tuple[bool, str], *, caller: str) -> None:
+    """SIDECAR_SCOPE_PIN_V1 — abort RMW write when scope switched mid-transaction.
+
+    Proven corruption (2026-07-17, Event_2 :5112): a session-state migrate held
+    the sidecar lock ~155s under Event_2 SQLite scope; /api/milestones/load
+    rebound BG_SIDECAR_PATH to Milestones/milestone1_arc1 mid-transaction, and
+    the transaction's final write dumped the Event_2 assembly (30 beats) into
+    the milestone sidecar. Milestone isolation then stripped the alien event
+    segments, leaving 0 beats — recurring milestone data loss. Failing loud
+    drops one mutation; writing through corrupts a whole partition.
+    """
+    now = _sidecar_scope_pin()
+    if now != pin:
+        raise RuntimeError(
+            f"SIDECAR_SCOPE_PIN_V1: Beat Gen scope changed mid-transaction in {caller} "
+            f"(read target={pin[1]}, write target={now[1]}) — write aborted to prevent "
+            "cross-scope sidecar pollution; retry re-reads fresh state"
+        )
+
+
 def _maybe_isolate_milestone_sidecar(sidecar: dict) -> None:
     if not _MILESTONE_SIDECAR_JSON_ONLY or not _MILESTONE_SKELETON_REF:
         return
@@ -1215,11 +1240,13 @@ def mutate_sidecar_locked(
         caller=caller,
     )
     with sidecar_file_lock(timeout_s=timeout_s):
+        scope_pin = _sidecar_scope_pin()
         sidecar = read_sidecar()
         if migrate:
             sidecar = _migrate_sidecar(sidecar)
         _maybe_isolate_milestone_sidecar(sidecar)
         mutator(sidecar)
+        _assert_sidecar_scope_unchanged(scope_pin, caller=caller)
         write_sidecar(sidecar)
         return sidecar
 
@@ -1270,6 +1297,7 @@ def delete_beat_locked(
                 ]
 
     with sidecar_file_lock():
+        scope_pin = _sidecar_scope_pin()
         sidecar = read_sidecar()
         if migrate:
             sidecar = _migrate_sidecar(sidecar)
@@ -1278,6 +1306,7 @@ def delete_beat_locked(
         _delete(sidecar)
         if _count_sidecar_beats(sidecar) >= before:
             return False
+        _assert_sidecar_scope_unchanged(scope_pin, caller=caller)
         write_sidecar(sidecar)
     return True
 
@@ -1337,6 +1366,7 @@ def update_beat_locked(
     for attempt in range(_SIDECAR_IO_MAX_ATTEMPTS):
         try:
             with sidecar_file_lock(timeout_s=lock_timeout_s):
+                scope_pin = _sidecar_scope_pin()
                 sidecar = read_sidecar()
                 _seg, beat = find_beat(sidecar, beat_id)
                 if not beat:
@@ -1344,6 +1374,7 @@ def update_beat_locked(
                 if expected_attempt_id is not None and beat.get("kling_o3_voice_fix_attempt_id") != expected_attempt_id:
                     return False, beat
                 mutator(beat, sidecar)
+                _assert_sidecar_scope_unchanged(scope_pin, caller=caller)
                 write_sidecar(sidecar)
                 return True, beat
         except OSError as exc:
