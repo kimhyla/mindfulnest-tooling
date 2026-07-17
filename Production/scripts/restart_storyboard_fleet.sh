@@ -20,7 +20,9 @@ restarted=0
 started=0
 
 port_listener_pid() {
-  lsof -ti "tcp:${1}" -s tcp:LISTEN 2>/dev/null | head -1
+  # `|| true`: lsof exits 1 when the port has no listener (normal mid cold
+  # boot) — must not kill the script under set -euo pipefail.
+  lsof -ti "tcp:${1}" -s tcp:LISTEN 2>/dev/null | head -1 || true
 }
 
 # FLEET_RESTART_NEW_PID_WAIT_V1 (2026-07-17): /api/server/restart acks and
@@ -80,7 +82,9 @@ for event_id in "${FLEET_EVENTS[@]}"; do
       healthy=0
       break
     fi
-    (( i < EVENT_SERVER_COLD_BOOT_ATTEMPTS )) && sleep "${EVENT_SERVER_WAIT_SLEEP_SECONDS}"
+    if (( i < EVENT_SERVER_COLD_BOOT_ATTEMPTS )); then
+      sleep "${EVENT_SERVER_WAIT_SLEEP_SECONDS}"
+    fi
   done
   if [[ "$healthy" -ne 0 ]]; then
     echo "[fleet-restart] FATAL: :${port} ${event_id} did not become healthy on a NEW pid (old=${old_pid})" >&2
