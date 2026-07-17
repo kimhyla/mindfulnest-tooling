@@ -83,6 +83,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_playback_url** — composer video when SFX exist | derived | `resolveSlotPlaybackPreviewUrl` | mux artifact bake | shipped | `TECH_SPEC_STITCH_SFX_PLAYBACK_TRUTH_V1.md` |
 | **stitch_single_owner** — who mutates slot video post-export | disk | `STITCH_SINGLE_OWNER_V1` load_job read-only | export path owns ingest | shipped | `TECH_SPEC_STITCH_SINGLE_OWNER_V1.md` |
 | **stitch_bake_slot_authority** — phase_b MP4 at module bake | disk | `validate_phase_b_stitch_slot_authority` | `stitch_upsert_event_slot` (export/pin/save only; bake never writes) | shipped | `TECH_SPEC_STITCH_BAKE_SLOT_AUTHORITY_V1.md` |
+| **phase_b_lipsync_route** — which pipeline generates the Phase B module lipsync MP4 | disk | `PHASE_B_PATH_A_ROUTE_V1` (handle_phase_b_lipsync) | `run_phase_b_path_a_lipsync` → `_write_phase_b_lipsync_complete` | shipped | `TECH_SPEC_PHASE_B_PATH_A_DEFAULT_ROUTE_v1.md` |
 
 ### Phase producer (Tier D — operator edit surfaces)
 

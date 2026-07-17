@@ -15,13 +15,16 @@ def test_kling_submit_bitrate_fits_22mb_for_two_minute_loop():
     assert implied_mb <= prep.WAVESPEED_RAW_MB_CEILING
 
 
-def test_phases_handler_uses_auto_base_prep():
+def test_phases_handler_routes_to_path_a():
+    # PHASE_B_PATH_A_ROUTE_V1: prep module no longer serves the handler —
+    # the Path A layered pipeline is the single default route.
     src = Path(__file__).resolve().parent.parent / "server_handlers" / "phases.py"
     block = src.read_text(encoding="utf-8").split("def handle_phase_b_lipsync", 1)[1]
-    block = block.split("\ndef _write_phase_b_lipsync_complete", 1)[0]
-    assert "prep_phase_b_kling_base_video" in block
-    assert "auto_loop_bookend_unit" not in block  # strategy lives in prep module
-    assert "LipSyncClient" in block
+    block = block.split("\ndef _finalize_phase_a_lipsync_delivery", 1)[0]
+    assert "run_phase_b_path_a_lipsync" in block
+    assert "PHASE_B_PATH_A_ROUTE_V1" in block
+    assert "prep_phase_b_kling_base_video" not in block
+    assert "auto_loop_bookend_unit" not in block
 
 
 def test_prep_module_exports_auto_unit_code():

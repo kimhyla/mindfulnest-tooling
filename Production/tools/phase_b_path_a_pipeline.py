@@ -40,7 +40,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import socket
 import subprocess
 import sys
 import tempfile
@@ -119,8 +118,12 @@ CHROMAKEY_BLUE = "chromakey=0x0000FF:0.28:0.06,despill=type=blue"
 IDLE_BODY_CROP = "800:700:560:190"
 COMPOSITE_BODY_CROP = "346:302:534:232"
 
-# LD-379-class ISP DNS poisoning: these hosts NXDOMAIN on the local resolver.
-DNS_PIN_HOSTS = ("filebin.net", "catbox.moe", "uguu.se", "api.wavespeed.ai")
+# Server route marker — grep-anchored by tests + authority registry.
+PHASE_B_PATH_A_ROUTE_V1 = "PHASE_B_PATH_A_ROUTE_V1"
+
+
+class PhaseBPathAQCError(RuntimeError):
+    """A QC gate (pupil scan / still-span scan) refused the build."""
 
 
 def run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
@@ -243,39 +246,17 @@ def cut_chunks(stem: Path, idle_track: Path, cuts: list[float], work: Path) -> i
 
 
 # =============================================================================
-# 3. Lipsync submission (parallel, DNS-pinned)
+# 3. Lipsync submission (parallel; DNS fallback lives in lipsync_sender)
 # =============================================================================
-
-def install_dns_pins(hosts: tuple[str, ...] = DNS_PIN_HOSTS) -> dict[str, str]:
-    """Resolve hosts via 1.1.1.1 and monkeypatch getaddrinfo (LD-379 class)."""
-    pins: dict[str, str] = {}
-    for h in hosts:
-        try:
-            out = subprocess.run(
-                ["dig", "+short", "@1.1.1.1", h],
-                capture_output=True, text=True, timeout=10,
-            ).stdout
-            ips = [ln for ln in out.strip().splitlines() if ln and ln[0].isdigit()]
-            if ips:
-                pins[h] = ips[0]
-        except Exception:
-            pass
-    orig = socket.getaddrinfo
-
-    def patched(host, *a, **k):
-        if host in pins:
-            return orig(pins[host], *a, **k)
-        return orig(host, *a, **k)
-
-    socket.getaddrinfo = patched
-    return pins
-
 
 def submit_lipsync_chunks(work: Path, n_chunks: int, api_key: str) -> dict[int, str]:
     """Submit chunk_i_video.mp4 + chunk_i_audio.mp3 in parallel; download results."""
     sys.path.insert(0, str(TOOLS_DIR))
     from lipsync_sender import LipSyncClient  # noqa: PLC0415
 
+    from lipsync_sender import install_public_dns_fallback  # noqa: PLC0415
+
+    install_public_dns_fallback()
     results: dict[int, str] = {}
 
     def worker(i: int) -> None:
@@ -432,6 +413,111 @@ def composite_on_plate(lipsync_track: Path, stem: Path, dest: Path) -> None:
 
 
 # =============================================================================
+# Server entry — PHASE_B_PATH_A_ROUTE_V1
+# =============================================================================
+
+def count_phase_b_path_a_chunks(stem: Path, max_chunk: float = MAX_CHUNK_SECONDS) -> int:
+    """Lipsync job count for the budget gate (cuts + 1)."""
+    return len(detect_chunk_boundaries(stem, max_chunk)) + 1
+
+
+def validate_path_a_assets() -> None:
+    """Hard-fail early when a canonical Path A asset is missing on disk."""
+    missing = [
+        str(p) for p in (
+            CEDRIC_CUTOUT_BLUE_PNG,
+            CEDRIC_ROOM_PLATE_PNG,
+            *(u.path for u in DEFAULT_ROTATION),
+        ) if not p.is_file()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            "Path A assets missing: " + ", ".join(missing)
+        )
+
+
+def run_phase_b_path_a_lipsync(
+    audio_path: Path,
+    out_path: Path,
+    *,
+    api_key: str,
+    work_dir: Path | None = None,
+) -> dict:
+    """Full Path A build: idle track → chunks → lipsync → QC → composite.
+
+    Builds LOCAL-FIRST (``work_dir`` defaults to a local mkdtemp — never point
+    it at Dropbox), verifies with both QC gates and a full decode, then copies
+    the composite to ``out_path``. Raises ``PhaseBPathAQCError`` when a QC
+    gate refuses the build; any exception leaves ``out_path`` untouched.
+
+    Returns a manifest dict (chunk_count, cuts, units, lipsync results).
+    """
+    audio_path = Path(audio_path)
+    out_path = Path(out_path)
+    validate_path_a_assets()
+
+    work = Path(work_dir) if work_dir else Path(tempfile.mkdtemp(prefix="phase_b_path_a_"))
+    work.mkdir(parents=True, exist_ok=True)
+    print(f"[path_a] work dir: {work}", flush=True)
+
+    total = ffprobe_duration(audio_path)
+    idle = work / "idle_track.mp4"
+    seq = build_idle_track(idle, total)
+    print(
+        f"[path_a] idle track: {len(seq)} units "
+        f"{'/'.join(u.name for u in seq)}",
+        flush=True,
+    )
+    stills = qc_still_scan(idle)
+    if stills:
+        raise PhaseBPathAQCError(f"idle still spans >=0.5s: {stills}")
+
+    cuts = detect_chunk_boundaries(audio_path)
+    n = cut_chunks(audio_path, idle, cuts, work)
+    print(f"[path_a] {n} chunks, cuts at {cuts}", flush=True)
+
+    results = submit_lipsync_chunks(work, n, api_key)
+    print(f"[path_a] lipsync results: {results}", flush=True)
+    failed = {i: v for i, v in results.items() if v != "ok"}
+    if failed or len(results) != n:
+        raise RuntimeError(f"lipsync chunk failures: {failed or 'missing results'}")
+
+    for i in range(n):
+        spans = qc_pupil_scan(work / f"chunk_{i}_lipsync.mp4")
+        if spans:
+            raise PhaseBPathAQCError(f"chunk {i} pupil (white-eye) spans: {spans}")
+    print("[path_a] pupil scan clean on all chunks", flush=True)
+
+    lipsync_track = work / "lipsync_full.mp4"
+    pad_concat_lipsync(work, n, lipsync_track)
+
+    local_out = work / "composite_local.mp4"
+    composite_on_plate(lipsync_track, audio_path, local_out)
+    comp_stills = qc_still_scan(local_out, crop=COMPOSITE_BODY_CROP)
+    if comp_stills:
+        raise PhaseBPathAQCError(f"composite still spans >=0.5s: {comp_stills}")
+    print("[path_a] composite QC: no still spans", flush=True)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(local_out, out_path)
+    print(
+        f"[path_a] delivered: {out_path} ({ffprobe_duration(out_path):.2f}s)",
+        flush=True,
+    )
+    manifest = {
+        "route": PHASE_B_PATH_A_ROUTE_V1,
+        "stem": str(audio_path),
+        "out": str(out_path),
+        "chunk_count": n,
+        "cuts": cuts,
+        "units": [u.name for u in seq],
+        "lipsync": {str(k): v for k, v in results.items()},
+    }
+    (work / "manifest.json").write_text(json.dumps(manifest, indent=2))
+    return manifest
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
@@ -453,56 +539,13 @@ def main() -> int:
         print("no wavespeed api key", file=sys.stderr)
         return 1
 
-    work = args.work or Path(tempfile.mkdtemp(prefix="phase_b_path_a_"))
-    work.mkdir(parents=True, exist_ok=True)
-    print(f"[path_a] work dir: {work}")
-
-    total = ffprobe_duration(args.stem)
-    idle = work / "idle_track.mp4"
-    seq = build_idle_track(idle, total)
-    print(f"[path_a] idle track: {len(seq)} units {'/'.join(u.name for u in seq)}")
-    stills = qc_still_scan(idle)
-    if stills:
-        print(f"[path_a] FAIL idle still spans: {stills}", file=sys.stderr)
+    try:
+        run_phase_b_path_a_lipsync(
+            args.stem, args.out, api_key=api_key, work_dir=args.work,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[path_a] FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-
-    cuts = detect_chunk_boundaries(args.stem)
-    n = cut_chunks(args.stem, idle, cuts, work)
-    print(f"[path_a] {n} chunks, cuts at {cuts}")
-
-    pins = install_dns_pins()
-    print(f"[path_a] dns pins: {pins}")
-    results = submit_lipsync_chunks(work, n, api_key)
-    print(f"[path_a] lipsync results: {results}")
-    if any(v != "ok" for v in results.values()):
-        return 1
-
-    for i in range(n):
-        spans = qc_pupil_scan(work / f"chunk_{i}_lipsync.mp4")
-        if spans:
-            print(f"[path_a] FAIL chunk {i} pupil spans: {spans}", file=sys.stderr)
-            return 1
-    print("[path_a] pupil scan clean on all chunks")
-
-    lipsync_track = work / "lipsync_full.mp4"
-    pad_concat_lipsync(work, n, lipsync_track)
-
-    local_out = work / "composite_local.mp4"
-    composite_on_plate(lipsync_track, args.stem, local_out)
-    comp_stills = qc_still_scan(local_out, crop=COMPOSITE_BODY_CROP)
-    if comp_stills:
-        print(f"[path_a] FAIL composite still spans: {comp_stills}", file=sys.stderr)
-        return 1
-    print("[path_a] composite QC: no still spans")
-
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(local_out, args.out)
-    print(f"[path_a] delivered: {args.out} ({ffprobe_duration(args.out):.2f}s)")
-    (work / "manifest.json").write_text(json.dumps({
-        "stem": str(args.stem), "out": str(args.out),
-        "cuts": cuts, "units": [u.name for u in seq],
-        "lipsync": results,
-    }, indent=2))
     return 0
 
 

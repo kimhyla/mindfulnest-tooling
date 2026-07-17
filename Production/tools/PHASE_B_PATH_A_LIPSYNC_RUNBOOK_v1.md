@@ -3,6 +3,12 @@
 Validated end-to-end on Event 5 Phase B (Jul 17 2026). Code:
 `Production/tools/phase_b_path_a_pipeline.py`.
 
+**Now the server default route** (`PHASE_B_PATH_A_ROUTE_V1`): the storyboard
+"Send for Lipsync" button runs `run_phase_b_path_a_lipsync` for every Phase B
+stem length — see `Production/docs/TECH_SPEC_PHASE_B_PATH_A_DEFAULT_ROUTE_v1.md`
+and registry concept `phase_b_lipsync_route`. The CLI below remains for manual
+runs and experiments.
+
 ## What this replaces and why
 
 - **Whole-frame lipsync** warped the entire room (shelves ripple, props morph) because Kling re-renders every pixel. Path A splits the scene into a **static room plate** + **blue-screen character cutout**, so only Cedric is ever re-rendered.
