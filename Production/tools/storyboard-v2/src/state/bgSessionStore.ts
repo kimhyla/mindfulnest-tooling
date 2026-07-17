@@ -39,6 +39,10 @@ import {
   pruneO3SubmitPending,
   pruneSubmitPollLatch,
 } from '../o3JobStatusContract';
+import {
+  expectedBgSessionKeyNow,
+  sessionPayloadMayHydrate,
+} from './sessionHydrationAuthority';
 import { shouldToastBgSessionRefreshFailure } from '../utils/bgSessionRefreshFailure';
 import { shouldToastBgSessionLoadFailure } from '../utils/bgSessionLoadFailure';
 import {
@@ -271,7 +275,13 @@ function applySessionPayload(
   row.activeNativeLipSyncJobs = collectActiveNativeLipSyncJobsFromBeats(row.beats);
   row.meta.status = 'ready';
   row.meta.fetchedAt = Date.now();
-  hydrateSignalsFromRow(row);
+  // PSL_STALE_KEY_HYDRATION_GUARD_V1 — a payload fetched for a partition the
+  // UI no longer shows updates its cache row above but must NOT clobber the
+  // live signals (boot race: stale intro response landing after the operator
+  // switched to resolution).
+  if (sessionPayloadMayHydrate(key, expectedBgSessionKeyNow())) {
+    hydrateSignalsFromRow(row);
+  }
   void handleO3TerminalOutcomesFromSession(stateRes.o3_terminal_outcomes);
 }
 
@@ -408,6 +418,12 @@ export async function ensureBgSession(
 export async function refreshBgSession(): Promise<boolean> {
   const key = bgActiveKey.value;
   if (!key) return false;
+  // PSL_STALE_KEY_HYDRATION_GUARD_V1 — never poll a partition the UI no
+  // longer shows. bgSessionStateQuery derives the role from live scope
+  // truth, so a desynced key would cache the WRONG partition's beats into
+  // this row (cross-partition poisoning). The coordinator ensures the
+  // expected key on its own.
+  if (!sessionPayloadMayHydrate(key, expectedBgSessionKeyNow())) return false;
   const [eventId, videoRole] = key.split('|');
   const row = rowForKey(key);
   const hadBusyLatch =

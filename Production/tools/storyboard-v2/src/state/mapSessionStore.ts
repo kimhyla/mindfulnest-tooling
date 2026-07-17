@@ -4,6 +4,10 @@ import { signal } from '@preact/signals';
 import { apiGet } from '../api/client';
 import { mapSessionKey } from './producerSessionKeys';
 import {
+  expectedMapSessionKeyNow,
+  sessionPayloadMayHydrate,
+} from './sessionHydrationAuthority';
+import {
   runSessionFetch,
   sessionHasReadyCache,
   type SessionSliceMeta,
@@ -71,12 +75,17 @@ export async function ensureMapSession(eventId: string, opts?: { force?: boolean
     },
     onSuccess: (data) => {
       row.data = data;
-      mapData.value = data;
-      mapError.value = null;
+      // PSL_STALE_KEY_HYDRATION_GUARD_V1 — stale completions cache silently.
+      if (sessionPayloadMayHydrate(key, expectedMapSessionKeyNow())) {
+        mapData.value = data;
+        mapError.value = null;
+      }
     },
     onError: (message) => {
-      mapError.value = message;
-      mapData.value = null;
+      if (sessionPayloadMayHydrate(key, expectedMapSessionKeyNow())) {
+        mapError.value = message;
+        mapData.value = null;
+      }
     },
   });
 }

@@ -19,7 +19,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { activeScope, activeVideoRole } from '../state/scope';
 import { READ_ENDPOINTS } from '../api/endpoints';
 import { pathappPatch } from '../api/client';
-import { setActiveVideoRole } from '../state/videoRole';
+import { setActiveVideoRole, syncUrlVideoParam } from '../state/videoRole';
 
 interface VideoListItem {
   video_role: string;
@@ -44,10 +44,14 @@ const CANONICAL_ROLES = ['intro', 'resolution'] as const;
 
 export function VideoSelector() {
   const [videos, setVideos] = useState<VideoListItem[]>([]);
-  const [current, setCurrent] = useState<string>(activeVideoRole.value);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [creatingNew, setCreatingNew] = useState(false);
+  // Render from the shared signal — no local copy. A local useState snapshot
+  // went stale whenever the role changed elsewhere (BG segment dropdown,
+  // milestone adoption) — same display-desync class as
+  // PSL_STALE_KEY_HYDRATION_GUARD_V1.
+  const current = activeVideoRole.value;
 
   // On mount: fetch /api/video/list and seed dropdown.
   useEffect(() => {
@@ -63,8 +67,10 @@ export function VideoSelector() {
         const data = (await res.json()) as VideoListResponse;
         if (data.videos) setVideos(data.videos);
         if (data.active_video && typeof data.active_video === 'string') {
-          setCurrent(data.active_video);
           activeVideoRole.value = data.active_video;
+          // Keep URL ?video= truthful when adopting the server's persisted
+          // role (previously the URL stayed on the stale boot value).
+          syncUrlVideoParam(data.active_video);
         }
       } catch (e) {
         if (!cancelled) setErr(String(e));
@@ -76,18 +82,16 @@ export function VideoSelector() {
   const onChange = async (e: Event) => {
     const target = e.target as HTMLSelectElement;
     const newRole = target.value;
-    if (newRole === current) return;
+    const prevRole = activeVideoRole.value;
+    if (newRole === prevRole) return;
     setLoading(true);
     setErr(null);
     const res = await setActiveVideoRole(newRole);
     setLoading(false);
     if (!res.ok) {
       setErr(res.error ?? `HTTP ${res.status}`);
-      target.value = current;
+      target.value = prevRole;
       return;
-    }
-    if (res.activeVideo) {
-      setCurrent(res.activeVideo);
     }
   };
 
