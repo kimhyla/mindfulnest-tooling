@@ -247,6 +247,43 @@ for sub in Production/tools Production/lib Production/scripts; do
 done
 
 # ----------------------------------------------------------------
+# (a.5) Snapshot retention — keep only the N newest pre-deploy snapshots.
+#     Each deploy creates .deploy_backups/$UTC_TS; without a cap the tree
+#     grows without bound (even after excluding node_modules). Default 5
+#     is enough for rollback; override with MN_DEPLOY_SNAPSHOT_KEEP.
+# ----------------------------------------------------------------
+MN_DEPLOY_SNAPSHOT_KEEP="${MN_DEPLOY_SNAPSHOT_KEEP:-5}"
+BACKUP_ROOT="$DEST_DROPBOX/.deploy_backups"
+if [[ -d "$BACKUP_ROOT" ]] && [[ "$MN_DEPLOY_SNAPSHOT_KEEP" =~ ^[0-9]+$ ]] && [[ "$MN_DEPLOY_SNAPSHOT_KEEP" -ge 1 ]]; then
+    echo "[deploy] (a.5) snapshot retention — keep newest $MN_DEPLOY_SNAPSHOT_KEEP ..."
+    # Newest-first by UTC timestamp directory name (lexicographic = chronological).
+    # Portable loop (macOS ships bash 3.2 — no mapfile).
+    _snap_kept=0
+    _snap_pruned=0
+    while IFS= read -r _name; do
+        [[ -n "$_name" ]] || continue
+        # Hard guards — never delete empty names or path traversal.
+        if [[ "$_name" == "." || "$_name" == ".." || "$_name" == *"/"* ]]; then
+            echo "  SKIP unsafe snapshot name: '$_name'" >&2
+            continue
+        fi
+        _snap_kept=$((_snap_kept + 1))
+        if [[ "$_snap_kept" -le "$MN_DEPLOY_SNAPSHOT_KEEP" ]]; then
+            continue
+        fi
+        _target="$BACKUP_ROOT/$_name"
+        [[ -d "$_target" ]] || continue
+        rm -rf "$_target"
+        _snap_pruned=$((_snap_pruned + 1))
+        echo "  pruned old snapshot: $_name"
+    done < <(ls -1 "$BACKUP_ROOT" | sort -r)
+    echo "  retention done — kept<=$MN_DEPLOY_SNAPSHOT_KEEP pruned=$_snap_pruned"
+    unset _name _target _snap_kept _snap_pruned
+else
+    echo "[deploy] (a.5) snapshot retention SKIPPED (missing BACKUP_ROOT or invalid MN_DEPLOY_SNAPSHOT_KEEP=$MN_DEPLOY_SNAPSHOT_KEEP)"
+fi
+
+# ----------------------------------------------------------------
 # (b) Atomic mirror per directory — tooling repo → Dropbox
 #     --delete removes Dropbox-side files NOT in tooling repo so the
 #     dest tree truly matches source. Pre-deploy snapshot in (a) is
