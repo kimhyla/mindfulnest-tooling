@@ -235,8 +235,14 @@ echo "[deploy] (a) snapshotting current dest subset..."
 for sub in Production/tools Production/lib Production/scripts; do
     if [[ -d "$DEST_DROPBOX/$sub" ]]; then
         mkdir -p "$SNAPSHOT_DIR/$sub"
-        rsync -a "$DEST_DROPBOX/$sub/" "$SNAPSHOT_DIR/$sub/"
-        echo "  snapshot ok: $sub"
+        rsync -a \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.venv' \
+            "$DEST_DROPBOX/$sub/" "$SNAPSHOT_DIR/$sub/"
+        echo "  snapshot ok: $sub (excluding node_modules/dist/build artifacts)"
     fi
 done
 
