@@ -2693,8 +2693,11 @@ export function StitcherTab() {
                         : composerPreviewBuilding
                           ? 'Building SFX preview…'
                           : composerVideoError?.includes('speech-only')
+                            || composerVideoError?.includes('trying speech-only')
                             ? 'Speech-only fallback — click Review to rebuild SFX mix'
-                            : 'Slot video · no ambient or SFX'}
+                            : composerVideoError
+                              ? 'Video load failed — see banner below'
+                              : 'Slot video · no ambient or SFX'}
                 </span>
               </div>
               <div class="mn-stitcher-slot-composer-body">
