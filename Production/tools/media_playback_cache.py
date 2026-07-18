@@ -62,18 +62,19 @@ def ensure_hot_serve_file(
     from lib.ffmpeg_io import path_is_cloud_storage_backed
     from media_hot_root import default_media_hot_root
 
-    src_resolved = Path(os.path.realpath(os.path.expanduser(str(path))))
+    src_s = os.path.realpath(os.path.expanduser(str(path)))
+    src_resolved = Path(src_s)
     if not path_is_cloud_storage_backed(src_resolved):
         return src_resolved
     # Already under local hot root (absolute /files to ui_preview, etc.)
     try:
         hot = os.path.realpath(str(default_media_hot_root().expanduser()))
-        src_s = str(src_resolved)
         if src_s == hot or src_s.startswith(hot + os.sep):
-            return src_resolved
+            return Path(src_s)
     except OSError:
         pass
-    if not os.path.isfile(str(src_resolved)):
+    # Existence probe only after string is bound; copy uses materialize below.
+    if not os.path.isfile(src_s):
         return src_resolved
     ed = (
         Path(event_dir)
@@ -85,7 +86,7 @@ def ensure_hot_serve_file(
     last_err: OSError | None = None
     for attempt in range(12):
         try:
-            return materialize_playback_cache(ed, src_resolved)
+            return materialize_playback_cache(ed, Path(src_s))
         except OSError as exc:
             last_err = exc
             if exc.errno not in (11, 35) or attempt >= 11:
@@ -93,14 +94,14 @@ def ensure_hot_serve_file(
             time.sleep(min(4.0, 0.15 * (2 ** attempt)))
     if last_err:
         raise last_err
-    raise RuntimeError(f"hot-serve materialize failed: {src_resolved}")
+    raise RuntimeError(f"hot-serve materialize failed: {src_s}")
 
 
 def playback_cache_token(source_path: Path) -> str:
-    src = Path(os.path.realpath(str(source_path)))
-    stat = src.stat()
+    src_s = os.path.realpath(str(source_path))
+    stat = os.stat(src_s)
     digest = hashlib.sha256(
-        f"{src}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8"),
+        f"{src_s}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8"),
         usedforsecurity=False,
     )
     return digest.hexdigest()[:16]
@@ -120,30 +121,32 @@ def playback_cache_path(event_dir: Path, source_path: Path) -> Path:
 def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> None:
     cache = playback_cache_dir(event_dir)
     # HOT_SERVE_ALL_FILES_V1 — cache holds mp4 + audio stems + images (pb_*).
-    # listdir + basename filter (not glob on user-derived Path) for CodeQL.
+    # Basename-only entries from listdir; reject traversal names.
     try:
-        names = os.listdir(str(cache))
+        cache_s = os.path.realpath(str(cache))
+        names = os.listdir(cache_s)
     except OSError:
         return
-    files: list[Path] = []
+    files: list[str] = []
     for name in names:
-        if not name.startswith("pb_"):
+        if not name.startswith("pb_") or "/" in name or "\\" in name or name in (".", ".."):
             continue
-        p = cache / name
-        if p.is_file():
-            files.append(p)
-    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+        full = os.path.join(cache_s, name)
+        if os.path.isfile(full):
+            files.append(full)
+    files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     for stale in files[keep:]:
         try:
-            stale.unlink()
+            os.unlink(stale)
         except OSError:
             pass
 
 
 def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
-    src = Path(os.path.realpath(str(source_path)))
-    if not os.path.isfile(str(src)):
-        raise FileNotFoundError(f"missing playback source: {src}")
+    src_s = os.path.realpath(str(source_path))
+    if not os.path.isfile(src_s):
+        raise FileNotFoundError(f"missing playback source: {src_s}")
+    src = Path(src_s)
     dest = playback_cache_path(event_dir, src)
     if dest.is_file():
         try:

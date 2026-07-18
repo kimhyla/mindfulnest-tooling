@@ -25,18 +25,19 @@ end = ps.find("\n    def _handle_cr_save_crop", start)
 body = ps[start:end]
 if "_ensure_local_file_for_serve" not in body:
     raise SystemExit("hot-serve not called inside _handle_files_serve")
-# Prefer serve_path (post CodeQL re-gate); accept file_path for older trees.
-open_idx = body.find('open(serve_path, "rb")')
-if open_idx < 0:
-    open_idx = body.find('open(file_path, "rb")')
+open_idx = -1
+for needle in ('open(safe_serve, "rb")', 'open(serve_path, "rb")', 'open(file_path, "rb")'):
+    open_idx = body.find(needle)
+    if open_idx >= 0:
+        break
 hot_idx = body.find("_ensure_local_file_for_serve")
 if open_idx < 0 or hot_idx < 0 or hot_idx > open_idx:
     raise SystemExit("ensure_local must precede open(...) in _handle_files_serve")
 if "HOT_SERVE_MATERIALIZE_FAILED" not in body:
     raise SystemExit("materialize failure must map to HOT_SERVE_MATERIALIZE_FAILED")
-# Native CodeQL sanitizer: realpath + startswith before the open sink.
-if "serve_path.startswith" not in body:
-    raise SystemExit("post-hot-serve must re-gate with startswith before open")
+# Native CodeQL sanitizer: assign safe_serve inside startswith branch.
+if "safe_serve = _serve_resolved" not in body and "_serve_resolved.startswith" not in body:
+    raise SystemExit("post-hot-serve must assign safe_serve inside startswith branch")
 print("OK source contract")
 PY
 

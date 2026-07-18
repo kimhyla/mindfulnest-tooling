@@ -46,10 +46,6 @@ def event_dir_is_cloud_backed(event_dir: str | Path) -> bool:
     return text.rstrip("/").endswith("/Dropbox")
 
 
-def _contained_under(real_path: str, root: str) -> bool:
-    return bool(root) and (real_path == root or real_path.startswith(root + os.sep))
-
-
 def resolve_media_workspace(event_dir: str | Path) -> Path:
     """Directory that owns .playback_cache and trim scratch for an event.
 
@@ -66,22 +62,29 @@ def resolve_media_workspace(event_dir: str | Path) -> Path:
         if not leaf:
             raise ValueError(f"invalid event workspace name for hot root: {ed.name!r}")
         hot_root = os.path.realpath(os.path.expanduser(env))
-        ws = os.path.realpath(os.path.join(hot_root, leaf))
-        if not _contained_under(ws, hot_root):
-            raise ValueError(f"hot workspace escaped root: {ws!r}")
-        os.makedirs(ws, exist_ok=True)
-        return Path(ws)
+        # Inline startswith (CodeQL native sanitizer) — no helper call.
+        ws_cand = os.path.realpath(os.path.join(hot_root, leaf))
+        safe_ws = ""
+        if ws_cand == hot_root or ws_cand.startswith(hot_root + os.sep):
+            safe_ws = ws_cand
+        if not safe_ws:
+            raise ValueError(f"hot workspace escaped root: {ws_cand!r}")
+        os.makedirs(safe_ws, exist_ok=True)
+        return Path(safe_ws)
     if not event_dir_is_cloud_backed(ed):
         return ed
     if not leaf:
         # Non-Event_* cloud path — stay in-tree rather than invent a hot leaf.
         return ed
     hot_root = os.path.realpath(str(_DEFAULT_HOT_ROOT.expanduser()))
-    ws = os.path.realpath(os.path.join(hot_root, leaf))
-    if not _contained_under(ws, hot_root):
-        raise ValueError(f"hot workspace escaped root: {ws!r}")
-    os.makedirs(ws, exist_ok=True)
-    return Path(ws)
+    ws_cand = os.path.realpath(os.path.join(hot_root, leaf))
+    safe_ws = ""
+    if ws_cand == hot_root or ws_cand.startswith(hot_root + os.sep):
+        safe_ws = ws_cand
+    if not safe_ws:
+        raise ValueError(f"hot workspace escaped root: {ws_cand!r}")
+    os.makedirs(safe_ws, exist_ok=True)
+    return Path(safe_ws)
 
 
 def playback_cache_dir_for_event(event_dir: str | Path) -> Path:

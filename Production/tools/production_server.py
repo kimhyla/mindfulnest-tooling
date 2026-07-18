@@ -8251,8 +8251,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 retry_safe=True,
             )
         # Re-gate after rematerialize — hot-serve may rewrite onto APFS cache.
+        # CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1: assign safe_serve
+        # only inside the startswith branch (same pattern as assign-image).
         try:
-            serve_path = os.path.realpath(file_path)
+            _serve_resolved = os.path.realpath(file_path)
         except OSError:
             return self._send_error_v59(
                        403,
@@ -8260,19 +8262,19 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        error_message="path validation failed",
                        retry_safe=False,
                    )
-        _serve_ok = False
+        safe_serve = ""
         for _r in roots:
-            if _r and (serve_path == _r or serve_path.startswith(_r + os.sep)):
-                _serve_ok = True
+            if _r and (_serve_resolved == _r or _serve_resolved.startswith(_r + os.sep)):
+                safe_serve = _serve_resolved
                 break
-        if not (_serve_ok and os.path.isfile(serve_path)):
+        if not (safe_serve and os.path.isfile(safe_serve)):
             return self._send_error_v59(
                        403,
                        error_code="PATH_OUTSIDE_PROJECT_ROOT",
                        error_message="path outside project root",
                        retry_safe=False,
                    )
-        ext = os.path.splitext(serve_path)[1].lower()
+        ext = os.path.splitext(safe_serve)[1].lower()
         content_types = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
             ".webp": "image/webp", ".gif": "image/gif",
@@ -8285,16 +8287,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # browser <video> elements can seek (e.g. after pause+resume).
         # _serve_mp4_with_range handles Range headers → 206 responses properly.
         if ext in (".mp4", ".mov"):
-            return self._serve_mp4_with_range(Path(serve_path))
+            return self._serve_mp4_with_range(Path(safe_serve))
         ct = content_types.get(ext, "application/octet-stream")
         try:
-            with open(serve_path, "rb") as _f:
+            with open(safe_serve, "rb") as _f:
                 data = _f.read()
         except OSError as exc:
             # Belt-and-suspenders: if APFS cache read still hits a transient
             # errno, surface retryable 503 — never raw 500 GENERIC_ERROR.
             if getattr(exc, "errno", None) in (11, 35):
-                print(f"[hot-serve] local read transient for {serve_path}: {exc}", flush=True)
+                print(f"[hot-serve] local read transient for {safe_serve}: {exc}", flush=True)
                 return self._send_error_v59(
                     503,
                     error_code="HOT_SERVE_MATERIALIZE_FAILED",
@@ -8321,7 +8323,7 @@ class ProductionHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
         except (BrokenPipeError, ConnectionResetError):
-            print(f"file stream canceled by client: {file_path}", file=sys.stderr, flush=True)
+            print(f"file stream canceled by client: {safe_serve}", file=sys.stderr, flush=True)
 
     def _handle_cr_save_crop(self, body: dict) -> None:
         from server_handlers.cropper import handle_cr_save_crop
