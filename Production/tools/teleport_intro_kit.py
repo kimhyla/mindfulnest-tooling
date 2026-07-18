@@ -323,8 +323,22 @@ def apply_intro_tail_speech_loudnorm(src: Path, dest: Path | None = None) -> Pat
     if r.returncode != 0 or not tmp.is_file() or tmp.stat().st_size <= 0:
         tmp.unlink(missing_ok=True)
         fail(f"intro_tail speech loudnorm failed: {(r.stderr or '')[:500]}")
+    # INTRO_TAIL_COMPOSE_AV_PUBLISH_GATE_V1 — same numeric budget as
+    # credentials_lib.ffmpeg_stitch.STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S (0.05).
+    # Kit avoids importing the stitch credential stack (path/import fragile in CLI runs).
+    INTRO_TAIL_COMPOSE_AV_PUBLISH_GATE_V1 = "INTRO_TAIL_COMPOSE_AV_PUBLISH_GATE_V1"
+    _EXPORT_AV_MAX_DRIFT_S = 0.05
     try:
         lock_intro_tail_av_to_video_timeline(tmp, out)
+        video_s = ffprobe_stream_duration_s(out, "v")
+        audio_s = ffprobe_stream_duration_s(out, "a")
+        if video_s > 0.0 and audio_s > 0.0:
+            drift = abs(video_s - audio_s)
+            if drift > _EXPORT_AV_MAX_DRIFT_S:
+                fail(
+                    f"intro_tail compose A/V drift {drift:.3f}s exceeds export budget "
+                    f"{_EXPORT_AV_MAX_DRIFT_S}s [{INTRO_TAIL_COMPOSE_AV_PUBLISH_GATE_V1}]"
+                )
     finally:
         tmp.unlink(missing_ok=True)
     return out

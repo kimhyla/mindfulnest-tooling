@@ -1288,6 +1288,21 @@ canvas.mn-lipsync-watercolor-overlay {
   background: rgba(245, 176, 66, 0.08);
   border: 1px solid rgba(245, 176, 66, 0.35);
   border-radius: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+.mn-stitcher-composer-video-error-text {
+  margin: 0;
+  flex: 1 1 220px;
+}
+.mn-stitcher-composer-video-error-retry {
+  flex: 0 0 auto;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
 }
 .mn-stitcher-slot-composer-hint {
   margin: 6px 0;

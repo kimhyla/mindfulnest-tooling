@@ -1,7 +1,12 @@
 """BG_O3_STITCH_EXPORT_LINEAGE_V1 — invalidate stitch slots when O3 export authority changes.
 
 When any beat's active export authority changes — selection, trim, cut, or baked clip —
-the BG-exported stitch slot for that segment must not keep serving the pre-change MP4.
+the BG-exported stitch slot for that segment must not be treated as current.
+
+STITCH_SLOT_STALE_KEEP_VIDEO_V1 — demote authority with ``bg_o3_export_stale`` but keep
+the last playable ``video_path`` (and related playback fields) so Stitcher does not go
+empty / ``No active stitch job``. Successful Send clears stale via
+``stamp_bg_o3_export_lineage_on_slot``.
 """
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 BG_O3_STITCH_EXPORT_LINEAGE_V1 = "BG_O3_STITCH_EXPORT_LINEAGE_V1"
+STITCH_SLOT_STALE_KEEP_VIDEO_V1 = "STITCH_SLOT_STALE_KEEP_VIDEO_V1"
 
 _EXPORT_AUTHORITY_FIELDS = (
     "kling_o3_video_path",
@@ -170,14 +176,12 @@ def invalidate_stitch_slot_for_bg_o3_selection_change(
 
         if old_video:
             slot["superseded_bg_export_video_path"] = old_video
-            slot.pop("video_path", None)
-            slot.pop("video_dur_ms", None)
-            slot.pop("beat_boundaries", None)
-            slot.pop("playback_recipe_version", None)
-            slot.pop("dry_export_path", None)
+            # STITCH_SLOT_STALE_KEEP_VIDEO_V1 — keep playable presence; demote authority only.
             logs.append(
-                f"{slot_key}: cleared BG export video ({Path(old_video).name}) — {reason}",
+                f"{slot_key}: marked BG export stale ({Path(old_video).name}) — {reason} "
+                f"[{STITCH_SLOT_STALE_KEEP_VIDEO_V1}]",
             )
+        # Clear mux caches that would imply a fresh mix; keep video_path / dur / dry / recipe.
         clear_stitch_slot_media_artifacts(slot)
         slot["bg_o3_export_stale"] = True
         slot["bg_o3_export_stale_reason"] = reason
@@ -257,19 +261,12 @@ def invalidate_stitch_slot_if_export_lineage_stale(
 
         from server_handlers.stitch_media_artifacts import clear_stitch_slot_media_artifacts  # noqa: PLC0415
 
-        if old_video and clear_video:
+        if old_video:
             slot["superseded_bg_export_video_path"] = old_video
-            slot.pop("video_path", None)
-            slot.pop("video_dur_ms", None)
-            slot.pop("beat_boundaries", None)
-            slot.pop("playback_recipe_version", None)
-            slot.pop("dry_export_path", None)
+            # STITCH_SLOT_STALE_KEEP_VIDEO_V1 — never wipe playable video_path.
             logs.append(
-                f"{slot_key}: cleared stale BG export ({Path(old_video).name}) — {reason}",
-            )
-        elif old_video:
-            logs.append(
-                f"{slot_key}: stale BG export flagged ({Path(old_video).name}) — {reason}",
+                f"{slot_key}: marked stale BG export ({Path(old_video).name}) — {reason} "
+                f"[{STITCH_SLOT_STALE_KEEP_VIDEO_V1}]",
             )
         if clear_video:
             clear_stitch_slot_media_artifacts(slot)

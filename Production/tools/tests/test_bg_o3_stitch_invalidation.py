@@ -80,7 +80,7 @@ def test_compute_lineage_sig_changes_when_selection_changes() -> None:
     assert compute_bg_segment_o3_export_lineage_sig(beats_a) != compute_bg_segment_o3_export_lineage_sig(beats_b)
 
 
-def test_invalidate_clears_resolution_slot_video(tmp_path: Path) -> None:
+def test_invalidate_marks_stale_keeps_video(tmp_path: Path) -> None:
     event_dir = tmp_path / "Event_4"
     event_dir.mkdir()
     old_export = event_dir / "assembled" / "resolution_kling_o3_old.mp4"
@@ -111,6 +111,8 @@ def test_invalidate_clears_resolution_slot_video(tmp_path: Path) -> None:
                     "resolution": {
                         "video_path": str(old_export),
                         "video_dur_ms": 49000,
+                        "dry_export_path": str(old_export),
+                        "playback_recipe_version": "STITCH_FOUR_FILES_V1",
                         "mux_preview_hash": "abc123",
                         "bg_o3_export_lineage_sig": "old_sig",
                     },
@@ -133,8 +135,59 @@ def test_invalidate_clears_resolution_slot_video(tmp_path: Path) -> None:
         },
     )
     slot = h.app.stitch_state.state["jobs"]["Event_4_stitch"]["slots"]["resolution"]
-    assert "video_path" not in slot
+    assert slot.get("video_path") == str(old_export)
+    assert slot.get("video_dur_ms") == 49000
+    assert slot.get("dry_export_path") == str(old_export)
+    assert slot.get("playback_recipe_version") == "STITCH_FOUR_FILES_V1"
     assert slot.get("superseded_bg_export_video_path") == str(old_export)
+    assert slot.get("bg_o3_export_stale") is True
+    assert "mux_preview_hash" not in slot
+    assert logs
+    assert any("STITCH_SLOT_STALE_KEEP_VIDEO_V1" in (x or "") for x in logs)
+
+
+def test_lineage_stale_reconcile_keeps_video(tmp_path: Path) -> None:
+    from bg_o3_stitch_invalidation import invalidate_stitch_slot_if_export_lineage_stale
+
+    event_dir = tmp_path / "Event_6"
+    event_dir.mkdir()
+    old_export = event_dir / "assembled" / "intro_old.mp4"
+    old_export.parent.mkdir(parents=True)
+    old_export.write_bytes(b"x")
+    beats = [
+        {
+            "beat_id": "bg_arc1_event6_pre_beat_01",
+            "kling_o3_video_path": "/new/path.mp4",
+            "kling_o3_selected_option_key": "k2",
+        },
+    ]
+    stitch_state = {
+        "jobs": {
+            "Event_6_stitch": {
+                "slots": {
+                    "intro": {
+                        "source": "kling_o3_export",
+                        "video_path": str(old_export),
+                        "video_dur_ms": 12000,
+                        "dry_export_path": str(old_export),
+                        "playback_recipe_version": "STITCH_FOUR_FILES_V1",
+                        "mux_preview_hash": "deadbeef",
+                        "bg_o3_export_lineage_sig": "stale_sig",
+                    },
+                },
+            },
+        },
+    }
+    h = _MockHandler(event_dir, stitch_state)
+    logs = invalidate_stitch_slot_if_export_lineage_stale(
+        h,
+        slot_key="intro",
+        segment_beats=beats,
+        reason="bg_o3_export_lineage_mismatch",
+    )
+    slot = h.app.stitch_state.state["jobs"]["Event_6_stitch"]["slots"]["intro"]
+    assert slot.get("video_path") == str(old_export)
+    assert slot.get("video_dur_ms") == 12000
     assert slot.get("bg_o3_export_stale") is True
     assert "mux_preview_hash" not in slot
     assert logs

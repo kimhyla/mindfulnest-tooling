@@ -1289,21 +1289,13 @@ def _run_bg_export_to_stitcher_core(
             "playback_artifacts": playback_artifacts,
         }
 
-    from bg_directus_register import (  # noqa: PLC0415
-        BG_DIRECTUS_EXPORT_V1,
-        persist_directus_export_on_sidecar,
-        register_bg_export_to_directus,
-    )
-    from production_server import _resolve_module_id_for_state  # noqa: PLC0415
-
-    if progress_cb:
-        progress_cb("Registering export…", phase="directus")
-
-    directus_result: dict = {"code": BG_DIRECTUS_EXPORT_V1, "warnings": []}
+    # BG_EXPORT_DIRECTUS_AFTER_DONE_V1 — preserve stays critical; Directus runs
+    # after finalize_job(done) in the worker so catalog I/O cannot block terminal success.
+    BG_EXPORT_DIRECTUS_AFTER_DONE_V1 = "BG_EXPORT_DIRECTUS_AFTER_DONE_V1"
     preserved_clip_count = 0
 
-    def _post_export_sidecar(sidecar_mut: dict) -> None:
-        nonlocal directus_result, preserved_clip_count
+    def _preserve_export_sidecar(sidecar_mut: dict) -> None:
+        nonlocal preserved_clip_count
         preserved_clip_count = bg.preserve_kling_o3_segment_beats(
             sidecar_mut,
             arc_number,
@@ -1312,47 +1304,26 @@ def _run_bg_export_to_stitcher_core(
             h.app.event_dir,
             reason="send_to_stitcher",
         )
-        clip_paths, _, _scratch = bg.resolve_segment_stitch_export_clip_paths(
-            beats,
-            h.app.event_dir,
-            phase=phase,
-            event_name=event_name,
-            event_id=event_id,
-        )
-        directus_result = register_bg_export_to_directus(
-            beats=beats,
-            clip_paths=clip_paths,
-            concat_path=out_path,
-            module_id=_resolve_module_id_for_state(h.app.state),
-            event_dir=h.app.event_dir,
-            slot_key=slot_key,
-            phase=phase,
-            boundaries=boundaries,
-            duration_s=duration_s,
-        )
-        persist_directus_export_on_sidecar(
-            sidecar_mut,
-            arc_number=arc_number,
-            event_id=event_id,
-            phase=phase,
-            directus_result=directus_result,
-        )
 
     try:
         from beatgen_scope import scope_from_app  # noqa: PLC0415
 
         export_scope = scope_from_app(h.app)
         bg.mutate_sidecar_locked(
-            _post_export_sidecar,
+            _preserve_export_sidecar,
             scope=export_scope,
-            caller="export_to_stitcher_post",
+            caller="export_to_stitcher_preserve",
         )
     except Exception as exc:
-        print(f"[BG] export-to-stitcher directus/preserve failed: {exc}", flush=True)
-        directus_result.setdefault("warnings", []).append(f"sidecar persist failed: {exc}")
-
-    all_warnings = list(export_warnings or [])
-    all_warnings.extend(directus_result.get("warnings") or [])
+        print(f"[BG] export-to-stitcher preserve failed: {exc}", flush=True)
+        return {
+            "ok": False,
+            "error_code": "EXPORT_PRESERVE_FAILED",
+            "error_message": f"preserve failed: {exc}",
+            "retry_safe": True,
+            "video_path": video_rel,
+            "warnings": list(export_warnings or []),
+        }
 
     return {
         "ok": True,
@@ -1361,16 +1332,105 @@ def _run_bg_export_to_stitcher_core(
         "video_path": video_rel,
         "duration_s": duration_s,
         "video_dur_ms": export_dur_ms,
-        "warnings": all_warnings,
+        "warnings": list(export_warnings or []),
         "beat_count": len(beats),
         "beat_boundaries": boundaries,
         "code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1,
         "export_full_media": STITCH_SLOT_EXPORT_FULL_MEDIA_V1,
-        "directus": directus_result,
+        "directus": {"deferred": True, "code": BG_EXPORT_DIRECTUS_AFTER_DONE_V1},
         "preserved_clip_count": preserved_clip_count,
         "playback_artifacts": playback_artifacts,
         "export_mux_bake": STITCH_EXPORT_MUX_BAKE_V1,
+        "bg_export_directus_after_done": BG_EXPORT_DIRECTUS_AFTER_DONE_V1,
+        # Deferred Directus needs these on the worker after finalize:
+        "_deferred_directus": {
+            "arc_number": arc_number,
+            "event_id": event_id,
+            "phase": phase,
+            "slot_key": slot_key,
+            "video_rel": video_rel,
+            "out_path": str(out_path),
+            "boundaries": boundaries,
+            "duration_s": duration_s,
+            "beat_ids": [str(b.get("beat_id") or "") for b in beats if isinstance(b, dict)],
+        },
     }
+
+
+def _run_bg_export_directus_after_done(
+    h,
+    ctx: dict,
+    deferred: dict,
+    result: dict,
+) -> None:
+    """BG_EXPORT_DIRECTUS_AFTER_DONE_V1 — catalog register after terminal done.
+
+    Must never raise into the worker in a way that flips done→failed (caller guards).
+    """
+    from bg_directus_register import (  # noqa: PLC0415
+        BG_DIRECTUS_EXPORT_V1,
+        persist_directus_export_on_sidecar,
+        register_bg_export_to_directus,
+    )
+    from production_server import _resolve_module_id_for_state  # noqa: PLC0415
+
+    bg = _bg(h)
+    arc_number = int(deferred.get("arc_number") or ctx.get("arc_number") or 1)
+    event_id = str(deferred.get("event_id") or ctx.get("bg_event_id") or "")
+    phase = str(deferred.get("phase") or ctx.get("phase") or "pre")
+    slot_key = str(deferred.get("slot_key") or ctx.get("slot_key") or "intro")
+    out_path = Path(str(deferred.get("out_path") or ""))
+    boundaries = deferred.get("boundaries") or []
+    duration_s = float(deferred.get("duration_s") or 0.0)
+    event_name = Path(ctx.get("data_dir") or h.app.event_dir).name
+
+    sidecar = bg.read_sidecar()
+    beats = _load_beats_for_export_job(bg, sidecar, ctx)
+    clip_paths, _, _scratch = bg.resolve_segment_stitch_export_clip_paths(
+        beats,
+        h.app.event_dir,
+        phase=phase,
+        event_name=event_name,
+        event_id=event_id,
+    )
+    directus_result = register_bg_export_to_directus(
+        beats=beats,
+        clip_paths=clip_paths,
+        concat_path=out_path,
+        module_id=_resolve_module_id_for_state(h.app.state),
+        event_dir=h.app.event_dir,
+        slot_key=slot_key,
+        phase=phase,
+        boundaries=boundaries,
+        duration_s=duration_s,
+    )
+
+    def _persist(sidecar_mut: dict) -> None:
+        persist_directus_export_on_sidecar(
+            sidecar_mut,
+            arc_number=arc_number,
+            event_id=event_id,
+            phase=phase,
+            directus_result=directus_result,
+        )
+
+    from beatgen_scope import scope_from_app  # noqa: PLC0415
+
+    bg.mutate_sidecar_locked(
+        _persist,
+        scope=scope_from_app(h.app),
+        caller="export_to_stitcher_directus_after_done",
+    )
+    # Attach for operators reading the job file after the fact (best-effort rewrite).
+    result["directus"] = {
+        **(directus_result if isinstance(directus_result, dict) else {}),
+        "code": BG_DIRECTUS_EXPORT_V1,
+        "deferred": False,
+        "ran_after_done": True,
+    }
+    warns = list(result.get("warnings") or [])
+    warns.extend(directus_result.get("warnings") or [])
+    result["warnings"] = warns
 
 
 def _execute_bg_export_to_stitcher_job(
@@ -1431,7 +1491,32 @@ def _execute_bg_export_to_stitcher_job(
 
             result = _run_bg_export_to_stitcher_core(h, ctx, pin, progress_cb=_job_progress)
             if result.get("ok"):
+                deferred = result.pop("_deferred_directus", None)
                 finalize_job(store_dir, job_id, "done", result=result)
+                if deferred:
+                    try:
+                        _run_bg_export_directus_after_done(h, ctx, deferred, result)
+                        # Best-effort rewrite so operators see Directus on the done job;
+                        # never changes status away from done.
+                        finalize_job(store_dir, job_id, "done", result=result)
+                    except Exception as exc:  # noqa: BLE001
+                        print(
+                            f"[BG] export-to-stitcher Directus after done failed: {exc}",
+                            flush=True,
+                        )
+                        warns = list(result.get("warnings") or [])
+                        warns.append(f"Directus after done failed: {exc}")
+                        result["warnings"] = warns
+                        result["directus"] = {
+                            "deferred": True,
+                            "ran_after_done": False,
+                            "error": str(exc),
+                            "code": "BG_EXPORT_DIRECTUS_AFTER_DONE_V1",
+                        }
+                        try:
+                            finalize_job(store_dir, job_id, "done", result=result)
+                        except Exception:  # noqa: BLE001
+                            pass
                 return
 
             finalize_job(

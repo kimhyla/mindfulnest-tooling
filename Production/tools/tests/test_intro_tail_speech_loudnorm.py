@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 TOOLS = Path(__file__).resolve().parent.parent
@@ -105,6 +106,53 @@ class IntroTailSpeechLoudnormTests(unittest.TestCase):
             "\ndef ffmpeg_compose_intro_tail", 1
         )[0]
         self.assertIn("lock_intro_tail_av_to_video_timeline", loud_block)
+        self.assertIn("INTRO_TAIL_COMPOSE_AV_PUBLISH_GATE_V1", loud_block)
+        self.assertIn("0.05", loud_block)
+
+    def test_compose_av_publish_gate_fails_on_forced_drift(self):
+        """INTRO_TAIL_COMPOSE_AV_PUBLISH_GATE_V1 — post-lock drift above budget fails loud."""
+        from teleport_intro_kit import apply_intro_tail_speech_loudnorm  # noqa: WPS433
+
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "quiet_tail.mp4"
+            out = Path(tmp) / "leveled_tail.mp4"
+            _make_quiet_speak_mp4(src, duration_s=1.0)
+            seen: list[str] = []
+
+            def _fake_lock(_src, dest=None):
+                dest = Path(dest if dest is not None else _src)
+                # Intentional A/V duration mismatch (>0.05s) — no -shortest.
+                subprocess.run(
+                    [
+                        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                        "-f", "lavfi", "-i", "color=c=red:s=320x240:d=1.0",
+                        "-f", "lavfi", "-i", "sine=frequency=440:duration=1.2",
+                        "-map", "0:v", "-map", "1:a",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                        "-c:a", "aac",
+                        str(dest),
+                    ],
+                    check=True,
+                    capture_output=True,
+                    timeout=60,
+                )
+                return dest
+
+            def _capture_fail(msg: str, code: int = 1) -> None:
+                seen.append(msg)
+                raise SystemExit(msg)
+
+            with (
+                unittest.mock.patch(
+                    "teleport_intro_kit.lock_intro_tail_av_to_video_timeline",
+                    side_effect=_fake_lock,
+                ),
+                unittest.mock.patch("teleport_intro_kit.fail", side_effect=_capture_fail),
+            ):
+                with self.assertRaises(SystemExit):
+                    apply_intro_tail_speech_loudnorm(src, out)
+            self.assertTrue(seen)
+            self.assertIn("INTRO_TAIL_COMPOSE_AV_PUBLISH_GATE_V1", seen[0])
 
 
 if __name__ == "__main__":
