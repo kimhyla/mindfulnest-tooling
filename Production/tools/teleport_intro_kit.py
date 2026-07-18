@@ -224,6 +224,70 @@ def ffmpeg_burst_overlay_on_frozen_speak(
         fail(f"burst overlay on frozen frame failed: {r.stderr[:500]}")
 
 
+def ffprobe_stream_duration_s(path: Path, stream: str) -> float:
+    """Stream duration in seconds (`v` or `a`); 0.0 when missing/unreadable."""
+    sel = "v:0" if stream.startswith("v") else "a:0"
+    r = subprocess.run(
+        [
+            "ffprobe", "-v", "error",
+            "-select_streams", sel,
+            "-show_entries", "stream=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    try:
+        return float((r.stdout or "").strip())
+    except ValueError:
+        return 0.0
+
+
+def lock_intro_tail_av_to_video_timeline(src: Path, dest: Path | None = None) -> Path:
+    """Pad/trim audio to video stream duration (FF-040 timeline authority).
+
+    AAC loudnorm / re-encode can leave ~1–3 AAC frames of A/V drift. Send to Stitcher
+    rejects that via ``assert_stitch_export_clips_av_aligned`` — bake alignment here
+    so the shared canonical asset never fails export after compose.
+    """
+    src = src.expanduser().resolve()
+    if not src.is_file():
+        fail(f"intro_tail timeline lock input missing: {src}")
+    out = (dest if dest is not None else src).expanduser().resolve()
+    video_s = ffprobe_stream_duration_s(src, "v")
+    if video_s <= 0.0:
+        if src != out:
+            shutil.copy2(src, out)
+        return out
+    target_s = max(0.04, float(video_s))
+    tmp = out.with_name(f"{out.stem}.timeline_tmp{out.suffix}")
+    audio_fc = (
+        f"[0:a]aresample=44100,aformat=sample_fmts=s16:channel_layouts=mono,"
+        f"atrim=end={target_s:.6f},asetpts=PTS-STARTPTS,"
+        f"apad=whole_dur={target_s:.6f}[aout]"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src),
+        "-filter_complex", audio_fc,
+        "-map", "0:v:0", "-c:v", "copy",
+        "-map", "[aout]",
+        "-c:a", "aac", "-b:a", "192k", "-ac", "1", "-ar", "44100",
+        "-t", f"{target_s:.6f}",
+        "-movflags", "+faststart",
+        str(tmp),
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if r.returncode != 0 or not tmp.is_file() or tmp.stat().st_size <= 0:
+        tmp.unlink(missing_ok=True)
+        fail(f"intro_tail timeline lock failed: {(r.stderr or '')[:500]}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(tmp, out)
+    return out
+
+
 def apply_intro_tail_speech_loudnorm(src: Path, dest: Path | None = None) -> Path:
     """Level canonical intro_tail speech to the AUTO_LOUDNORM_V1 speech bus (−19 LUFS).
 
@@ -231,6 +295,9 @@ def apply_intro_tail_speech_loudnorm(src: Path, dest: Path | None = None) -> Pat
     burst/hold) historically shipped ~5–6 dB quieter in the speak window, so the final
     intro beat sounded soft next to the rest of the module. Bake leveling into the
     shared asset so Beat Gen preview, Send to Stitcher, and every event stay matched.
+
+    After loudnorm, audio is locked to the video timeline so AAC padding cannot leave
+    export-blocking A/V drift on the shared intro_tail.mp4.
     """
     # Keep constants aligned with server_handlers.speech_loudnorm (avoid importing the
     # stitch credential stack from this CLI module — path/import fragile in kit runs).
@@ -256,8 +323,10 @@ def apply_intro_tail_speech_loudnorm(src: Path, dest: Path | None = None) -> Pat
     if r.returncode != 0 or not tmp.is_file() or tmp.stat().st_size <= 0:
         tmp.unlink(missing_ok=True)
         fail(f"intro_tail speech loudnorm failed: {(r.stderr or '')[:500]}")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(tmp, out)
+    try:
+        lock_intro_tail_av_to_video_timeline(tmp, out)
+    finally:
+        tmp.unlink(missing_ok=True)
     return out
 
 

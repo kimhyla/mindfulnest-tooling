@@ -22,7 +22,60 @@ def _resolved_clip_basename_hint(beat: dict, event_dir: Path) -> str | None:
     return None
 
 
-def _segment_export_errors(beats: list[dict]) -> list[dict[str, str]]:
+def _on_disk_clip_av_errors(beats: list[dict], event_dir: Path) -> list[dict[str, str]]:
+    """Fail preflight when an on-disk export clip already exceeds the concat A/V gate.
+
+    Catches shared assets (e.g. canonical intro_tail.mp4 after loudnorm) before the
+    async job starts — so the button cannot say "going" then die on EXPORT_VALIDATION.
+    """
+    from beat_generator import beat_magic_still_clip_path  # noqa: PLC0415
+    from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415
+        STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S,
+        av_duration_drift_s,
+    )
+
+    errors: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for beat in beats:
+        if not isinstance(beat, dict):
+            continue
+        beat_id = str(beat.get("beat_id") or "")
+        candidates: list[Path] = []
+        magic = beat_magic_still_clip_path(beat, event_dir)
+        if magic:
+            candidates.append(Path(magic))
+        vp = str(beat.get("kling_o3_video_path") or "").strip()
+        if vp:
+            candidates.append(Path(vp))
+        for clip in candidates:
+            if not clip.is_file():
+                continue
+            key = str(clip.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            drift = av_duration_drift_s(clip)
+            if drift <= STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S:
+                continue
+            errors.append(
+                {
+                    "code": "EXPORT_VALIDATION",
+                    "beat_id": beat_id,
+                    "message": (
+                        f"stitch export blocked — clip audio/video misaligned: "
+                        f"{clip.name} (drift {drift:.3f}s)"
+                    ),
+                    "fix_instruction": (
+                        f"Rebuild or remux {clip.name} so audio matches video duration "
+                        f"(drift {drift:.3f}s > {STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S}s), "
+                        "then retry Send to Stitcher."
+                    ),
+                }
+            )
+    return errors
+
+
+def _segment_export_errors(beats: list[dict], event_dir: Path | None = None) -> list[dict[str, str]]:
     import beat_generator as bg  # noqa: PLC0415
     from o3_gallery_option_identity import (  # noqa: PLC0415
         O3GalleryExportAuthorityError,
@@ -67,8 +120,9 @@ def _segment_export_errors(beats: list[dict]) -> list[dict[str, str]]:
                     ),
                 }
             )
+    if event_dir is not None:
+        segment_errors.extend(_on_disk_clip_av_errors(beats_copy, Path(event_dir)))
     return segment_errors
-
 
 def build_bg_stitch_export_preflight_manifest(
     *,
@@ -103,7 +157,7 @@ def build_bg_stitch_export_preflight_manifest(
             row.update(block)
         beat_rows.append(row)
 
-    segment_errors = _segment_export_errors(beats)
+    segment_errors = _segment_export_errors(beats, event_dir)
     beats_ready = all(r["ready"] for r in beat_rows) if beat_rows else False
     return {
         "code": BG_STITCH_EXPORT_PREFLIGHT_V1,

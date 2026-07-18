@@ -78,6 +78,41 @@ class BgStitchExportPreflightTests(unittest.TestCase):
             self.assertEqual(derived["stitch_export_block_label"], "Approve still clip")
             self.assertIn("Approve still for stitch", derived["stitch_export_fix_instruction"] or "")
 
+    def test_on_disk_av_drift_blocks_preflight(self):
+        """Preflight must catch EXPORT_VALIDATION before the async job starts."""
+        import subprocess
+
+        from bg_stitch_export_preflight import _on_disk_clip_av_errors
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            bad = tmp_path / "intro_tail.mp4"
+            # Video 2.0s, audio 2.2s → ~200ms drift (above 50ms export budget).
+            subprocess.run(
+                [
+                    "ffmpeg", "-y",
+                    "-f", "lavfi", "-i", "color=c=red:s=320x240:d=2.0",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=2.2",
+                    "-map", "0:v", "-map", "1:a",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a", "aac",
+                    str(bad),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            beat = {
+                "beat_id": "bg_arc1_event6_pre_beat_17",
+                "pipeline": "kling_o3_omni",
+                "kling_o3_status": "approved",
+                "kling_o3_video_path": str(bad),
+            }
+            errs = _on_disk_clip_av_errors([beat], tmp_path)
+            self.assertTrue(errs)
+            self.assertEqual(errs[0]["code"], "EXPORT_VALIDATION")
+            self.assertIn("intro_tail.mp4", errs[0]["message"])
+
 
 if __name__ == "__main__":
     unittest.main()
