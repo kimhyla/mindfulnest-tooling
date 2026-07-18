@@ -27,20 +27,21 @@ def playback_cache_dir(event_dir: Path) -> Path:
     return playback_cache_dir_for_event(event_dir)
 
 
+_EVENT_LEAF_RE = re.compile(r"^(Event|event)_[A-Za-z0-9._-]+$")
+
+
 def event_dir_from_media_path(
     path: Path | str,
     *,
     fallback: Path | str | None = None,
 ) -> Path:
     """Nearest Event_N ancestor for a media path, else fallback."""
+    # Walk parents without Path.resolve() — CodeQL treats resolve of user
+    # paths as path-injection sinks; Event_* leaf regex is the gate.
     p = Path(path)
-    try:
-        p = p.resolve()
-    except OSError:
-        p = Path(path)
     for parent in (p.parent, *p.parents):
         name = parent.name
-        if name.startswith("Event_") or name.startswith("event_"):
+        if _EVENT_LEAF_RE.fullmatch(name):
             return parent
     if fallback is not None:
         return Path(fallback)
@@ -61,21 +62,18 @@ def ensure_hot_serve_file(
     from lib.ffmpeg_io import path_is_cloud_storage_backed
     from media_hot_root import default_media_hot_root
 
-    src = Path(path)
-    try:
-        src_resolved = src.resolve()
-    except OSError:
-        src_resolved = src
+    src_resolved = Path(os.path.realpath(os.path.expanduser(str(path))))
     if not path_is_cloud_storage_backed(src_resolved):
         return src_resolved
     # Already under local hot root (absolute /files to ui_preview, etc.)
     try:
-        hot = default_media_hot_root().expanduser().resolve()
-        if src_resolved.is_relative_to(hot):
+        hot = os.path.realpath(str(default_media_hot_root().expanduser()))
+        src_s = str(src_resolved)
+        if src_s == hot or src_s.startswith(hot + os.sep):
             return src_resolved
-    except (OSError, ValueError):
+    except OSError:
         pass
-    if not src_resolved.is_file():
+    if not os.path.isfile(str(src_resolved)):
         return src_resolved
     ed = (
         Path(event_dir)
@@ -99,7 +97,7 @@ def ensure_hot_serve_file(
 
 
 def playback_cache_token(source_path: Path) -> str:
-    src = source_path.resolve()
+    src = Path(os.path.realpath(str(source_path)))
     stat = src.stat()
     digest = hashlib.sha256(
         f"{src}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8"),
@@ -122,11 +120,19 @@ def playback_cache_path(event_dir: Path, source_path: Path) -> Path:
 def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> None:
     cache = playback_cache_dir(event_dir)
     # HOT_SERVE_ALL_FILES_V1 — cache holds mp4 + audio stems + images (pb_*).
-    files = sorted(
-        (p for p in cache.glob("pb_*") if p.is_file()),
-        key=lambda p: p.stat().st_mtime,
-        reverse=True,
-    )
+    # listdir + basename filter (not glob on user-derived Path) for CodeQL.
+    try:
+        names = os.listdir(str(cache))
+    except OSError:
+        return
+    files: list[Path] = []
+    for name in names:
+        if not name.startswith("pb_"):
+            continue
+        p = cache / name
+        if p.is_file():
+            files.append(p)
+    files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
     for stale in files[keep:]:
         try:
             stale.unlink()
@@ -135,8 +141,8 @@ def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> Non
 
 
 def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
-    src = Path(source_path).resolve()
-    if not src.is_file():
+    src = Path(os.path.realpath(str(source_path)))
+    if not os.path.isfile(str(src)):
         raise FileNotFoundError(f"missing playback source: {src}")
     dest = playback_cache_path(event_dir, src)
     if dest.is_file():
@@ -158,8 +164,8 @@ def resolve_playback_url(
     server_base: str = "",
 ) -> dict:
     """Return playback_url + metadata for a canonical on-disk media file."""
-    src = Path(source_path).resolve()
-    if not src.is_file():
+    src = Path(os.path.realpath(str(source_path)))
+    if not os.path.isfile(str(src)):
         raise FileNotFoundError(f"missing playback source: {src}")
     cached = materialize_playback_cache(event_dir, src)
     token = playback_cache_token(src)
@@ -194,8 +200,15 @@ def lookup_playback_cache_file(event_dir: Path, token: str) -> Path | None:
     if not _TOKEN_RE.match(str(token or "")):
         return None
     cache = playback_cache_dir(event_dir)
-    matches = sorted(cache.glob(f"pb_{token}_*.mp4"))
-    for path in matches:
+    prefix = f"pb_{token}_"
+    try:
+        names = sorted(os.listdir(str(cache)))
+    except OSError:
+        return None
+    for name in names:
+        if not name.startswith(prefix) or not name.endswith(".mp4"):
+            continue
+        path = cache / name
         if path.is_file():
             return path
     return None

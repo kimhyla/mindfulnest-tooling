@@ -8201,31 +8201,36 @@ class ProductionHandler(BaseHTTPRequestHandler):
                    )
         file_path = resolved
         # 2. Containment — Dropbox / checkout / local media hot root (APFS).
+        # CODEQL_PATH_INJECTION_NATIVE_PATTERN: realpath + startswith on the
+        # SAME dataflow node that later feeds open() (not a helper call).
+        drop_root = os.path.realpath(str(DROPBOX_ROOT))
+        repo_root = os.path.realpath(str(_MN_REPO_ROOT))
+        roots = [drop_root, repo_root]
         try:
-            from lib.path_serve_security import is_realpath_under_any_root
+            from media_hot_root import media_hot_serve_roots
 
-            drop_root = os.path.realpath(str(DROPBOX_ROOT))
-            repo_root = os.path.realpath(str(_MN_REPO_ROOT))
-            roots = [drop_root, repo_root]
-            try:
-                from media_hot_root import media_hot_serve_roots
-
-                roots.extend(media_hot_serve_roots())
-            except Exception:
-                pass
-            real_path = os.path.realpath(file_path)
-            if not is_realpath_under_any_root(real_path, roots):
-                return self._send_error_v59(
-                           403,
-                           error_code="PATH_OUTSIDE_PROJECT_ROOT",
-                           error_message="path outside project root",
-                           retry_safe=False,
-                       )
+            roots.extend(media_hot_serve_roots())
         except Exception:
+            pass
+        try:
+            real_path = os.path.realpath(file_path)
+        except OSError:
             return self._send_error_v59(
                        403,
                        error_code="PATH_VALIDATION_FAILED",
                        error_message="path validation failed",
+                       retry_safe=False,
+                   )
+        _path_ok = False
+        for _r in roots:
+            if _r and (real_path == _r or real_path.startswith(_r + os.sep)):
+                _path_ok = True
+                break
+        if not _path_ok:
+            return self._send_error_v59(
+                       403,
+                       error_code="PATH_OUTSIDE_PROJECT_ROOT",
+                       error_message="path outside project root",
                        retry_safe=False,
                    )
         # HOT_SERVE_ALL_FILES_V1 — never stream Dropbox File Provider bytes for
@@ -8245,7 +8250,29 @@ class ProductionHandler(BaseHTTPRequestHandler):
                 ),
                 retry_safe=True,
             )
-        ext = os.path.splitext(file_path)[1].lower()
+        # Re-gate after rematerialize — hot-serve may rewrite onto APFS cache.
+        try:
+            serve_path = os.path.realpath(file_path)
+        except OSError:
+            return self._send_error_v59(
+                       403,
+                       error_code="PATH_VALIDATION_FAILED",
+                       error_message="path validation failed",
+                       retry_safe=False,
+                   )
+        _serve_ok = False
+        for _r in roots:
+            if _r and (serve_path == _r or serve_path.startswith(_r + os.sep)):
+                _serve_ok = True
+                break
+        if not (_serve_ok and os.path.isfile(serve_path)):
+            return self._send_error_v59(
+                       403,
+                       error_code="PATH_OUTSIDE_PROJECT_ROOT",
+                       error_message="path outside project root",
+                       retry_safe=False,
+                   )
+        ext = os.path.splitext(serve_path)[1].lower()
         content_types = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
             ".webp": "image/webp", ".gif": "image/gif",
@@ -8258,16 +8285,16 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # browser <video> elements can seek (e.g. after pause+resume).
         # _serve_mp4_with_range handles Range headers → 206 responses properly.
         if ext in (".mp4", ".mov"):
-            return self._serve_mp4_with_range(Path(file_path))
+            return self._serve_mp4_with_range(Path(serve_path))
         ct = content_types.get(ext, "application/octet-stream")
         try:
-            with open(file_path, "rb") as _f:
+            with open(serve_path, "rb") as _f:
                 data = _f.read()
         except OSError as exc:
             # Belt-and-suspenders: if APFS cache read still hits a transient
             # errno, surface retryable 503 — never raw 500 GENERIC_ERROR.
             if getattr(exc, "errno", None) in (11, 35):
-                print(f"[hot-serve] local read transient for {file_path}: {exc}", flush=True)
+                print(f"[hot-serve] local read transient for {serve_path}: {exc}", flush=True)
                 return self._send_error_v59(
                     503,
                     error_code="HOT_SERVE_MATERIALIZE_FAILED",
