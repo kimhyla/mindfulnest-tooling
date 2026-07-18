@@ -25,18 +25,25 @@ end = ps.find("\n    def _handle_cr_save_crop", start)
 body = ps[start:end]
 if "_ensure_local_file_for_serve" not in body:
     raise SystemExit("hot-serve not called inside _handle_files_serve")
-open_idx = body.find('open(file_path, "rb")')
+open_idx = -1
+for needle in ('open(safe_serve, "rb")', 'open(serve_path, "rb")', 'open(file_path, "rb")'):
+    open_idx = body.find(needle)
+    if open_idx >= 0:
+        break
 hot_idx = body.find("_ensure_local_file_for_serve")
 if open_idx < 0 or hot_idx < 0 or hot_idx > open_idx:
-    raise SystemExit("ensure_local must precede open(file_path) in _handle_files_serve")
+    raise SystemExit("ensure_local must precede open(...) in _handle_files_serve")
 if "HOT_SERVE_MATERIALIZE_FAILED" not in body:
     raise SystemExit("materialize failure must map to HOT_SERVE_MATERIALIZE_FAILED")
+# Native CodeQL sanitizer: assign safe_serve inside startswith branch.
+if "safe_serve = _serve_resolved" not in body and "_serve_resolved.startswith" not in body:
+    raise SystemExit("post-hot-serve must assign safe_serve inside startswith branch")
 print("OK source contract")
 PY
 
-# LRU cleanup must cover audio stems (pb_*), not only pb_*.mp4.
-grep -Fq 'glob("pb_*")' "$MPC" \
-  || fail "playback_cache_lru_cleanup must glob pb_* (all extensions)"
+# LRU cleanup must cover audio stems (pb_*), not only .mp4.
+grep -Fq 'name.startswith("pb_")' "$MPC" \
+  || fail "playback_cache_lru_cleanup must retain pb_* (all extensions)"
 grep -q "test_ensure_hot_serve_file_remaps_cloud_mp3_stem" "$TEST" \
   || fail "mp3 stem hot-serve test missing"
 

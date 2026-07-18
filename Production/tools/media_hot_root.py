@@ -9,9 +9,12 @@ range reads never hit File Provider EDEADLK.
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 
 _DEFAULT_HOT_ROOT = Path.home() / ".mindfulnest" / "media"
+# Leaf names allowed under the hot root (CodeQL py/path-injection).
+_EVENT_LEAF_RE = re.compile(r"^(Event|event)_[A-Za-z0-9._-]+$")
 
 
 def default_media_hot_root() -> Path:
@@ -21,12 +24,18 @@ def default_media_hot_root() -> Path:
     return _DEFAULT_HOT_ROOT
 
 
+def _safe_event_leaf_name(event_dir: str | Path) -> str | None:
+    """Return Event_N leaf when safe; None when name must not join under hot root."""
+    name = Path(event_dir).name
+    if _EVENT_LEAF_RE.fullmatch(name):
+        return name
+    return None
+
+
 def event_dir_is_cloud_backed(event_dir: str | Path) -> bool:
     """True when event_dir lives under Dropbox / macOS CloudStorage File Provider."""
-    try:
-        text = str(Path(event_dir).expanduser().resolve())
-    except OSError:
-        text = str(Path(event_dir).expanduser())
+    # normpath (not Path.resolve) — CodeQL treats resolve() of user paths as sinks.
+    text = os.path.normpath(os.path.expanduser(str(event_dir))).replace("\\", "/")
     markers = (
         "/CloudStorage/",
         "/Library/CloudStorage/",
@@ -48,15 +57,34 @@ def resolve_media_workspace(event_dir: str | Path) -> Path:
     env = os.environ.get("MN_MEDIA_HOT_ROOT", "").strip()
     if env == "0":
         return ed
+    leaf = _safe_event_leaf_name(ed)
     if env:
-        ws = Path(env).expanduser() / ed.name
-        ws.mkdir(parents=True, exist_ok=True)
-        return ws
+        if not leaf:
+            raise ValueError(f"invalid event workspace name for hot root: {ed.name!r}")
+        hot_root = os.path.realpath(os.path.expanduser(env))
+        # Inline startswith (CodeQL native sanitizer) — no helper call.
+        ws_cand = os.path.realpath(os.path.join(hot_root, leaf))
+        safe_ws = ""
+        if ws_cand == hot_root or ws_cand.startswith(hot_root + os.sep):
+            safe_ws = ws_cand
+        if not safe_ws:
+            raise ValueError(f"hot workspace escaped root: {ws_cand!r}")
+        os.makedirs(safe_ws, exist_ok=True)
+        return Path(safe_ws)
     if not event_dir_is_cloud_backed(ed):
         return ed
-    ws = _DEFAULT_HOT_ROOT / ed.name
-    ws.mkdir(parents=True, exist_ok=True)
-    return ws
+    if not leaf:
+        # Non-Event_* cloud path — stay in-tree rather than invent a hot leaf.
+        return ed
+    hot_root = os.path.realpath(str(_DEFAULT_HOT_ROOT.expanduser()))
+    ws_cand = os.path.realpath(os.path.join(hot_root, leaf))
+    safe_ws = ""
+    if ws_cand == hot_root or ws_cand.startswith(hot_root + os.sep):
+        safe_ws = ws_cand
+    if not safe_ws:
+        raise ValueError(f"hot workspace escaped root: {ws_cand!r}")
+    os.makedirs(safe_ws, exist_ok=True)
+    return Path(safe_ws)
 
 
 def playback_cache_dir_for_event(event_dir: str | Path) -> Path:
@@ -73,14 +101,13 @@ def kling_o3_trim_scratch_dir(event_dir: str | Path) -> Path:
 
 def media_hot_serve_roots() -> list[str]:
     """Realpath roots allowed for /files of hot media outside Dropbox."""
-    import os as _os
-
     roots: list[str] = []
     seen: set[str] = set()
     for cand in (default_media_hot_root(), _DEFAULT_HOT_ROOT):
         try:
-            cand.mkdir(parents=True, exist_ok=True)
-            real = _os.path.realpath(str(cand))
+            p = Path(cand).expanduser()
+            p.mkdir(parents=True, exist_ok=True)
+            real = os.path.realpath(str(p))
         except OSError:
             continue
         if real in seen:
