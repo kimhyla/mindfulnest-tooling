@@ -53,3 +53,6 @@ export function isStitchComposerPlaybackOwner(el: Element): boolean {
     || el.getAttribute('data-stitch-composer-playback-owner') === STITCH_COMPOSER_PLAYBACK_OWNER_V1
   );
 }
+
+/** STITCH_SLOT_STALE_KEEP_VIDEO_V1 — keep last export video when lineage is stale; show banner. */
+export const STITCH_SLOT_STALE_KEEP_VIDEO_V1 = 'STITCH_SLOT_STALE_KEEP_VIDEO_V1' as const;

@@ -1,0 +1,18 @@
+{
+  "built_at": "2026-06-21T23:53:25.280647+00:00",
+  "slot": 0,
+  "label": "single_canonical_mirror_g13_g3",
+  "speak_source": "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files/Production/Event_1/kling_o3_clips/bg_arc1_event1_pre_beat_13_g3.mp4",
+  "burst_overlay": "/Users/kimberlysmith/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files/Production/templates/chipper_teleport_intro/_scratch/clip_b_glass_shared.mp4",
+  "burst_method": "overlay_on_frozen_frame",
+  "burst_use_s": 5.0,
+  "duration_s": 11.1,
+  "speech_loudnorm": {
+    "applied": true,
+    "target_i_lufs": -19.0,
+    "target_tp_dbtp": -1.5,
+    "target_lra_lu": 11.0,
+    "recipe": "STITCH_SPEECH_LOUDNORM_V1",
+    "releveled_in_place": true
+  }
+}

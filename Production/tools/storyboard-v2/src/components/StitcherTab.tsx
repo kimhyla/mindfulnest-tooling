@@ -80,6 +80,7 @@ import {
   STITCH_SFX_CUE_DEFAULT_FADEOUT_MS,
   STITCH_SFX_CUE_DEFAULT_VOLUME,
   STITCH_SLOT_CANONICAL_DEFAULTS_V1,
+  STITCH_SLOT_STALE_KEEP_VIDEO_V1,
   defaultAmbientBedForSlot,
 } from '../utils/stitchConstants';
 import { stopAllPhasePlayback, registerStitchComposerPoolPause } from '../utils/waveformPlaybackBus';
@@ -124,6 +125,11 @@ import {
   STITCH_MUX_REBUILD_QUEUE_V1,
   STITCH_SFX_PLAYBACK_TRUTH_V1,
 } from '../utils/stitchJobMediaHydrate';
+import {
+  formatStitchSlotVideoLoadError,
+  resolveActiveSlotVideoError,
+  STITCH_DRY_MEDIA_FAIL_LOUD_V1,
+} from '../utils/stitchSlotVideoLoadError';
 import { syncActiveVideoRoleFromUrl } from '../state/videoRole';
 import {
   clearStitchComposerPreviewUrls,
@@ -245,6 +251,9 @@ interface StitchSlot {
   _ambient_mix_url?: string;
   playback_recipe_version?: string;
   dry_export_path?: string;
+  bg_o3_export_stale?: boolean;
+  bg_o3_export_stale_reason?: string;
+  superseded_bg_export_video_path?: string;
 }
 
 interface StitchJob {
@@ -601,6 +610,12 @@ export function StitcherTab() {
   const composerPoolRef = useRef<StitchComposerVideoPoolHandle | null>(null);
   const [composerVideoLoading, setComposerVideoLoading] = useState(false);
   const [composerVideoError, setComposerVideoError] = useState<string | null>(null);
+  /** STITCH_DRY_MEDIA_FAIL_LOUD_V1 — pool errors must survive inactive→active slot switch. */
+  const [slotVideoErrors, setSlotVideoErrors] = useState<
+    Partial<Record<StitchSessionSlotKey, string>>
+  >({});
+  const slotVideoErrorsRef = useRef(slotVideoErrors);
+  slotVideoErrorsRef.current = slotVideoErrors;
 
   const jobLoadedForEventRef = useRef<string | null>(null);
   const slotPreviewPrewarmJobRef = useRef<string | null>(null);
@@ -727,6 +742,8 @@ export function StitcherTab() {
       clearStitchSlotSessionEvent(prev);
       clearStitchComposerPreviewUrls(prev);
       setPreviewUrls({});
+      setSlotVideoErrors({});
+      setComposerVideoError(null);
     }
     stitchEventRef.current = stitchSessionKey;
     const restored = restoreStitchComposerPreviewUrls(stitchSessionKey);
@@ -1217,6 +1234,12 @@ export function StitcherTab() {
   });
   viewerSlotRef.current = viewerSlot;
   const viewerSlotData = job?.slots?.[viewerSlot];
+  const staleExportSlots = useMemo(() => {
+    if (!job?.slots) return [] as string[];
+    return Object.entries(job.slots)
+      .filter(([, slot]) => Boolean(slot?.bg_o3_export_stale) && Boolean((slot?.video_path ?? '').trim()))
+      .map(([key]) => key);
+  }, [job?.slots]);
   const viewerWaveformVideoPath = resolveSlotWaveformVideoPath(viewerSlotData);
   const viewerSlotNeedsMux = stitchSlotRequiresMuxedPreview(viewerSlotData);
   const viewerSlotNeedsAmbientMix = stitchSlotRequiresAmbientMix(viewerSlotData);
@@ -1280,15 +1303,30 @@ export function StitcherTab() {
   }, [composerVideoNode, viewerSlotData, viewerSlot]);
 
   useEffect(() => {
+    const sessionSlot = viewerSlot as StitchSessionSlotKey;
+    const url = composerSlotUrls[sessionSlot];
+    const video = composerPoolRef.current?.getVideo(sessionSlot);
+    const slotData = job?.slots?.[sessionSlot];
+    const restored = resolveActiveSlotVideoError({
+      slotKey: sessionSlot,
+      cachedError: slotVideoErrorsRef.current[sessionSlot] ?? null,
+      video: video ?? null,
+      dryExportPath: slotData?.dry_export_path ?? null,
+      videoPath: slotData?.video_path ?? null,
+      usingMux: stitchSlotRequiresMuxedPreview(slotData),
+    });
+    if (restored) {
+      setComposerVideoError(restored);
+      setComposerVideoLoading(false);
+      return;
+    }
     setComposerVideoError(null);
-    const url = composerSlotUrls[viewerSlot];
-    const video = composerPoolRef.current?.getVideo(viewerSlot);
     const alreadyLoaded = Boolean(
       url
       && (isStitchComposerUrlLoaded(url) || (video && video.readyState >= 2)),
     );
     setComposerVideoLoading(Boolean(url) && !alreadyLoaded);
-  }, [viewerSlot, composerSlotUrls]);
+  }, [viewerSlot, composerSlotUrls, job, slotVideoErrors]);
 
   // Pin resolved playback URL into previewUrls when composer resolved it outside previewUrls state.
   useEffect(() => {
@@ -1300,10 +1338,6 @@ export function StitcherTab() {
     ) return;
     bindSlotPreviewUrl(viewerSlot, url, 'hydrate');
   }, [viewerSlot, composerSlotUrls, previewUrls, viewerSlotData]);
-
-  useEffect(() => {
-    setComposerVideoError(null);
-  }, [viewerSlot]);
 
   // Stop stray phase playback when switching stitch slots (pool pauses inactive).
   useEffect(() => {
@@ -1809,6 +1843,13 @@ export function StitcherTab() {
 
   const onPoolSlotCanPlay = (slot: SlotKey, url: string) => {
     markStitchComposerUrlLoaded(url);
+    const sessionSlot = slot as StitchSessionSlotKey;
+    setSlotVideoErrors((prev) => {
+      if (!prev[sessionSlot]) return prev;
+      const next = { ...prev };
+      delete next[sessionSlot];
+      return next;
+    });
     if (slot === viewerSlotRef.current) {
       setComposerVideoLoading(false);
       setComposerVideoError(null);
@@ -1816,24 +1857,64 @@ export function StitcherTab() {
   };
 
   const onPoolSlotError = (slot: StitchSessionSlotKey) => {
-    if (slot !== viewerSlotRef.current) return;
     const video = composerPoolRef.current?.getVideo(slot);
-    const code = video?.error?.code;
-    const msg = video?.error?.message || `MEDIA_ERR code=${code ?? '?'}`;
-    setComposerVideoLoading(false);
     const slotData = job?.slots?.[slot];
     const usingMux = stitchSlotRequiresMuxedPreview(slotData);
+    const loud = formatStitchSlotVideoLoadError({
+      slotKey: slot,
+      mediaErrorCode: video?.error?.code ?? null,
+      mediaErrorMessage: video?.error?.message ?? null,
+      srcUrl: video?.currentSrc || video?.src || null,
+      dryExportPath: slotData?.dry_export_path ?? null,
+      videoPath: slotData?.video_path ?? null,
+      usingMux,
+    });
+    setSlotVideoErrors((prev) => (
+      prev[slot] === loud ? prev : { ...prev, [slot]: loud }
+    ));
+    stitchClientPreviewAudit('SLOT_VIDEO_LOAD_FAILED', {
+      job_name: job?.name,
+      slot_key: slot,
+      code: STITCH_DRY_MEDIA_FAIL_LOUD_V1,
+      message: loud,
+      ...videoPlaybackSnapshot(video),
+    });
     const dryUrl = slotData?.video_path
       ? resolveDrySlotSourceVideoUrl(slotData.video_path)
       : undefined;
     if (usingMux && dryUrl) {
       bindSlotPreviewUrl(slot, dryUrl, 'hydrate');
-      setComposerVideoError(
-        `SFX mix preview failed (${msg}) — playing speech-only. Click Review to rebuild the mix.`,
-      );
-    } else {
-      setComposerVideoError(`Video load failed: ${msg}`);
     }
+    if (slot !== viewerSlotRef.current) return;
+    setComposerVideoLoading(false);
+    setComposerVideoError(loud);
+    pushToast({
+      kind: 'error',
+      message: loud,
+      source: 'stitch-dry-media-fail-loud',
+      ttlMs: 12000,
+    });
+  };
+
+  const retryComposerSlotVideo = () => {
+    const slot = viewerSlotRef.current as StitchSessionSlotKey;
+    setSlotVideoErrors((prev) => {
+      if (!prev[slot]) return prev;
+      const next = { ...prev };
+      delete next[slot];
+      return next;
+    });
+    setComposerVideoError(null);
+    setComposerVideoLoading(true);
+    const video = composerPoolRef.current?.getVideo(slot);
+    if (!video) return;
+    stitchClientPreviewAudit('SLOT_VIDEO_LOAD_RETRY', {
+      job_name: job?.name,
+      slot_key: slot,
+      code: STITCH_DRY_MEDIA_FAIL_LOUD_V1,
+      ...videoPlaybackSnapshot(video),
+    });
+    video.load();
   };
 
   const onPreviewSlot = async (slot: SlotKey, opts?: { quiet?: boolean }) => {
@@ -2474,6 +2555,7 @@ export function StitcherTab() {
       data-stitch-slot-canonical-defaults={STITCH_SLOT_CANONICAL_DEFAULTS_V1}
       data-stitch-live-geometry-sig={STITCH_SLOT_LIVE_GEOMETRY_SIG_V1}
       data-stitch-slot-video-lineage={STITCH_SLOT_VIDEO_LINEAGE_V1}
+      data-stitch-slot-stale-keep-video={STITCH_SLOT_STALE_KEEP_VIDEO_V1}
       data-stitch-mux-video-lineage={STITCH_MUX_VIDEO_LINEAGE_V1}
       data-stitch-mux-rebuild-queue={STITCH_MUX_REBUILD_QUEUE_V1}
       data-stitch-canonical-defaults-persist={STITCH_CANONICAL_DEFAULTS_PERSIST_V1}
@@ -2513,6 +2595,16 @@ export function StitcherTab() {
           {standaloneMode && milestoneStandaloneNeedsExport(job.slots) ? (
             <div class="mn-warn" data-testid="stitcher-milestone-export-needed" style={{ marginBottom: '0.75rem' }}>
               Standalone slot is empty — open Beat Gen and use <strong>Send to Stitcher</strong> before baking.
+            </div>
+          ) : null}
+          {staleExportSlots.length > 0 ? (
+            <div
+              class="mn-warn"
+              data-testid="stitcher-slot-stale-banner"
+              data-stale-slots={staleExportSlots.join(',')}
+              style={{ marginBottom: '0.75rem' }}
+            >
+              Stale export — Beat Gen changed since this cut. Send to Stitcher again.
             </div>
           ) : null}
           <div
@@ -2601,8 +2693,11 @@ export function StitcherTab() {
                         : composerPreviewBuilding
                           ? 'Building SFX preview…'
                           : composerVideoError?.includes('speech-only')
+                            || composerVideoError?.includes('trying speech-only')
                             ? 'Speech-only fallback — click Review to rebuild SFX mix'
-                            : 'Slot video · no ambient or SFX'}
+                            : composerVideoError
+                              ? 'Video load failed — see banner below'
+                              : 'Slot video · no ambient or SFX'}
                 </span>
               </div>
               <div class="mn-stitcher-slot-composer-body">
@@ -2652,13 +2747,22 @@ export function StitcherTab() {
                   ) : null}
                 </div>
                 {composerVideoError ? (
-                  <p
+                  <div
                     class="mn-stitcher-composer-video-error"
                     data-testid="stitcher-composer-video-error"
+                    data-stitch-dry-media-fail-loud={STITCH_DRY_MEDIA_FAIL_LOUD_V1}
                     role="alert"
                   >
-                    {composerVideoError}
-                  </p>
+                    <p class="mn-stitcher-composer-video-error-text">{composerVideoError}</p>
+                    <button
+                      type="button"
+                      class="mn-stitcher-composer-video-error-retry"
+                      data-testid="stitcher-composer-video-error-retry"
+                      onClick={retryComposerSlotVideo}
+                    >
+                      Retry video load
+                    </button>
+                  </div>
                 ) : null}
                 {viewerWaveformVideoPath ? (
                 <StitcherSlotWaveform

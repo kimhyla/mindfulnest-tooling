@@ -161,13 +161,21 @@ def test_persist_directus_export_writes_sidecar_fields():
 
 
 def test_export_handler_wires_directus_registration():
+    """Directus runs after terminal done (BG_EXPORT_DIRECTUS_AFTER_DONE_V1)."""
     src = (TOOLS / "server_handlers" / "kling_o3.py").read_text(encoding="utf-8")
-    block = src.split("def _run_bg_export_to_stitcher_core", 1)[1].split("\ndef ", 1)[0]
-    assert "BG_DIRECTUS_EXPORT_V1" in block
-    assert "register_bg_export_to_directus" in block
-    assert "preserve_kling_o3_segment_beats" in block
-    assert "directus" in block
-
+    core = src.split("def _run_bg_export_to_stitcher_core", 1)[1].split(
+        "\ndef _run_bg_export_directus_after_done", 1
+    )[0]
+    after = src.split("def _run_bg_export_directus_after_done", 1)[1].split(
+        "\ndef _execute_bg_export_to_stitcher_job", 1
+    )[0]
+    assert "BG_EXPORT_DIRECTUS_AFTER_DONE_V1" in core
+    assert "preserve_kling_o3_segment_beats" in core
+    assert "directus" in core
+    assert "register_bg_export_to_directus" not in core
+    assert "BG_DIRECTUS_EXPORT_V1" in after
+    assert "register_bg_export_to_directus" in after
+    assert "persist_directus_export_on_sidecar" in after
 
 def test_sidecar_preserves_directus_fields():
     text = (TOOLS / "beat_generator.py").read_text(encoding="utf-8")
