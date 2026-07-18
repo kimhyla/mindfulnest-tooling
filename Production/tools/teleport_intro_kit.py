@@ -224,6 +224,43 @@ def ffmpeg_burst_overlay_on_frozen_speak(
         fail(f"burst overlay on frozen frame failed: {r.stderr[:500]}")
 
 
+def apply_intro_tail_speech_loudnorm(src: Path, dest: Path | None = None) -> Path:
+    """Level canonical intro_tail speech to the AUTO_LOUDNORM_V1 speech bus (−19 LUFS).
+
+    Body Kling delivery clips land near this target; the composed tail (speak + silent
+    burst/hold) historically shipped ~5–6 dB quieter in the speak window, so the final
+    intro beat sounded soft next to the rest of the module. Bake leveling into the
+    shared asset so Beat Gen preview, Send to Stitcher, and every event stay matched.
+    """
+    # Keep constants aligned with server_handlers.speech_loudnorm (avoid importing the
+    # stitch credential stack from this CLI module — path/import fragile in kit runs).
+    target_lufs = -19.0
+    target_tp = -1.5
+    target_lra = 11.0
+
+    src = src.expanduser().resolve()
+    if not src.is_file():
+        fail(f"intro_tail loudnorm input missing: {src}")
+    out = (dest if dest is not None else src).expanduser().resolve()
+    tmp = out.with_name(f"{out.stem}.loudnorm_tmp{out.suffix}")
+    af = f"loudnorm=I={target_lufs}:TP={target_tp}:LRA={target_lra}:print_format=summary"
+    cmd = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src),
+        "-af", af,
+        "-c:v", "copy",
+        "-c:a", "aac", "-b:a", "192k",
+        str(tmp),
+    ]
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    if r.returncode != 0 or not tmp.is_file() or tmp.stat().st_size <= 0:
+        tmp.unlink(missing_ok=True)
+        fail(f"intro_tail speech loudnorm failed: {(r.stderr or '')[:500]}")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    os.replace(tmp, out)
+    return out
+
+
 def ffmpeg_compose_intro_tail(
     speak: Path,
     burst_overlay: Path,
@@ -234,7 +271,7 @@ def ffmpeg_compose_intro_tail(
     burst_method: str = "overlay_on_frozen_frame",
     burst_use_s: float | None = None,
 ) -> None:
-    """Speak + burst tail + whiteout hold.
+    """Speak + burst tail + whiteout hold + speech loudnorm (−19 LUFS).
 
     ``kling_from_frozen_frame``: burst MP4 was generated from this speak clip's
     frozen last frame — concat directly (never lighten-blend onto the freeze again;
@@ -244,6 +281,7 @@ def ffmpeg_compose_intro_tail(
     """
     scratch.mkdir(parents=True, exist_ok=True)
     joined = scratch / "_joined.mp4"
+    held = scratch / "_held.mp4"
     burst_cap = burst_use_s if burst_use_s is not None else ffprobe_duration(burst_overlay)
     if burst_method == "kling_from_frozen_frame":
         ffmpeg_concat_speak_and_burst(speak, burst_overlay, joined, burst_use_s=burst_cap)
@@ -252,8 +290,11 @@ def ffmpeg_compose_intro_tail(
         ffmpeg_burst_overlay_on_frozen_speak(speak, burst_overlay, burst_seg, scratch=scratch)
         ffmpeg_concat_speak_and_burst(speak, burst_seg, joined, burst_use_s=burst_cap)
         burst_seg.unlink(missing_ok=True)
-    hold_last_frame(joined, dest, hold_s)
+    hold_last_frame(joined, held, hold_s)
     joined.unlink(missing_ok=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    apply_intro_tail_speech_loudnorm(held, dest)
+    held.unlink(missing_ok=True)
 
 
 def ffmpeg_concat_speak_and_burst(
@@ -777,6 +818,13 @@ def cmd_build_canonical_variants(args: argparse.Namespace) -> int:
             "burst_method": burst_method,
             "burst_use_s": round(burst_use_s, 3),
             "duration_s": tail_dur,
+            "speech_loudnorm": {
+                "applied": True,
+                "target_i_lufs": -19.0,
+                "target_tp_dbtp": -1.5,
+                "target_lra_lu": 11.0,
+                "recipe": "STITCH_SPEECH_LOUDNORM_V1",
+            },
         }
         (out_dir / "intro_tail.json").write_text(json.dumps(meta, indent=2) + "\n")
         upsert_variant(
