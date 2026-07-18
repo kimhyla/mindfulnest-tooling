@@ -45,14 +45,32 @@ def resolve_o3_current_job_id(beat: dict) -> str:
     return str(beat.get("o3_current_job_id") or "").strip()
 
 
-def resolve_o3_job_id_for_lifecycle(beat: dict) -> str:
-    """Job id for terminal/subprocess busy — canonical pointer then legacy UI/log fields."""
+def resolve_o3_job_id_for_lifecycle(beat: dict, *, allow_ui_spawn: bool = True) -> str:
+    """Job id for terminal/subprocess busy — pointer + optional spawn UI id only.
+
+    Log-path regex is **not** lifecycle authority (BG_BEAT_JOB_TRUTH_GALLERY_SPEC §4.3 #7).
+    Admin startup reconcile uses ``job_id_from_beat_legacy_reconcile`` instead.
+    """
     job_id = resolve_o3_current_job_id(beat)
     if job_id:
         return job_id
-    from o3_generation_intent import job_id_from_beat
+    if allow_ui_spawn:
+        ui = str(beat.get("kling_o3_voice_fix_ui_job_id") or "").strip()
+        if ui:
+            return ui
+    return ""
 
-    return job_id_from_beat(beat)
+
+def terminal_binds_active_lifecycle(beat: dict, job_id: str) -> bool:
+    """True when ``job_id`` is the beat's active attempt pointer (not log-path ghost)."""
+    jid = str(job_id or "").strip()
+    if not jid:
+        return False
+    active = resolve_o3_current_job_id(beat)
+    if active:
+        return active == jid
+    ui = str(beat.get("kling_o3_voice_fix_ui_job_id") or "").strip()
+    return bool(ui and ui == jid)
 
 
 def clear_o3_job_cache_fields(beat: dict) -> None:

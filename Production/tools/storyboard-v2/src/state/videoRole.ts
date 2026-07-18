@@ -30,6 +30,23 @@ export function syncActiveVideoRoleFromUrl(): void {
   }
 }
 
+/**
+ * Keep the URL ?video= hint in step with the signal — bookmark truth.
+ * Also used when VideoSelector adopts the server's persisted active_video on
+ * mount (PSL_STALE_KEY_HYDRATION_GUARD_V1 companion: a URL stuck on
+ * video=intro while the signal says resolution misled debugging).
+ */
+export function syncUrlVideoParam(role: string): void {
+  if (typeof window === 'undefined' || !role) return;
+  try {
+    const url = new URL(window.location.href);
+    url.searchParams.set('video', role);
+    window.history.replaceState({}, '', url.toString());
+  } catch {
+    // no-op when history API unavailable
+  }
+}
+
 export interface SetActiveVideoRoleResult {
   ok: boolean;
   status: number;
@@ -52,12 +69,6 @@ export async function setActiveVideoRole(newRole: string): Promise<SetActiveVide
   }
   const active = res.data?.active_video ?? newRole;
   activeTargetVideo.value = active;
-  try {
-    const url = new URL(window.location.href);
-    url.searchParams.set('video', active);
-    window.history.replaceState({}, '', url.toString());
-  } catch {
-    // no-op when history API unavailable
-  }
+  syncUrlVideoParam(active);
   return { ok: true, status: res.status, activeVideo: active };
 }

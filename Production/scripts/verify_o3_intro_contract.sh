@@ -53,6 +53,7 @@ python3 -m pytest \
   Production/tools/tests/test_beatgen_omni_restore.py \
   Production/tools/tests/test_heal_avatar_pro_poisoned_prompt.py \
   Production/tools/tests/test_milestone_init_bg_paths_authority_guard.py \
+  Production/tools/tests/test_sidecar_scope_pin.py \
   Production/tools/tests/test_bg_job_truth_gallery.py \
   Production/tools/tests/test_bg_export_live_beat_order.py \
   Production/tools/tests/test_milestone_o3_job_busy.py \

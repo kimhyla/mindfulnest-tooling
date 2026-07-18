@@ -1458,6 +1458,13 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (pane?.hidden) return false;
       if (ws.isPlaying()) return true;
 
+      const lvPre = linkedVideo?.current;
+      if (lvPre && !lvPre.paused && !lvPre.ended) {
+        withLinkedVideoSuppress(() => {
+          lvPre.pause();
+        });
+      }
+
       pauseOtherWaveformPlayback(playbackControlRef);
 
       const durMs = timelineDurationMsRef.current ?? timeAuthorityRef.current.getDurationMs() ?? 0;
@@ -1522,15 +1529,18 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
   const togglePlayback = useCallback(() => {
     const ws = wsRef.current;
     if (!ws) return;
-    if (ws.isPlaying() || isPlaying) {
-      // Local hardPause first — bus + linked-video sync must not restart after pause.
-      hardPause();
+    const lv = linkedVideo?.current;
+    const videoGhostPlaying = Boolean(
+      lv && !lv.paused && !lv.ended && !ws.isPlaying(),
+    );
+    if (ws.isPlaying() || videoGhostPlaying) {
       pauseAllPhasePlayback();
-      syncPlayUi();
+      setIsPlaying(false);
+      onPlayStateChange?.(false);
       return;
     }
     startPlayback(false);
-  }, [startPlayback, isPlaying, hardPause, syncPlayUi]);
+  }, [startPlayback, linkedVideo, onPlayStateChange]);
 
   playbackControlRef.play = (opts) => startPlayback(opts?.fromStart ?? false);
   playbackControlRef.pause = hardPause;

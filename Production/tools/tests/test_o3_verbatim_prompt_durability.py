@@ -122,7 +122,7 @@ def test_build_generation_intent_prepared_matches_verbatim(tmp_path):
         "bg_ref_image": beat["bg_ref_image"],
     }
     with patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True), \
-         patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, "")), \
+         patch("tools.kling_character_registry.char_ref_aligned_for_intent_commit", return_value=(True, "")), \
          patch("beat_generator.resolve_o3_element_list_entry", return_value={"element_id": "e1", "voice_id": "v1"}), \
          patch("beat_generator.validate_proven_o3_element_submit", return_value=None), \
          patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None), \

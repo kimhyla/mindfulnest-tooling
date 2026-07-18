@@ -158,6 +158,38 @@ def test_char_ref_aligned_rejects_baseline_when_canonical_locked(prod_root: Path
     assert ok2 is True
 
 
+def test_char_ref_aligned_strict_when_frontal_sha256_without_explicit_lock(prod_root: Path):
+    """auto_migrate_v1 stamps frontal_sha256 — strict mode must apply without visual_canonical_locked."""
+    from tools import kling_character_registry as reg
+
+    frontal_rel = "Bork/poses/bork_pose_proclaiming.png"
+    wrong_rel = "assets/image_library/baseline/baseline_char_bee_megaphone.png"
+    _write_png(prod_root / frontal_rel, b"bork-canonical")
+    _write_png(prod_root / wrong_rel, b"megaphone-wrong")
+    frontal_sha = reg.file_sha256(prod_root / frontal_rel)
+    registry = {
+        "characters": {
+            "Bork": {
+                "status": "active",
+                "element_id": "el-bork",
+                "kling_voice_id": "voice-bork",
+                "frontal_image": frontal_rel,
+                "frontal_sha256": frontal_sha,
+                "visual_canonical_lock_source": "auto_migrate_v1",
+                "refer_images": [frontal_rel],
+            },
+        },
+    }
+    (prod_root / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+
+    ok, detail = reg.char_ref_aligned_for_intent_commit(str(prod_root / wrong_rel), "Bork")
+    assert ok is False
+    assert "canonical Element identity" in detail
+
+    ok2, _ = reg.char_ref_aligned_for_intent_commit(str(prod_root / frontal_rel), "Bork")
+    assert ok2 is True
+
+
 def test_set_element_identity_pins_proven_o3_bind_and_scrubs_baseline(prod_root: Path):
     from tools import kling_character_registry as reg
 

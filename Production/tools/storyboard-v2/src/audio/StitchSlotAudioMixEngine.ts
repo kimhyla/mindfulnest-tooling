@@ -52,6 +52,19 @@ export function stopAllStitchClientMix(): void {
   }
 }
 
+/** Pause every pooled/composer video speech AudioContext (ghost-audio kill switch). */
+export function pauseAllVideoSpeechChains(): void {
+  if (typeof document === 'undefined') return;
+  document.querySelectorAll('video').forEach((el) => {
+    if (!(el instanceof HTMLVideoElement)) return;
+    el.pause();
+    const chain = videoSpeechChains.get(el);
+    if (chain && chain.ctx.state === 'running') {
+      void chain.ctx.suspend();
+    }
+  });
+}
+
 function speechChainForVideo(video: HTMLVideoElement): VideoSpeechChain {
   const existing = videoSpeechChains.get(video);
   if (existing) return existing;

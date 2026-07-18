@@ -71,7 +71,11 @@ def reconcile_beat_terminal_disk(
         load_intent_terminal,
         terminal_path_for_job,
     )
-    from o3_job_status_contract import clear_o3_pointer_if_terminal, resolve_o3_job_id_for_lifecycle
+    from o3_job_status_contract import (
+        clear_o3_pointer_if_terminal,
+        resolve_o3_job_id_for_lifecycle,
+        terminal_binds_active_lifecycle,
+    )
 
     beat_id = str(beat.get("beat_id") or "").strip()
     if not beat_id:
@@ -114,29 +118,32 @@ def reconcile_beat_terminal_disk(
             ):
                 changed = True
         elif status == "failed":
-            fail_msg = str((terminal.get("failure") or {}).get("message") or "")
-            if fail_msg and beat.get("kling_o3_voice_fix_error") != fail_msg:
-                beat["kling_o3_voice_fix_error"] = fail_msg
-                changed = True
-            from o3_generation_intent import restore_last_good_o3_delivery_after_failed_attempt
+            if not terminal_binds_active_lifecycle(beat, job_id):
+                pass
+            else:
+                fail_msg = str((terminal.get("failure") or {}).get("message") or "")
+                if fail_msg and beat.get("kling_o3_voice_fix_error") != fail_msg:
+                    beat["kling_o3_voice_fix_error"] = fail_msg
+                    changed = True
+                from o3_generation_intent import restore_last_good_o3_delivery_after_failed_attempt
 
-            intent_gen = None
-            intent = (terminal or {}).get("intent") or {}
-            if isinstance(intent, dict):
-                slot = intent.get("generation_slot") or intent.get("generation")
-                if slot and str(slot).startswith("g"):
-                    try:
-                        intent_gen = int(str(slot)[1:])
-                    except ValueError:
-                        intent_gen = None
-            if restore_last_good_o3_delivery_after_failed_attempt(
-                beat,
-                event_dir,
-                failed_generation=intent_gen,
-            ):
-                changed = True
-            elif heal_o3_beat_after_aborted_attempt(beat, event_dir):
-                changed = True
+                intent_gen = None
+                intent = (terminal or {}).get("intent") or {}
+                if isinstance(intent, dict):
+                    slot = intent.get("generation_slot") or intent.get("generation")
+                    if slot and str(slot).startswith("g"):
+                        try:
+                            intent_gen = int(str(slot)[1:])
+                        except ValueError:
+                            intent_gen = None
+                if restore_last_good_o3_delivery_after_failed_attempt(
+                    beat,
+                    event_dir,
+                    failed_generation=intent_gen,
+                ):
+                    changed = True
+                elif heal_o3_beat_after_aborted_attempt(beat, event_dir):
+                    changed = True
         elif status == "cancelled":
             if heal_o3_beat_after_aborted_attempt(beat, event_dir):
                 changed = True
@@ -181,6 +188,7 @@ def terminal_outcome_row(
         row["error"] = err
     if delta:
         row["reconciled"] = True
+        row["persisted"] = True
     return row
 
 

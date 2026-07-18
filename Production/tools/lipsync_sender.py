@@ -335,6 +335,74 @@ def _upload_via_production_staging(file_path: Path) -> dict | None:
         return None
 
 
+# LD-379 class: Kim's ISP resolver returns NXDOMAIN for the ephemeral upload
+# hosts (and a hijacked IP for api.wavespeed.ai). The urllib-based uploaders
+# above use the system resolver, so URL-transport submits fail before curl's
+# --resolve workaround can help. Fallback: when getaddrinfo fails for exactly
+# these hosts, resolve via public DNS (dig @8.8.8.8 / @1.1.1.1) and retry.
+_PUBLIC_DNS_FALLBACK_HOSTS = frozenset({
+    "filebin.net", "catbox.moe", "uguu.se", "api.wavespeed.ai",
+})
+_public_dns_fallback_installed = False
+_public_dns_cache: dict[str, str] = {}
+
+
+def _resolve_via_public_dns(host: str) -> str | None:
+    """Resolve *host* with dig against public resolvers; cached per process."""
+    import re as _re
+
+    cached = _public_dns_cache.get(host)
+    if cached:
+        return cached
+    for resolver in ("8.8.8.8", "1.1.1.1"):
+        try:
+            result = subprocess.run(
+                ["dig", "+short", "+time=3", "+tries=1", f"@{resolver}", host],
+                capture_output=True, text=True, timeout=5,
+            )
+            for line in result.stdout.splitlines():
+                line = line.strip()
+                if _re.fullmatch(r"\d{1,3}(?:\.\d{1,3}){3}", line):
+                    _public_dns_cache[host] = line
+                    return line
+        except (subprocess.TimeoutExpired, OSError):
+            continue
+    return None
+
+
+def install_public_dns_fallback() -> None:
+    """Patch ``socket.getaddrinfo`` with a public-DNS retry for upload hosts.
+
+    Scoped: only fires for ``_PUBLIC_DNS_FALLBACK_HOSTS`` and only after the
+    system resolver has already failed — zero behavior change on healthy DNS.
+    Idempotent; safe to call from server handlers, CLI, and tests.
+    """
+    global _public_dns_fallback_installed
+    if _public_dns_fallback_installed:
+        return
+    import socket as _socket
+
+    _orig_getaddrinfo = _socket.getaddrinfo
+
+    def _getaddrinfo_with_fallback(host, *args, **kwargs):
+        try:
+            return _orig_getaddrinfo(host, *args, **kwargs)
+        except _socket.gaierror:
+            if isinstance(host, str) and host in _PUBLIC_DNS_FALLBACK_HOSTS:
+                pinned = _resolve_via_public_dns(host)
+                if pinned:
+                    print(
+                        f"[lipsync] system DNS failed for {host}; "
+                        f"public-DNS fallback → {pinned}",
+                        flush=True,
+                    )
+                    return _orig_getaddrinfo(pinned, *args, **kwargs)
+            raise
+
+    _socket.getaddrinfo = _getaddrinfo_with_fallback
+    _public_dns_fallback_installed = True
+
+
 def upload_to_hosting(file_path: Path) -> dict:
     """
     Upload a file to public hosting and prove the URL returns exact bytes.
@@ -344,6 +412,7 @@ def upload_to_hosting(file_path: Path) -> dict:
     2. R2 CDN when credentials exist (``ops/lipsync-staging/{token}/…``)
     3. Ephemeral hosts — filebin, catbox, uguu (legacy fallback)
     """
+    install_public_dns_fallback()
     failures: list[str] = []
     token = os.environ.get("MN_LIPSYNC_STAGING_TOKEN", "").strip() or uuid.uuid4().hex
 

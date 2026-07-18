@@ -1,26 +1,101 @@
 """Media Playback Cache (MPP) — local bytes for storyboard operator playback.
 
-PLAYBACK_CACHE_V1: Beat Gen + Stitcher serve warmed copies under Event_N/.playback_cache/
-with cache-friendly HTTP (not live Dropbox range reads per play).
+PLAYBACK_CACHE_V1: Beat Gen + Stitcher serve warmed copies under a local hot
+workspace (.playback_cache), not live Dropbox File Provider range reads.
+Cloud-backed Event dirs → ~/.mindfulnest/media/<Event_N>/.playback_cache
+(see media_hot_root.py). Local/tmp event dirs stay in-tree for pytest.
 """
 from __future__ import annotations
 
 import hashlib
 import os
 import re
+import time
 from pathlib import Path
 
 import beat_generator as bg
+from media_hot_root import playback_cache_dir_for_event
 
 PLAYBACK_CACHE_VERSION = "PLAYBACK_CACHE_V1"
-_LRU_KEEP = 50
+# Keep enough masters+previews for a full Event intro refresh without
+# Dropbox rematerialize storms (was 50; Event_6 alone warms 15–40 clips).
+_LRU_KEEP = 120
 _TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
 
 
 def playback_cache_dir(event_dir: Path) -> Path:
-    d = Path(event_dir) / ".playback_cache"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
+    return playback_cache_dir_for_event(event_dir)
+
+
+def event_dir_from_media_path(
+    path: Path | str,
+    *,
+    fallback: Path | str | None = None,
+) -> Path:
+    """Nearest Event_N ancestor for a media path, else fallback."""
+    p = Path(path)
+    try:
+        p = p.resolve()
+    except OSError:
+        p = Path(path)
+    for parent in (p.parent, *p.parents):
+        name = parent.name
+        if name.startswith("Event_") or name.startswith("event_"):
+            return parent
+    if fallback is not None:
+        return Path(fallback)
+    raise ValueError(f"cannot resolve Event dir for media path: {path}")
+
+
+def ensure_hot_serve_file(
+    path: Path | str,
+    *,
+    event_dir: Path | str | None = None,
+) -> Path:
+    """Return a path safe for range-serve (never Dropbox File Provider bytes).
+
+    Cloud-backed masters stay on Dropbox as durable cold store. Operator GET
+    /files and playback serve materialize once into ~/.mindfulnest/media
+    .playback_cache (APFS), then stream from there.
+    """
+    from lib.ffmpeg_io import path_is_cloud_storage_backed
+    from media_hot_root import default_media_hot_root
+
+    src = Path(path)
+    try:
+        src_resolved = src.resolve()
+    except OSError:
+        src_resolved = src
+    if not path_is_cloud_storage_backed(src_resolved):
+        return src_resolved
+    # Already under local hot root (absolute /files to ui_preview, etc.)
+    try:
+        hot = default_media_hot_root().expanduser().resolve()
+        if src_resolved.is_relative_to(hot):
+            return src_resolved
+    except (OSError, ValueError):
+        pass
+    if not src_resolved.is_file():
+        return src_resolved
+    ed = (
+        Path(event_dir)
+        if event_dir is not None
+        else event_dir_from_media_path(src_resolved)
+    )
+    # File Provider often returns EDEADLK on concurrent master reads — retry
+    # before giving up so /files never falls back to streaming Dropbox bytes.
+    last_err: OSError | None = None
+    for attempt in range(12):
+        try:
+            return materialize_playback_cache(ed, src_resolved)
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in (11, 35) or attempt >= 11:
+                raise
+            time.sleep(min(4.0, 0.15 * (2 ** attempt)))
+    if last_err:
+        raise last_err
+    raise RuntimeError(f"hot-serve materialize failed: {src_resolved}")
 
 
 def playback_cache_token(source_path: Path) -> str:
@@ -46,8 +121,9 @@ def playback_cache_path(event_dir: Path, source_path: Path) -> Path:
 
 def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> None:
     cache = playback_cache_dir(event_dir)
+    # HOT_SERVE_ALL_FILES_V1 — cache holds mp4 + audio stems + images (pb_*).
     files = sorted(
-        (p for p in cache.glob("pb_*.mp4") if p.is_file()),
+        (p for p in cache.glob("pb_*") if p.is_file()),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )

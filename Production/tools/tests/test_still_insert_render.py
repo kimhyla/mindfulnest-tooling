@@ -119,7 +119,23 @@ def test_extract_still_insert_tts_pronoun_says_does_not_steal_named_character():
     assert "warm excited conversational pace" in parsed["tts_text"]
 
 
-def test_normalize_dialogue_speaker_strips_says_suffix():
+def test_extract_still_insert_tts_bork_when_beat_speaker_is_still_label():
+    """Beat sidecar may say Still (@Image1 label) while Bork speaks — use prompt voice."""
+    beat = {
+        "kling_o3_prompt": (
+            '@Image1 (Still). Scene from @Image2.\n\n'
+            'Bork speaks in a clipped, imperious pace: [indignant reverence] '
+            '"Look, there - You see that? [pause] It says Connect to the Light."'
+        ),
+        "speaker": "Still",
+        "pipeline": "still_insert",
+    }
+    parsed = bg.extract_still_insert_tts(beat)
+    assert parsed is not None
+    assert parsed["speaker"] == "Bork"
+    assert "Connect to the Light" in parsed["text"]
+
+
     from beat_extract_policy import normalize_dialogue_speaker
 
     assert normalize_dialogue_speaker("Lorelai says") == "Lorelai"

@@ -57,6 +57,12 @@ import {
   coercePhaseBCedricBaseClipId,
 } from '../../phaseBCedricContract';
 import {
+  formatPhaseBLipsyncBasePrepHint,
+  formatPhaseBLipsyncBasePrepSummary,
+  PHASE_B_KLING_AUTO_PREP_CODE,
+  type PhaseBLipsyncBasePrepMeta,
+} from '../../phaseBKlingBasePrepContract';
+import {
   coercePhaseAArloBaseClipId,
   PHASE_A_ARLO_BASE_CLIP_CANONICAL,
 } from '../../phaseAArloContract';
@@ -159,6 +165,8 @@ interface PhaseStateSlice {
   chipper_flyout_clip_id?: string;
   /** Phase B — persisted lipsync base clip (phase_b_cedric_base_clip_id). */
   cedric_base_clip_id?: string;
+  /** Phase B — last Kling submit prep audit (phase_b_lipsync_base_prep). */
+  lipsync_base_prep?: PhaseBLipsyncBasePrepMeta;
   // S5.5f — ambient bed preset (LD AMBIENT_PRESET_SELECTOR_INPRODUCER_V1).
   ambient_preset_id?: string;
 }
@@ -210,6 +218,8 @@ function pickPhaseSlice(state: EventStateResponse, phase: 'a' | 'b'): PhaseState
   if (phase === 'b') {
     const bci = get<string>('cedric_base_clip_id');
     slice.cedric_base_clip_id = coercePhaseBCedricBaseClipId(bci);
+    const prep = get<PhaseBLipsyncBasePrepMeta>('lipsync_base_prep');
+    if (prep && typeof prep === 'object') slice.lipsync_base_prep = prep;
   }
   const ap = get<string>('ambient_preset_id'); if (ap) slice.ambient_preset_id = ap;
   return slice;
@@ -521,7 +531,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       setStatusMsg(
         phase === 'a'
           ? 'Pick an Arlo base clip first (Regen base clip or picker below).'
-          : 'Pick a Cedric base clip first.',
+          : 'Pick a Cedric base clip (any length — send auto-sizes idle to stem).',
       );
       return;
     }
@@ -1001,10 +1011,12 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       : baseClipPicker.selectedClipId || stateSlice.cedric_base_clip_id || '';
   const hasStemCut = stemCut.hasStemCut;
   const terminalLipsyncBanner = phaseLipsyncTerminalBanner(stateSlice.lipsync_status);
+  const phaseBPrepSummary =
+    phase === 'b' ? formatPhaseBLipsyncBasePrepSummary(stateSlice.lipsync_base_prep) : null;
   const displayStatusMsg =
     lipsyncInFlight && !statusMsg?.startsWith('✗')
       ? phaseLipsyncProgressMessage(phase)
-      : (statusMsg ?? terminalLipsyncBanner);
+      : (statusMsg ?? terminalLipsyncBanner ?? phaseBPrepSummary);
   const activeCue =
     activeCueId
       ? watercolorCues.cues.find((c) => c.id === activeCueId) ?? null
@@ -1291,7 +1303,9 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             <option value="">— select —</option>
             {phaseBaseClipSelectOptions(phase, baseClips).map((c) => (
               <option key={c.id} value={c.id}>
-                {c.id} ({c.duration_s ?? '?'}s)
+                {phase === 'b'
+                  ? `${c.id} (${c.duration_s ?? '?'}s ref)`
+                  : `${c.id} (${c.duration_s ?? '?'}s)`}
               </option>
             ))}
           </select>
@@ -1306,7 +1320,11 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
               !effectiveBaseClipId ||
               !stateSlice.voice_stem_file
             }
-            title="Kling Sync (Phase B) or ByteDance on base clip (Phase A). Long Phase B stems split at 28s silence chunks."
+            title={
+              phase === 'b'
+                ? 'Kling Sync: auto-sizes Cedric idle to stem + 2s (bookend loop or trim). Stems >185s use segmented chunks.'
+                : 'Kling Sync (Phase A) or ByteDance on base clip (Phase A).'
+            }
           >
             {busyAction === 'lipsync'
               ? 'Sending…'
@@ -1357,6 +1375,16 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             🎨 Preview with Overlay
           </button>
         </div>
+
+        {phase === 'b' ? (
+          <p
+            class="mn-dim mn-phase-auto-prep-hint"
+            data-testid="phase-b-auto-base-prep-hint"
+            data-phase-b-kling-prep-code={PHASE_B_KLING_AUTO_PREP_CODE}
+          >
+            {formatPhaseBLipsyncBasePrepHint()}
+          </p>
+        ) : null}
 
         {/* Status line — server-driven in-flight message survives tab switches */}
         {displayStatusMsg ? (

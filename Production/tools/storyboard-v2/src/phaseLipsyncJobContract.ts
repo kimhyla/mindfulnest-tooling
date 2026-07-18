@@ -47,7 +47,7 @@ export function phaseLipsyncProgressMessage(phase: 'a' | 'b'): string {
   }
   return (
     '⏳ Kling lipsync in progress (~8–50 min depending on stem length). ' +
-    'Safe to switch tabs — will auto-update when done.'
+    'Idle base auto-sized to stem on send. Safe to switch tabs — will auto-update when done.'
   );
 }
 

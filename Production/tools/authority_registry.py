@@ -313,6 +313,19 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         spec_doc="Production/docs/TECH_SPEC_ELEMENT_VISUAL_CANONICAL_LOCK_v1.md",
     ),
     AuthorityConcept(
+        id="element_char_ref_submit_parity",
+        status="shipped",
+        marker="ELEMENT_CHAR_REF_SUBMIT_PARITY_V1",
+        question="When is Element O3 Generate allowed for a beat char ref?",
+        authority_shape="derived",
+        server_module="operator_workbench_contract.py",
+        server_read="resolve_beat_element_char_ref_gate",
+        server_write="sync_element_char_ref_status",
+        client_module="storyboard-v2/src/utils/bgBeatNavStatus.ts",
+        client_read="beatElementCharRefOk",
+        spec_doc="Production/docs/TECH_SPEC_ELEMENT_CHAR_REF_SUBMIT_PARITY_v1.md",
+    ),
+    AuthorityConcept(
         id="stitch_slot_timeline_dur",
         status="shipped",
         marker="STITCH_SLOT_TIMELINE_ATOMIC_V1",
@@ -356,6 +369,22 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         server_write="stitch_upsert_event_slot",
         spec_doc="Production/docs/TECH_SPEC_STITCH_BAKE_SLOT_AUTHORITY_V1.md",
         notes="Bake preflight validates slot read-only; export/pin/save are the only write paths.",
+    ),
+    AuthorityConcept(
+        id="phase_b_lipsync_route",
+        status="shipped",
+        marker="PHASE_B_PATH_A_ROUTE_V1",
+        question="Which pipeline generates the Phase B module lipsync MP4?",
+        authority_shape="disk",
+        server_module="server_handlers/phases.py",
+        server_read="PHASE_B_PATH_A_ROUTE_V1",
+        server_write="run_phase_b_path_a_lipsync",
+        spec_doc="Production/docs/TECH_SPEC_PHASE_B_PATH_A_DEFAULT_ROUTE_v1.md",
+        notes=(
+            "Path A layered pipeline (plate + cutout + gesture idle + QC gates) "
+            "is the single default route for all stem lengths; the old "
+            "single-pass/segmented fork is retired."
+        ),
     ),
     AuthorityConcept(
         id="sqlite_sidecar_authority",

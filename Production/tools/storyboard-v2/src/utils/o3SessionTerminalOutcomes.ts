@@ -9,6 +9,9 @@ export type O3TerminalOutcome = {
   generation?: number;
   error?: string;
   reconciled?: boolean;
+  /** True only when sidecar was written — session GET default omits outcomes. */
+  persisted?: boolean;
+  source?: string;
 };
 
 const toastedOutcomeKeys = new Set<string>();
@@ -29,6 +32,7 @@ export async function handleO3TerminalOutcomesFromSession(
   for (const row of outcomes) {
     const beatId = (row.beat_id ?? '').trim();
     if (!beatId) continue;
+    if (!row.persisted) continue;
     const key = outcomeToastKey(row);
     if (toastedOutcomeKeys.has(key)) continue;
     toastedOutcomeKeys.add(key);

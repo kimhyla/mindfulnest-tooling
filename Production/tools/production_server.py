@@ -2217,6 +2217,9 @@ class LipsyncPollingThread(threading.Thread):
             sweep_phase_module_lipsync_polls(self.state, self.client)
             from server_handlers.phases import sweep_phase_a_lipsync_resume
             sweep_phase_a_lipsync_resume(self.state)
+            # PHASE_B_PATH_A_ORPHAN_SWEEP_V1 — clear wedged Phase B running state.
+            from server_handlers.phases import sweep_phase_b_lipsync_orphan
+            sweep_phase_b_lipsync_orphan(self.state)
         except Exception as exc:  # noqa: BLE001
             print(f"[lipsync-poller] phase module sweep error: {exc}", flush=True)
             traceback.print_exc()
@@ -8197,14 +8200,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        retry_safe=False,
                    )
         file_path = resolved
-        # 2. Containment — under Dropbox root OR checkout root (CI / Playwright cwd).
+        # 2. Containment — Dropbox / checkout / local media hot root (APFS).
         try:
+            from lib.path_serve_security import is_realpath_under_any_root
+
             drop_root = os.path.realpath(str(DROPBOX_ROOT))
             repo_root = os.path.realpath(str(_MN_REPO_ROOT))
+            roots = [drop_root, repo_root]
+            try:
+                from media_hot_root import media_hot_serve_roots
+
+                roots.extend(media_hot_serve_roots())
+            except Exception:
+                pass
             real_path = os.path.realpath(file_path)
-            under_drop = real_path == drop_root or real_path.startswith(drop_root + os.sep)
-            under_repo = real_path == repo_root or real_path.startswith(repo_root + os.sep)
-            if not (under_drop or under_repo):
+            if not is_realpath_under_any_root(real_path, roots):
                 return self._send_error_v59(
                            403,
                            error_code="PATH_OUTSIDE_PROJECT_ROOT",
@@ -8218,11 +8228,30 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        error_message="path validation failed",
                        retry_safe=False,
                    )
+        # HOT_SERVE_ALL_FILES_V1 — never stream Dropbox File Provider bytes for
+        # ANY /files payload. Videos already rematerialized via
+        # _serve_mp4_with_range; non-video (Phase B .mp3 stems, images, …)
+        # previously did a raw open().read() on CloudStorage and surfaced
+        # Errno 11 as HTTP 500 GENERIC_ERROR (Event_3, 2026-07-17).
+        try:
+            file_path = str(self._ensure_local_file_for_serve(Path(file_path)))
+        except OSError as exc:
+            print(f"[hot-serve] materialize failed for {file_path}: {exc}", flush=True)
+            return self._send_error_v59(
+                503,
+                error_code="HOT_SERVE_MATERIALIZE_FAILED",
+                error_message=(
+                    "Dropbox File Provider busy — local playback cache not ready; retry"
+                ),
+                retry_safe=True,
+            )
         ext = os.path.splitext(file_path)[1].lower()
         content_types = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
             ".webp": "image/webp", ".gif": "image/gif",
             ".mp4": "video/mp4", ".mov": "video/quicktime",
+            ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+            ".aac": "audio/aac", ".ogg": "audio/ogg",
             ".html": "text/html; charset=utf-8", ".htm": "text/html; charset=utf-8",
         }
         # Video files require byte-range (Accept-Ranges/206) support so that
@@ -8231,8 +8260,23 @@ class ProductionHandler(BaseHTTPRequestHandler):
         if ext in (".mp4", ".mov"):
             return self._serve_mp4_with_range(Path(file_path))
         ct = content_types.get(ext, "application/octet-stream")
-        with open(file_path, "rb") as _f:
-            data = _f.read()
+        try:
+            with open(file_path, "rb") as _f:
+                data = _f.read()
+        except OSError as exc:
+            # Belt-and-suspenders: if APFS cache read still hits a transient
+            # errno, surface retryable 503 — never raw 500 GENERIC_ERROR.
+            if getattr(exc, "errno", None) in (11, 35):
+                print(f"[hot-serve] local read transient for {file_path}: {exc}", flush=True)
+                return self._send_error_v59(
+                    503,
+                    error_code="HOT_SERVE_MATERIALIZE_FAILED",
+                    error_message=(
+                        "Dropbox File Provider busy — local playback cache not ready; retry"
+                    ),
+                    retry_safe=True,
+                )
+            raise
         try:
             self.send_response(200)
             self.send_header("Content-Type", ct)
@@ -11890,10 +11934,51 @@ body {{padding-top:44px!important;}}
 
         self._serve_mp4_with_range(Path(abs_path))
 
+    def _ensure_local_file_for_serve(self, path: Path) -> Path:
+        """Remap Dropbox File Provider media onto local APFS playback cache before serve.
+
+        HOT_SERVE_ALL_FILES_V1 — used by /files for every extension (mp3 stems,
+        images, mp4/mov). Cloud File Provider concurrent reads raise Errno 11;
+        operator GET must never stream those bytes.
+        """
+        from media_playback_cache import ensure_hot_serve_file
+        from lib.ffmpeg_io import path_is_cloud_storage_backed
+
+        local = ensure_hot_serve_file(path, event_dir=Path(self.app.event_dir))
+        local_p = Path(local)
+        if local_p != Path(path):
+            print(
+                f"[hot-serve] cloud→local {Path(path).name} → {local_p}",
+                flush=True,
+            )
+        # Never stream cloud File Provider bytes — refresh retry if rematerialize failed.
+        if path_is_cloud_storage_backed(local_p):
+            raise OSError(
+                11,
+                f"hot-serve refused cloud path after materialize: {local_p}",
+            )
+        return local_p
+
+    def _ensure_local_mp4_for_serve(self, path: Path) -> Path:
+        """Backward-compat alias — all media types use _ensure_local_file_for_serve."""
+        return self._ensure_local_file_for_serve(path)
+
     def _serve_mp4_with_range(self, path: Path, *, cache_immutable: bool = False) -> None:
         """Serve an MP4 file with Accept-Ranges support for browser <video> scrubbing."""
         from lib.http_response_safety import safe_etag_from_basename
 
+        try:
+            path = self._ensure_local_file_for_serve(Path(path))
+        except OSError as exc:
+            print(f"[hot-serve] materialize failed for {path}: {exc}", flush=True)
+            return self._send_error_v59(
+                503,
+                error_code="HOT_SERVE_MATERIALIZE_FAILED",
+                error_message=(
+                    "Dropbox File Provider busy — local playback cache not ready; retry"
+                ),
+                retry_safe=True,
+            )
         file_size = path.stat().st_size
         range_header = self.headers.get("Range", "")
         ctype = "video/mp4"

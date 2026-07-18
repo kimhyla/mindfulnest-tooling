@@ -27,16 +27,30 @@ def is_realpath_under_any_root(real_path: str, roots: list[str]) -> bool:
 
 
 def safe_realpath_under_serve_roots(cand: str) -> str | None:
-    """Return os.path.realpath(cand) iff file exists under Dropbox or repo root."""
+    """Return os.path.realpath(cand) iff file exists under an allowed serve root."""
     if not isinstance(cand, str) or not cand:
         return None
     try:
         drop_root = os.path.realpath(str(DROPBOX_ROOT))
         repo_root = os.path.realpath(_repo_root_str())
+        roots = [drop_root, repo_root]
+        try:
+            # Local APFS hot media (playback cache + trim scratch) off Dropbox.
+            import sys
+            from pathlib import Path as _P
+
+            tools = _P(__file__).resolve().parents[1] / "tools"
+            if str(tools) not in sys.path:
+                sys.path.insert(0, str(tools))
+            from media_hot_root import media_hot_serve_roots  # noqa: PLC0415
+
+            roots.extend(media_hot_serve_roots())
+        except Exception:
+            pass
         real_path = os.path.realpath(cand)
         if not os.path.isfile(real_path):
             return None
-        if not is_realpath_under_any_root(real_path, [drop_root, repo_root]):
+        if not is_realpath_under_any_root(real_path, roots):
             return None
         return os.path.realpath(real_path)
     except OSError:

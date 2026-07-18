@@ -89,6 +89,11 @@ PHASE_B_WHITEOUT_FADE_AUDIO: bool = False
 PHASE_A_LIPSYNC_STALE_SEC: int = 1200
 # Dead worker + no tmp progress after restart — clear so UI can resubmit.
 PHASE_A_LIPSYNC_RESTART_ORPHAN_SEC: int = 300
+# PHASE_B_PATH_A_ORPHAN_SWEEP_V1 — Phase B Path A worker (chunked lipsync +
+# composite) dies on deploy/restart while status stays "running"; clear the
+# wedge so Kim can resubmit. Stale guard covers a hung worker thread.
+PHASE_B_LIPSYNC_RESTART_ORPHAN_SEC: int = 300
+PHASE_B_LIPSYNC_STALE_SEC: int = 3600
 
 _phase_a_lipsync_worker: threading.Thread | None = None
 _phase_a_lipsync_worker_lock = threading.Lock()
@@ -105,6 +110,8 @@ _PHASE_LIPSYNC_DERIVED_KEYS = (
     "lipsync_task_id",
     "lipsync_started_at",
     "lipsync_pending_out",
+    "lipsync_pending_output",
+    "lipsync_pending_audio",
     "mixed_audio_file",
     "mixed_audio_mtime",
     "stitched_file",
@@ -3149,18 +3156,21 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
 
 def handle_phase_b_lipsync(h, body: dict)-> None:
 
-    """POST /api/phase_b/lipsync
+    """POST /api/phase_b/lipsync — PHASE_B_PATH_A_ROUTE_V1.
 
-    Body: {"phase": "a"|"b", "base_clip_id": "placeholder_cedric_base_v1"}
+    Body: {"phase": "a"|"b", "base_clip_id": "cedric_idle_newstyle_v6"}
 
-    Module-level lipsync (no beat). Loads base clip from
-    Production/assets/lipsync_bases/<base_clip_id> (auto .mp4 / .mov),
-    mixed audio from state phase_{phase}_mixed_audio_file (fallback to
-    voice_stem). Applies silcomp, loops or trims base clip to audio
-    duration, submits to Kling Sync via LipSyncClient.submit_and_wait
-    (synchronous). Route: wavespeed.ai/kwaivgi/kling-lipsync.
+    Module-level lipsync (no beat). Default route is the Path A layered
+    pipeline (phase_b_path_a_pipeline.run_phase_b_path_a_lipsync): static
+    room plate + blue-screen cutout, trimmed-crossfade gesture idle track,
+    silence-aligned ≤50s chunks submitted to Kling lipsync in parallel,
+    pupil + still-span QC gates, chroma composite. One route for all stem
+    lengths. base_clip_id is recorded for state continuity only.
+    Spec: Production/docs/TECH_SPEC_PHASE_B_PATH_A_DEFAULT_ROUTE_v1.md
 
-    Writes phase_{phase}_lipsync_<TS>.mp4 and patches state.
+    Runs in a background worker (status "running"); the orphan sweep clears
+    wedged state after restart. Writes phase_{phase}_lipsync_<TS>.mp4 and
+    patches state via _write_phase_b_lipsync_complete.
     """
     # LD-456 SCOPE_VALIDATION_V1 + LD-461 SCOPE_BODY_HELPER_V1
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
@@ -3240,29 +3250,30 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
                    retry_safe=False,
                    extra={"hint": "File may have been deleted. Re-run Regen Audio."},
                )
-    # Resolve base clip — auto-detect .mp4 or .mov. Accept raw key if it
-    # already includes an extension.
-    bases_dir = h._phase_assets_dir("lipsync_bases")
-    base_path: Path | None = None
-    raw = bases_dir / base_clip_id
-    if raw.is_file():
-        base_path = raw
-    else:
-        for ext in ("mp4", "mov"):
-            candidate = bases_dir / f"{base_clip_id}.{ext}"
-            if candidate.is_file():
-                base_path = candidate
-                break
-    if base_path is None:
+    # PHASE_B_PATH_A_ROUTE_V1: base_clip_id is recorded for state continuity
+    # only — the Path A route renders from its own plate/cutout/idle-unit
+    # assets, not a whole-frame base clip. Validate those assets up front.
+    from phase_b_path_a_pipeline import (  # noqa: PLC0415
+        count_phase_b_path_a_chunks,
+        run_phase_b_path_a_lipsync,
+        validate_path_a_assets,
+    )
+
+    try:
+        validate_path_a_assets()
+    except FileNotFoundError as exc:
         return h._send_error_v59(
                    404,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"base clip not found: {base_clip_id}",
+                   error_code="PATH_A_ASSETS_MISSING",
+                   error_message=str(exc),
                    retry_safe=False,
-                   extra={"hint": f"Expected {bases_dir}/{base_clip_id}.mp4 or .mov", "looked_in": str(bases_dir)},
+                   extra={"hint": (
+                       "Restore the Path A plate/cutout/idle-unit assets — see "
+                       "Production/tools/PHASE_B_PATH_A_LIPSYNC_RUNBOOK_v1.md."
+                   )},
                )
 
-    # Budget check.
+    # Budget fast-fail (exact per-chunk gate runs after audio prep).
     spend = h.app.state.read_spend()
     if spend["budget_remaining"] < COST_PER_LIPSYNC:
         return h._send_error_v59(
@@ -3292,219 +3303,149 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
             extra={"hint": "Adjust stem trim front/back seconds before Send for Lipsync."},
         )
 
-    from phase_lipsync_job_contract import LIPSYNC_SINGLE_PASS_MAX_S  # noqa: PLC0415
-    from phase_b_kling_segmented_lipsync import (  # noqa: PLC0415
-        PHASE_B_KLING_SEGMENT_STRATEGY_LEGACY,
-        compute_phase_b_kling_segments,
-        run_phase_b_kling_segmented_lipsync,
-    )
-
+    # PHASE_B_PATH_A_ROUTE_V1 — layered plate+cutout pipeline is the single
+    # default route for ALL stem lengths (silence-aligned chunking replaces
+    # the old single-pass/segmented fork). Spec:
+    # Production/docs/TECH_SPEC_PHASE_B_PATH_A_DEFAULT_ROUTE_v1.md
     out_name = f"phase_{phase}_lipsync_{ts}.mp4"
     out_path = h.app.event_dir / out_name
 
-    if audio_duration > LIPSYNC_SINGLE_PASS_MAX_S:
-        _, seg_specs = compute_phase_b_kling_segments(
-            audio_for_lipsync,
-            strategy=PHASE_B_KLING_SEGMENT_STRATEGY_LEGACY,
-        )
-        chunk_jobs = max(1, len(seg_specs))
-        spend = h.app.state.read_spend()
-        seg_cost = COST_PER_LIPSYNC * chunk_jobs
-        if spend["budget_remaining"] < seg_cost:
-            return h._send_error_v59(
-                402,
-                error_code="BUDGET_EXCEEDED_FOR_LIP_SYNC",
-                error_message="budget exceeded for segmented lip sync",
-                retry_safe=False,
-                extra={
-                    "budget_remaining": spend["budget_remaining"],
-                    "cost": seg_cost,
-                    "chunk_count": chunk_jobs,
-                    "hint": "Raise budget via /api/budget/override or shorten the voice stem.",
-                },
-            )
-
-        def _apply_running(st, _bid=base_clip_id, _out=out_name, _audio=audio_name, _jobs=chunk_jobs):
-            st[f"phase_{phase}_lipsync_status"] = "running"
-            st[f"phase_{phase}_lipsync_started_at"] = time.time()
-            st[f"phase_{phase}_lipsync_pending_output"] = _out
-            st[f"phase_{phase}_lipsync_pending_audio"] = _audio
-            st.pop(f"phase_{phase}_lipsync_task_id", None)
-            if _bid:
-                st["phase_b_cedric_base_clip_id"] = _bid
-            for _avatar_key in (
-                f"phase_{phase}_avatar_still_file",
-                f"phase_{phase}_lipsync_route",
-                f"phase_{phase}_lipsync_estimated_cost_usd",
-                f"phase_{phase}_lipsync_audio_duration_s",
-                f"phase_{phase}_lipsync_raw_file",
-            ):
-                st.pop(_avatar_key, None)
-            st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
-            return st["_module_version"]
-
-        h.app.state.mutate_state(_apply_running)
-
-        _app = h.app
-        _base_path = base_path
-        _audio_path = audio_for_lipsync
-        _chunk_jobs = chunk_jobs
-
-        def _seg_bg():
-            try:
-                run_phase_b_kling_segmented_lipsync(
-                    _base_path,
-                    _audio_path,
-                    out_path,
-                    work_dir=_app.event_dir / f"_work_{out_path.stem}",
-                    apply_delivery=False,
-                    segment_strategy=PHASE_B_KLING_SEGMENT_STRATEGY_LEGACY,
-                )
-                class _AppShim:
-                    pass
-                shim = _AppShim()
-                shim.state = _app.state
-                _write_phase_b_lipsync_complete(
-                    shim,
-                    phase=phase,
-                    out_path=out_path,
-                    out_name=out_name,
-                    base_clip_id=base_clip_id,
-                    spend_usd=COST_PER_LIPSYNC * _chunk_jobs,
-                )
-            except Exception as exc:  # noqa: BLE001
-                traceback.print_exc()
-
-                def _apply_err(st, _e=exc):
-                    st[f"phase_{phase}_lipsync_status"] = (
-                        f"error: {type(_e).__name__}: {str(_e)[:100]}"
-                    )
-                    st.pop(f"phase_{phase}_lipsync_pending_output", None)
-                    st.pop(f"phase_{phase}_lipsync_pending_audio", None)
-                    return st.get("_module_version", 0)
-
-                try:
-                    _app.state.mutate_state(_apply_err)
-                except Exception:  # noqa: BLE001
-                    pass
-
-        _spawn_phase_a_lipsync_worker(_seg_bg)
-        return h._send_json(202, {
-            "ok": True,
-            "status": "running",
-            "phase": phase,
-            "audio_duration_s": round(audio_duration, 3),
-            "base_clip_id": base_clip_id,
-            "chunk_count": chunk_jobs,
-            "message": (
-                f"Segmented Kling lipsync ({chunk_jobs} chunks, legacy 28s). "
-                "The storyboard will auto-update when done."
-            ),
-        })
-
-    tmp_audio_path = h.app.event_dir / f"_tmp_silcomp_phase_{phase}_{ts}.mp3"
-    tmp_video_path = h.app.state.clips_dir / f"_tmp_trim_phase_{phase}_{ts}.mp4"
     try:
-        raw_dur = _ffprobe_duration(base_path)
-        target_video_s = audio_duration + _VIDEO_TAILROOM_S
-        raw_size_mb = base_path.stat().st_size / 1024 / 1024
-        from phase_b_kling_base_prep import prep_phase_b_kling_base_video  # noqa: PLC0415
-
-        if raw_dur < target_video_s:
-            prep_work = h.app.state.clips_dir / f"_tmp_kling_prep_phase_{phase}_{ts}.mp4"
-            video_for_lipsync, prep_meta = prep_phase_b_kling_base_video(
-                base_path, target_video_s, prep_work,
-            )
-            print(
-                f"[phase_b_lipsync] {prep_meta.get('code')} strategy="
-                f"{prep_meta.get('strategy')} base={raw_dur:.2f}s target={target_video_s:.2f}s "
-                f"submit={video_for_lipsync.name} ({prep_meta.get('submit_size_mb') or raw_size_mb:.1f}MB)",
-                flush=True,
-            )
-        else:
-            # Base clip is longer than audio — trim to avoid sending excess data.
-            video_for_lipsync, _, _, _ = _trim_video_to_audio(
-                base_path, tmp_video_path, audio_duration,
-                trim_start=0.0, trim_end=None,
-            )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
-            OSError, ValueError) as exc:
-        traceback.print_exc()
-        return h._send_error_v59(
-                   500,
-                   error_code="LIPSYNC_PRE_CONDITIONING_FAILED",
-                   error_message="lipsync pre-conditioning failed",
-                   retry_safe=True,
-                   extra={"stage": "silcomp_or_trim", "detail": str(exc)[:400], "hint": "Check ffmpeg + that base clip is decodable."},
-               )
-
-    # Submit to Kling Sync (POST only — returns task_id in a few seconds).
-    # Poll + download run in LipsyncPollingThread sweep (survives restart).
-    lipsync_client = LipSyncClient(h.app.client.api_key)
-    try:
-        task_id = lipsync_client.submit(video_for_lipsync, audio_for_lipsync)
+        chunk_jobs = max(1, count_phase_b_path_a_chunks(audio_for_lipsync))
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
-        for tmp in (tmp_audio_path, tmp_video_path):
+        return h._send_error_v59(
+            500,
+            error_code="LIPSYNC_PRE_CONDITIONING_FAILED",
+            error_message=f"chunk boundary detection failed: {exc}",
+            retry_safe=True,
+            extra={"stage": "path_a_chunking", "detail": str(exc)[:400],
+                   "hint": "Check ffmpeg + that the voice stem is decodable."},
+        )
+
+    spend = h.app.state.read_spend()
+    total_cost = COST_PER_LIPSYNC * chunk_jobs
+    if spend["budget_remaining"] < total_cost:
+        return h._send_error_v59(
+            402,
+            error_code="BUDGET_EXCEEDED_FOR_LIP_SYNC",
+            error_message="budget exceeded for chunked lip sync",
+            retry_safe=False,
+            extra={
+                "budget_remaining": spend["budget_remaining"],
+                "cost": total_cost,
+                "chunk_count": chunk_jobs,
+                "hint": "Raise budget via /api/budget/override or shorten the voice stem.",
+            },
+        )
+
+    def _apply_running(st, _bid=base_clip_id, _out=out_name, _audio=audio_name):
+        st[f"phase_{phase}_lipsync_status"] = "running"
+        st[f"phase_{phase}_lipsync_started_at"] = time.time()
+        st[f"phase_{phase}_lipsync_pending_output"] = _out
+        st[f"phase_{phase}_lipsync_pending_audio"] = _audio
+        st.pop(f"phase_{phase}_lipsync_task_id", None)
+        if _bid:
+            st["phase_b_cedric_base_clip_id"] = _bid
+        for _stale_key in (
+            f"phase_{phase}_avatar_still_file",
+            f"phase_{phase}_lipsync_route",
+            f"phase_{phase}_lipsync_estimated_cost_usd",
+            f"phase_{phase}_lipsync_audio_duration_s",
+            f"phase_{phase}_lipsync_raw_file",
+        ):
+            st.pop(_stale_key, None)
+        st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+        return st["_module_version"]
+
+    _app = h.app
+    _audio_path = audio_for_lipsync
+    _chunk_jobs = chunk_jobs
+    _api_key = h.app.client.api_key
+
+    def _path_a_bg():
+        try:
+            run_phase_b_path_a_lipsync(
+                _audio_path,
+                out_path,
+                api_key=_api_key,
+            )
+
+            class _AppShim:
+                pass
+            shim = _AppShim()
+            shim.state = _app.state
+            _write_phase_b_lipsync_complete(
+                shim,
+                phase=phase,
+                out_path=out_path,
+                out_name=out_name,
+                base_clip_id=base_clip_id,
+                spend_usd=COST_PER_LIPSYNC * _chunk_jobs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+
+            def _apply_err(st, _e=exc):
+                st[f"phase_{phase}_lipsync_status"] = (
+                    f"error: {type(_e).__name__}: {str(_e)[:100]}"
+                )
+                st.pop(f"phase_{phase}_lipsync_started_at", None)
+                st.pop(f"phase_{phase}_lipsync_pending_output", None)
+                st.pop(f"phase_{phase}_lipsync_pending_audio", None)
+                return st.get("_module_version", 0)
+
             try:
-                tmp.unlink(missing_ok=True)
+                _app.state.mutate_state(_apply_err)
             except Exception:  # noqa: BLE001
                 pass
-        return h._send_error_v59(
-                   502,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"Kling LipSync submit failed: {type(exc).__name__}: {exc}",
-                   retry_safe=True,
-                   extra={"hint": f"{str(exc)[:200]} — check server stderr. "
-                "Likely: WaveSpeed API key, DNS, or oversized payload."},
-               )
 
-    # Mark state as polling — LipsyncPollingThread sweep owns poll + terminal write.
-    def _apply_polling(state, _p=phase, _tid=task_id, _bid=base_clip_id, _out=out_name):
-        state[f"phase_{_p}_lipsync_status"] = "polling"
-        state[f"phase_{_p}_lipsync_task_id"] = _tid
-        state[f"phase_{_p}_lipsync_pending_out"] = _out
-        if _p == "b" and _bid:
-            state["phase_b_cedric_base_clip_id"] = _bid
-        for _avatar_key in (
-            f"phase_{_p}_avatar_still_file",
-            f"phase_{_p}_lipsync_route",
-            f"phase_{_p}_lipsync_estimated_cost_usd",
-            f"phase_{_p}_lipsync_audio_duration_s",
-            f"phase_{_p}_lipsync_raw_file",
-        ):
-            state.pop(_avatar_key, None)
-        state["_module_version"] = int(state.get("_module_version", 0) or 0) + 1
-        return state["_module_version"]
-    try:
-        h.app.state.mutate_state(_apply_polling)
-    except Exception:  # noqa: BLE001
-        pass  # non-fatal — polling state is cosmetic
+    h.app.state.mutate_state(_apply_running)
 
-    for tmp in (tmp_audio_path, tmp_video_path):
+    if not _spawn_phase_a_lipsync_worker(_path_a_bg):
+        # Another phase lipsync worker is alive — revert so the busy state
+        # never points at a job nothing is running (wedge class).
+        def _apply_spawn_busy(st):
+            st[f"phase_{phase}_lipsync_status"] = (
+                "error: worker_busy: another phase lipsync job is running"
+            )
+            st.pop(f"phase_{phase}_lipsync_started_at", None)
+            st.pop(f"phase_{phase}_lipsync_pending_output", None)
+            st.pop(f"phase_{phase}_lipsync_pending_audio", None)
+            return st.get("_module_version", 0)
+
         try:
-            tmp.unlink(missing_ok=True)
+            h.app.state.mutate_state(_apply_spawn_busy)
         except Exception:  # noqa: BLE001
             pass
+        return h._send_error_v59(
+            409,
+            error_code="LIPSYNC_WORKER_BUSY",
+            error_message="another phase lipsync worker is already running",
+            retry_safe=True,
+            extra={"hint": "Wait for the in-flight lipsync job to finish, then resend."},
+        )
 
     print(
-        f"[phase_b_lipsync] submitted task_id={task_id} — "
-        f"persistent poller will finalize → {out_name}",
+        f"[phase_b_lipsync] PHASE_B_PATH_A_ROUTE_V1 running: {chunk_jobs} chunks "
+        f"({audio_duration:.1f}s stem) → {out_name}",
         flush=True,
     )
 
     return h._send_json(202, {
         "ok": True,
-        "status": "submitted",
-        "task_id": task_id,
+        "status": "running",
         "phase": phase,
         "audio_duration_s": round(audio_duration, 3),
         "base_clip_id": base_clip_id,
+        "chunk_count": chunk_jobs,
+        "route": "PHASE_B_PATH_A_ROUTE_V1",
         "message": (
-            "Kling Sync is processing (~8-20 min). "
+            f"Path A layered lipsync ({chunk_jobs} chunks, gesture idle + QC gates). "
             "The storyboard will auto-update when done."
         ),
     })
+
 
 def _finalize_phase_a_lipsync_delivery(out_path: Path, *, method: str) -> dict:
     """V2 letterbox delivery encode — parity with Phase B module lipsync terminal write."""
@@ -3577,6 +3518,10 @@ def _write_phase_b_lipsync_complete(
         state[f"phase_{_p}_lipsync_delivery_recipe"] = _meta.get("delivery_recipe")
         state.pop(f"phase_{_p}_lipsync_task_id", None)
         state.pop(f"phase_{_p}_lipsync_pending_out", None)
+        # Running-shape keys (Path A worker route) — must clear on terminal.
+        state.pop(f"phase_{_p}_lipsync_started_at", None)
+        state.pop(f"phase_{_p}_lipsync_pending_output", None)
+        state.pop(f"phase_{_p}_lipsync_pending_audio", None)
         for _avatar_key in (
             f"phase_{_p}_avatar_still_file",
             f"phase_{_p}_lipsync_route",
@@ -3591,6 +3536,51 @@ def _write_phase_b_lipsync_complete(
         return state["_module_version"]
 
     app.state.mutate_state(_apply)
+
+def sweep_phase_b_lipsync_orphan(state_mgr) -> None:
+    """PHASE_B_PATH_A_ORPHAN_SWEEP_V1 — clear wedged Phase B ``running`` state.
+
+    The Path A route runs in a worker thread; on deploy/restart the thread
+    dies while status stays ``running``, wedging the busy UI forever (the old
+    segmented path had the same unpatched gap). Terminal-error the orphan so
+    Kim can resubmit. A stale guard also covers a hung-but-alive worker.
+    """
+    snap = state_mgr.read_state()
+    if snap.get("phase_b_lipsync_status") != "running":
+        return
+
+    with _phase_a_lipsync_worker_lock:
+        worker_alive = (
+            _phase_a_lipsync_worker is not None
+            and _phase_a_lipsync_worker.is_alive()
+        )
+
+    started = snap.get("phase_b_lipsync_started_at")
+    age = (
+        time.time() - float(started)
+        if isinstance(started, (int, float)) else None
+    )
+
+    if worker_alive:
+        if age is None or age <= PHASE_B_LIPSYNC_STALE_SEC:
+            return
+        reason = f"stale_timeout: running > {PHASE_B_LIPSYNC_STALE_SEC}s"
+    else:
+        if age is not None and age <= PHASE_B_LIPSYNC_RESTART_ORPHAN_SEC:
+            return  # grace window: worker may be between spawn and first poll
+        reason = "orphan_restart: worker died before terminal write"
+
+    def _clear(st, _r=reason):
+        st["phase_b_lipsync_status"] = f"error: {_r}"
+        st.pop("phase_b_lipsync_started_at", None)
+        st.pop("phase_b_lipsync_pending_output", None)
+        st.pop("phase_b_lipsync_pending_audio", None)
+        st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+        return st["_module_version"]
+
+    state_mgr.mutate_state(_clear)
+    print(f"[phase_b_lipsync-orphan] cleared: {reason}", flush=True)
+
 
 def sweep_phase_module_lipsync_polls(state, client) -> None:
     """Poll in-flight phase B module lipsync jobs — survives server restarts.

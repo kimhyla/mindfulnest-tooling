@@ -201,6 +201,10 @@ def test_element_char_ref_gate_rejects_locked_library_still(tmp_path: Path, monk
         "tools.kling_character_registry.is_speaker_voice_ready",
         lambda _s: True,
     )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {"status": "active", "element_id": "123"},
+    )
 
     def fake_hash(path):
         p = str(path)
@@ -217,7 +221,7 @@ def test_element_char_ref_gate_rejects_locked_library_still(tmp_path: Path, monk
     }
     ok, detail = bg.element_char_ref_gate(beat)
     assert ok is False
-    assert "does not match Element images" in detail
+    assert "canonical Element identity" in detail or "does not match Element" in detail
 
 
 def test_element_char_ref_gate_accepts_element_pose(tmp_path: Path, monkeypatch):
@@ -231,6 +235,10 @@ def test_element_char_ref_gate_accepts_element_pose(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(
         "tools.kling_character_registry.is_speaker_voice_ready",
         lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {"status": "active", "element_id": "123"},
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
@@ -262,6 +270,10 @@ def test_sync_element_char_ref_status_persists_mismatch_on_beat(tmp_path: Path, 
         lambda _s: True,
     )
     monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {"status": "active", "element_id": "123"},
+    )
+    monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
         lambda p: "hash_library"
         if "ChatGPT" in str(p) and Path(p).read_bytes() == b"library"
@@ -275,7 +287,7 @@ def test_sync_element_char_ref_status_persists_mismatch_on_beat(tmp_path: Path, 
     }
     assert bg.sync_element_char_ref_status(beat, heal_mismatch=False) is False
     assert beat["element_char_ref_ok"] is False
-    assert "does not match Element images" in beat["element_char_ref_error"]
+    assert "canonical Element identity" in beat["element_char_ref_error"] or "does not match Element" in beat["element_char_ref_error"]
 
 
 def test_migrate_sidecar_preserves_locked_library_ref_when_file_exists(tmp_path: Path, monkeypatch):
@@ -345,6 +357,10 @@ def test_sync_clears_stale_element_char_ref_error_when_hashes_match(tmp_path: Pa
         lambda _s: True,
     )
     monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {"status": "active", "element_id": "123"},
+    )
+    monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
         lambda _p: "hash_canonical",
     )
@@ -378,6 +394,10 @@ def test_apply_user_beat_ref_keeps_library_bytes_on_mismatch(tmp_path: Path, mon
         lambda _s: True,
     )
     monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {"status": "active", "element_id": "123"},
+    )
+    monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
         lambda p: "hash_library"
         if "ChatGPT" in str(p) and Path(p).read_bytes() == b"library"
@@ -394,7 +414,7 @@ def test_apply_user_beat_ref_keeps_library_bytes_on_mismatch(tmp_path: Path, mon
     assert library.read_bytes() == b"library"
     assert beat["reference_image_locked"] is True
     assert beat["element_char_ref_ok"] is False
-    assert "does not match Element images" in beat["element_char_ref_error"]
+    assert "canonical Element identity" in beat["element_char_ref_error"] or "does not match Element" in beat["element_char_ref_error"]
 
 
 def test_reconcile_char_ref_with_element_readds_on_disk_pose(tmp_path: Path, monkeypatch):
@@ -451,18 +471,12 @@ def test_reconcile_char_ref_with_element_readds_on_disk_pose(tmp_path: Path, mon
     assert ok is True
 
 
-def test_ensure_beat_element_char_ref_for_o3_reconciles_locked_library(
+def test_ensure_beat_element_char_ref_for_o3_accepts_canonical_frontal(
     tmp_path: Path, monkeypatch,
 ):
-    library = tmp_path / "Event_2" / "library" / "sources" / "ChatGPT_Image.png"
-    library.parent.mkdir(parents=True, exist_ok=True)
-    library.write_bytes(b"same-bytes")
-    pose = tmp_path / "Lorelai" / "poses" / "chatgpt_image.png"
-    pose.parent.mkdir(parents=True, exist_ok=True)
-    pose.write_bytes(b"same-bytes")
-    (tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png").write_bytes(b"f")
-    (tmp_path / "Lorelai" / "poses" / "lorelai_explaining.png").write_bytes(b"e")
-    (tmp_path / "Lorelai" / "poses" / "lorelai_shocked.png").write_bytes(b"s")
+    canonical = tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"canonical-front")
 
     registry = {
         "characters": {
@@ -471,10 +485,8 @@ def test_ensure_beat_element_char_ref_for_o3_reconciles_locked_library(
                 "element_id": "old",
                 "kling_voice_id": "v1",
                 "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
-                "refer_images": [
-                    "Lorelai/poses/lorelai_explaining.png",
-                    "Lorelai/poses/lorelai_shocked.png",
-                ],
+                "frontal_sha256": __import__("hashlib").sha256(b"canonical-front").hexdigest(),
+                "refer_images": ["Lorelai/poses/lorelai_canonical_neutral.png"],
                 "element_name": "Lorelai",
             },
         },
@@ -484,6 +496,54 @@ def test_ensure_beat_element_char_ref_for_o3_reconciles_locked_library(
     from tools import kling_character_registry as reg
 
     reg.set_prod_root(tmp_path)
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
+
+    beat = {
+        "speaker": "Lorelai",
+        "reference_image": {"abs_path": str(canonical)},
+        "reference_image_locked": True,
+        "element_char_ref_ok": False,
+    }
+    assert bg.ensure_beat_element_char_ref_for_o3(beat, "ws-key") is True
+    assert beat["element_char_ref_ok"] is True
+
+
+def test_ensure_beat_element_char_ref_blocked_when_library_not_canonical_frontal(
+    tmp_path: Path, monkeypatch,
+):
+    """SUBMIT_PARITY_V1: refer reconcile cannot bypass canonical frontal bytes."""
+    library = tmp_path / "Event_2" / "library" / "images" / "sources" / "ChatGPT_Image.png"
+    library.parent.mkdir(parents=True, exist_ok=True)
+    library.write_bytes(b"same-bytes")
+    canonical = tmp_path / "Lorelai" / "poses" / "lorelai_canonical_neutral.png"
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_bytes(b"frontal-bytes")
+
+    registry = {
+        "characters": {
+            "Lorelai": {
+                "status": "active",
+                "element_id": "old",
+                "kling_voice_id": "v1",
+                "frontal_image": "Lorelai/poses/lorelai_canonical_neutral.png",
+                "frontal_sha256": __import__("hashlib").sha256(b"frontal-bytes").hexdigest(),
+                "refer_images": ["Lorelai/poses/lorelai_canonical_neutral.png"],
+                "element_name": "Lorelai",
+            },
+        },
+    }
+    (tmp_path / "character_subjects.json").write_text(json.dumps(registry), encoding="utf-8")
+
+    from tools import kling_character_registry as reg
+
+    reg.set_prod_root(tmp_path)
+    monkeypatch.setattr(
+        "tools.kling_character_registry.is_speaker_voice_ready",
+        lambda _s: True,
+    )
     monkeypatch.setattr(
         "tools.kling_element_voice.register_kling_element",
         lambda *a, **k: ("elem_new", "pred"),
@@ -495,8 +555,9 @@ def test_ensure_beat_element_char_ref_for_o3_reconciles_locked_library(
         "reference_image_locked": True,
         "element_char_ref_ok": False,
     }
-    assert bg.ensure_beat_element_char_ref_for_o3(beat, "ws-key") is True
-    assert beat["element_char_ref_ok"] is True
+    assert bg.ensure_beat_element_char_ref_for_o3(beat, "ws-key") is False
+    assert beat["element_char_ref_ok"] is False
+    assert "canonical Element identity" in (beat.get("element_char_ref_error") or "")
 
 
 def test_require_element_char_ref_for_o3_raises_before_api(tmp_path: Path, monkeypatch):
@@ -549,6 +610,10 @@ def test_heal_locked_char_ref_redirects_missing_library_path_without_overwrite(
     monkeypatch.setattr(
         "tools.kling_character_registry.is_speaker_voice_ready",
         lambda _s: True,
+    )
+    monkeypatch.setattr(
+        "tools.kling_character_registry.get_character_entry",
+        lambda _s: {"status": "active", "element_id": "123"},
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",

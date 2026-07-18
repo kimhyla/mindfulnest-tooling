@@ -4,6 +4,10 @@ import { signal } from '@preact/signals';
 import { apiGet } from '../api/client';
 import { storyboardSessionKey } from './producerSessionKeys';
 import {
+  expectedStoryboardSessionKeyNow,
+  sessionPayloadMayHydrate,
+} from './sessionHydrationAuthority';
+import {
   runSessionFetch,
   sessionHasReadyCache,
   type SessionSliceMeta,
@@ -70,12 +74,17 @@ export async function ensureStoryboardSession(
     },
     onSuccess: (data) => {
       row.data = data;
-      storyboardState.value = data;
-      storyboardError.value = null;
+      // PSL_STALE_KEY_HYDRATION_GUARD_V1 — stale completions cache silently.
+      if (sessionPayloadMayHydrate(key, expectedStoryboardSessionKeyNow())) {
+        storyboardState.value = data;
+        storyboardError.value = null;
+      }
     },
     onError: (message) => {
-      storyboardError.value = message;
-      storyboardState.value = null;
+      if (sessionPayloadMayHydrate(key, expectedStoryboardSessionKeyNow())) {
+        storyboardError.value = message;
+        storyboardState.value = null;
+      }
     },
   });
 }

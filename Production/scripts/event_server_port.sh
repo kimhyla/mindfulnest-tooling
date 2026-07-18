@@ -38,8 +38,10 @@ event_storyboard_url() {
 # EVENT_SERVER_COLD_BOOT_WAIT_V1 — dedicated Event_N cold start can exceed 90s
 # (Event_1 sidecar reconcile ~137s observed; Directus lock, ghost scrub). Shared by
 # launchd install, deploy, and event_server_provision.py (keep defaults aligned).
+# 2026-07-17: attempts 90→240 — whole-fleet simultaneous cold boot against
+# Dropbox observed at ~4-5 min, past the old 180s ceiling (deploy bdceaff6).
 : "${EVENT_SERVER_QUICK_HEALTH_ATTEMPTS:=3}"
-: "${EVENT_SERVER_COLD_BOOT_ATTEMPTS:=90}"
+: "${EVENT_SERVER_COLD_BOOT_ATTEMPTS:=240}"
 : "${EVENT_SERVER_WAIT_SLEEP_SECONDS:=2}"
 : "${EVENT_SESSION_STATE_CURL_MAX_SECONDS:=180}"
 

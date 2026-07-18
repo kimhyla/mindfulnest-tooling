@@ -24,8 +24,6 @@ from lib.ffmpeg_io import (
     run_ffmpeg_to_dest,
     sidecar_io_transient,
 )
-from lib.event_media_cache import ensure_local_media
-
 import base64
 import concurrent.futures
 import contextlib
@@ -121,6 +119,31 @@ def _assert_milestone_sidecar_write_path() -> None:
     if not _is_milestone_sidecar_path(path):
         raise RuntimeError(
             f"milestone Beat Gen sidecar write blocked — path is not under Milestones/: {path}"
+        )
+
+
+def _sidecar_scope_pin() -> tuple[bool, str]:
+    """SIDECAR_SCOPE_PIN_V1 — identity of the sidecar target a transaction reads from."""
+    return (_MILESTONE_SIDECAR_JSON_ONLY, os.path.abspath(BG_SIDECAR_PATH or ""))
+
+
+def _assert_sidecar_scope_unchanged(pin: tuple[bool, str], *, caller: str) -> None:
+    """SIDECAR_SCOPE_PIN_V1 — abort RMW write when scope switched mid-transaction.
+
+    Proven corruption (2026-07-17, Event_2 :5112): a session-state migrate held
+    the sidecar lock ~155s under Event_2 SQLite scope; /api/milestones/load
+    rebound BG_SIDECAR_PATH to Milestones/milestone1_arc1 mid-transaction, and
+    the transaction's final write dumped the Event_2 assembly (30 beats) into
+    the milestone sidecar. Milestone isolation then stripped the alien event
+    segments, leaving 0 beats — recurring milestone data loss. Failing loud
+    drops one mutation; writing through corrupts a whole partition.
+    """
+    now = _sidecar_scope_pin()
+    if now != pin:
+        raise RuntimeError(
+            f"SIDECAR_SCOPE_PIN_V1: Beat Gen scope changed mid-transaction in {caller} "
+            f"(read target={pin[1]}, write target={now[1]}) — write aborted to prevent "
+            "cross-scope sidecar pollution; retry re-reads fresh state"
         )
 
 
@@ -1217,11 +1240,13 @@ def mutate_sidecar_locked(
         caller=caller,
     )
     with sidecar_file_lock(timeout_s=timeout_s):
+        scope_pin = _sidecar_scope_pin()
         sidecar = read_sidecar()
         if migrate:
             sidecar = _migrate_sidecar(sidecar)
         _maybe_isolate_milestone_sidecar(sidecar)
         mutator(sidecar)
+        _assert_sidecar_scope_unchanged(scope_pin, caller=caller)
         write_sidecar(sidecar)
         return sidecar
 
@@ -1272,6 +1297,7 @@ def delete_beat_locked(
                 ]
 
     with sidecar_file_lock():
+        scope_pin = _sidecar_scope_pin()
         sidecar = read_sidecar()
         if migrate:
             sidecar = _migrate_sidecar(sidecar)
@@ -1280,6 +1306,7 @@ def delete_beat_locked(
         _delete(sidecar)
         if _count_sidecar_beats(sidecar) >= before:
             return False
+        _assert_sidecar_scope_unchanged(scope_pin, caller=caller)
         write_sidecar(sidecar)
     return True
 
@@ -1339,6 +1366,7 @@ def update_beat_locked(
     for attempt in range(_SIDECAR_IO_MAX_ATTEMPTS):
         try:
             with sidecar_file_lock(timeout_s=lock_timeout_s):
+                scope_pin = _sidecar_scope_pin()
                 sidecar = read_sidecar()
                 _seg, beat = find_beat(sidecar, beat_id)
                 if not beat:
@@ -1346,6 +1374,7 @@ def update_beat_locked(
                 if expected_attempt_id is not None and beat.get("kling_o3_voice_fix_attempt_id") != expected_attempt_id:
                     return False, beat
                 mutator(beat, sidecar)
+                _assert_sidecar_scope_unchanged(scope_pin, caller=caller)
                 write_sidecar(sidecar)
                 return True, beat
         except OSError as exc:
@@ -5631,9 +5660,26 @@ _STILL_INSERT_BOGUS_SPEAKERS = _STILL_INSERT_NON_DELIVERY_VERBS | _STILL_INSERT_
 })
 
 
+def _still_insert_voice_ready_character_names() -> list[str]:
+    """Registry characters with Element+voice — longest names first for safe word-boundary match."""
+    names: list[str] = []
+    try:
+        from tools import kling_character_registry as reg
+
+        for name in (reg.load_character_subjects().get("characters") or {}):
+            if reg.is_speaker_voice_ready(name):
+                names.append(name)
+    except Exception:
+        pass
+    for alias in _STILL_INSERT_SPEAKER_ALIASES:
+        if alias not in names:
+            names.append(alias)
+    return sorted(set(names), key=len, reverse=True)
+
+
 def _still_insert_named_speaker_from_source(source: str) -> str:
     """First registered character name in prompt — beats pronoun extraction (``she says:``)."""
-    for name in _STILL_INSERT_SPEAKER_ALIASES:
+    for name in _still_insert_voice_ready_character_names():
         if re.search(rf"\b{re.escape(name)}\b", source, flags=re.I):
             return _canon_speaker(name) or name
     return ""
@@ -5643,7 +5689,13 @@ def _resolve_still_insert_speaker(source: str, beat: dict, extracted: str | None
     """Speaker for still TTS — beat sidecar wins over bogus colon tokens like ``whispering:``."""
     beat_sp = _canon_speaker((beat.get("speaker") or "").strip()) or (beat.get("speaker") or "").strip()
     if beat_sp and beat_sp not in ("Character", "[Stage Direction]"):
-        return beat_sp
+        try:
+            from tools import kling_character_registry as reg
+
+            if reg.is_speaker_voice_ready(beat_sp):
+                return beat_sp
+        except Exception:
+            return beat_sp
     named = _still_insert_named_speaker_from_source(source)
     if named:
         return named
@@ -6605,11 +6657,17 @@ def clear_o3_cut_fields(target: dict) -> None:
 
 
 def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
+    """Match an O3 option by absolute path, resolved path, or basename/clip family.
+
+    UI trim previews often send ``Path.name`` while sidecar stores the Dropbox
+    absolute path — exact/resolve alone misses; stem-family closes that class.
+    """
     vp = str(video_path or "").strip()
     if not vp:
         return None
     resolved_vp = _resolve_o3_video_path_for_match(vp)
     exact: dict | None = None
+    family_match: dict | None = None
     untrimmed_match: dict | None = None
     for opt in beat.get("kling_o3_options") or []:
         if not isinstance(opt, dict):
@@ -6620,13 +6678,16 @@ def find_o3_option_by_video_path(beat: dict, video_path: str) -> dict | None:
         if op == vp or _resolve_o3_video_path_for_match(op) == resolved_vp:
             exact = opt
             break
+        if family_match is None and _o3_option_paths_same_clip_family(op, vp):
+            family_match = opt
         untrimmed = str(opt.get("o3_untrimmed_video_path") or "").strip()
-        if untrimmed and (
+        if untrimmed and untrimmed_match is None and (
             untrimmed == vp
             or _resolve_o3_video_path_for_match(untrimmed) == resolved_vp
+            or _o3_option_paths_same_clip_family(untrimmed, vp)
         ):
             untrimmed_match = opt
-    return exact or untrimmed_match
+    return exact or family_match or untrimmed_match
 
 
 def _o3_trim_stem(path: str) -> str:
@@ -6667,6 +6728,31 @@ def _resolve_o3_video_path_for_match(video_path: str) -> str:
         return str(Path(vp).resolve())
     except OSError:
         return vp
+
+
+def resolve_o3_option_disk_video_path(
+    opt: dict,
+    video_path: str | None = None,
+) -> str:
+    """Pick an on-disk clip path for trim/cut.
+
+    UI often sends ``Path.name`` while the option row stores the absolute Dropbox
+    path. ``video_path or opt["video_path"]`` wrongly preferred the basename and
+    failed ``isfile`` — always prefer the first existing candidate.
+    """
+    candidates = (
+        str(video_path or "").strip(),
+        str((opt or {}).get("video_path") or "").strip(),
+        str((opt or {}).get("o3_untrimmed_video_path") or "").strip(),
+    )
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            return cand
+    req = candidates[0]
+    stored = candidates[1]
+    if req and stored and _o3_option_paths_same_clip_family(req, stored):
+        return stored
+    return req or stored
 
 
 def is_user_selectable_o3_video(
@@ -6884,7 +6970,7 @@ def set_o3_option_cut(
     )
     if opt is None:
         raise ValueError(f"No O3 option in slot {slot_index}")
-    vp = str(video_path or opt.get("video_path") or "").strip()
+    vp = resolve_o3_option_disk_video_path(opt, video_path)
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before cutting")
     raw_dur = _ffprobe_duration(Path(vp))
@@ -7173,8 +7259,7 @@ def bake_o3_active_export_clip(
             clear_o3_baked_fields(opt)
         return {"baked": False, "baked_path": str(src.resolve())}
 
-    scratch_dir = event_dir / "assembled" / "_kling_o3_trim_scratch"
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    scratch_dir = kling_o3_trim_scratch_dir(event_dir)
     token = o3_baked_export_token(beat, video_path=src)
     dest = scratch_dir / f"{beat.get('beat_id')}_{token}.mp4"
     if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
@@ -7313,7 +7398,7 @@ def set_o3_option_trim(
     )
     if opt is None:
         raise ValueError(f"No O3 option in slot {slot_index}")
-    vp = str(video_path or opt.get("video_path") or "").strip()
+    vp = resolve_o3_option_disk_video_path(opt, video_path)
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before trimming")
     duration_path = _o3_trim_authority_path(beat, opt, vp)
@@ -7528,6 +7613,36 @@ def heal_invalid_o3_cut_all_options(beat: dict) -> bool:
     return changed
 
 
+def ensure_local_media(
+    path: str | Path,
+    *,
+    event_id: str = "",
+    event_dir: str | Path | None = None,
+) -> Path:
+    """Local APFS path for ffmpeg ``-i`` — same hot-serve cache as ``/files``.
+
+    HOT_SERVE_BAKE_V1: replaces the older ``~/.cache/mindfulnest/events`` mirror so
+    trim/cut bake and browser playback share one Dropbox→APFS materialize path.
+    """
+    from media_playback_cache import ensure_hot_serve_file, event_dir_from_media_path
+
+    src = Path(path)
+    if event_dir is not None:
+        ed = Path(event_dir)
+    else:
+        try:
+            ed = event_dir_from_media_path(src)
+        except ValueError:
+            name = str(event_id or "").strip() or "Event_unknown"
+            if not name.startswith("Event_") and not name.startswith("event_"):
+                name = f"Event_{name}" if name.isdigit() else name
+            from media_hot_root import default_media_hot_root
+
+            ed = default_media_hot_root() / name
+            ed.mkdir(parents=True, exist_ok=True)
+    return ensure_hot_serve_file(src, event_dir=ed)
+
+
 def materialize_o3_cut_out_clip(
     beat: dict,
     dest: Path,
@@ -7540,13 +7655,16 @@ def materialize_o3_cut_out_clip(
     if not src.is_file():
         raise FileNotFoundError(f"missing clip: {src}")
     cut_start, cut_end, raw_dur = resolve_o3_cut_window(beat, video_path=src)
+    ed = Path(event_dir) if event_dir is not None else None
     if not o3_cut_is_active(beat, raw_dur=raw_dur, video_path=src):
-        copy_file_durable(src, dest)
+        local_src = ensure_local_media(src, event_dir=ed)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        copy_file_durable(local_src, dest)
         return dest
 
     dest.parent.mkdir(parents=True, exist_ok=True)
     event_id = _event_id_from_event_dir(event_dir or src.parent.parent)
-    local_src = ensure_local_media(src, event_id=event_id)
+    local_src = ensure_local_media(src, event_id=event_id, event_dir=ed)
 
     if cut_start <= 0.001:
         cmd = [
@@ -7611,13 +7729,20 @@ def kling_o3_trim_scratch_token(beat: dict, *, video_path: str | None = None) ->
     return f"{clip_id}_s{start}_b{back_val}"
 
 
+def kling_o3_trim_scratch_dir(event_dir: str | Path) -> Path:
+    """Hot scratch dir for trim/cut preview + bake (local APFS when event is on Dropbox)."""
+    from media_hot_root import kling_o3_trim_scratch_dir as _hot_scratch  # noqa: PLC0415
+
+    return _hot_scratch(event_dir)
+
+
 def kling_o3_ui_trim_preview_path(
     beat_id: str,
     event_dir: str | Path,
     beat: dict,
 ) -> Path:
     """Scratch path for ffmpeg WYSIWYG trim/cut preview — unique per gen + window."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     if beat_has_o3_sidecar_cut(beat):
         token = kling_o3_cut_scratch_token(beat)
         return scratch / f"{beat_id}_{token}_ui_preview.mp4"
@@ -7626,9 +7751,45 @@ def kling_o3_ui_trim_preview_path(
     return scratch / f"{beat_id}_g{gen}_{token}_ui_preview.mp4"
 
 
+def find_kling_o3_ui_trim_preview_by_window(
+    beat_id: str,
+    event_dir: str | Path,
+    *,
+    trim_start: float,
+    trim_back: float | None,
+) -> Path | None:
+    """Reuse any existing UI preview for this beat + trim window (ignore clip hash).
+
+    Token embeds sha1(video_path); basename vs absolute requests would otherwise
+    miss a warm scratch and re-ffmpeg under Dropbox contention.
+    """
+    scratch = kling_o3_trim_scratch_dir(event_dir)
+    bid = str(beat_id or "").strip()
+    if not bid or not scratch.is_dir():
+        return None
+    start = round(float(trim_start or 0.0), 2)
+    back_val = (
+        round(float(trim_back), 2)
+        if trim_back is not None and float(trim_back) > 0
+        else 0.0
+    )
+    pattern = f"{bid}_*_s{start}_b{back_val}_ui_preview.mp4"
+    hits: list[Path] = []
+    for path in scratch.glob(pattern):
+        try:
+            if path.is_file() and path.stat().st_size > 1024:
+                hits.append(path)
+        except OSError:
+            continue
+    if not hits:
+        return None
+    hits.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return hits[0]
+
+
 def invalidate_kling_o3_trim_scratch(beat_id: str, event_dir: str | Path) -> None:
     """Remove stale trim preview/export scratch files when trim clears or clip changes."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     if not scratch.is_dir():
         return
     bid = str(beat_id or "").strip()
@@ -7686,7 +7847,7 @@ def _trim_window_scratch_paths(
     video_path: str | None = None,
 ) -> set[Path]:
     """Preview/export scratch paths for one front/back trim window."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     gen = int(beat.get("kling_o3_generation") or 0)
     token = kling_o3_trim_scratch_token(
         {
@@ -7717,7 +7878,7 @@ def _kling_o3_trim_scratch_keep_paths(
     beat: dict,
 ) -> set[Path]:
     """Preview/export scratch paths for beat-level trim and every trimmed gallery option."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     keep: set[Path] = set()
     if beat_has_o3_sidecar_cut(beat):
         token = kling_o3_cut_scratch_token(beat)
@@ -7751,7 +7912,7 @@ def prune_stale_kling_o3_trim_scratch(
     beat: dict,
 ) -> int:
     """Drop legacy fixed-name and wrong-token trim scratch files for one beat."""
-    scratch = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch = kling_o3_trim_scratch_dir(event_dir)
     if not scratch.is_dir():
         return 0
     bid = str(beat_id or "").strip()
@@ -7814,7 +7975,7 @@ def reconcile_kling_o3_trim_all_events(sidecar: dict, prod_root: str | Path | No
         elif heal_invalid_kling_o3_trim(beat):
             changed += 1
         has_trim = beat_has_kling_o3_sidecar_trim(beat)
-        scratch = event_dir / "assembled" / "_kling_o3_trim_scratch"
+        scratch = kling_o3_trim_scratch_dir(event_dir)
         if not scratch.is_dir():
             continue
         has_stale = any(
@@ -8031,14 +8192,17 @@ def materialize_kling_o3_trimmed_clip(
     if not src.is_file():
         raise FileNotFoundError(f"missing clip: {src}")
     trim_start, trim_end, raw_dur = resolve_kling_o3_trim_window(beat, video_path=src)
+    ed = Path(event_dir) if event_dir is not None else None
     if not kling_o3_trim_is_active(beat, raw_dur=raw_dur):
-        copy_file_durable(src, dest)
+        local_src = ensure_local_media(src, event_dir=ed)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        copy_file_durable(local_src, dest)
         return dest
 
     duration = trim_end - trim_start
     dest.parent.mkdir(parents=True, exist_ok=True)
     event_id = _event_id_from_event_dir(event_dir or src.parent.parent)
-    local_src = ensure_local_media(src, event_id=event_id)
+    local_src = ensure_local_media(src, event_id=event_id, event_dir=ed)
     # KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1 — output-side seek keeps A/V aligned for lipsync.
     cmd = [
         "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
@@ -8143,7 +8307,7 @@ def resolve_magic_video_source_path(
             return requested.resolve()
         except OSError:
             return requested
-    scratch = scratch_dir or (Path(event_dir) / "assembled" / "_kling_o3_trim_scratch")
+    scratch = scratch_dir or kling_o3_trim_scratch_dir(event_dir)
     return _kling_o3_export_clip_path(beat, event_dir, scratch)
 
 
@@ -10452,28 +10616,11 @@ def align_beat_reference_to_element(beat: dict) -> bool:
 
 
 def element_char_ref_gate(beat: dict) -> tuple[bool, str]:
-    """Element O3 requires @Image1 to match registered Element pose files."""
-    speaker = str(beat.get("speaker") or "").strip()
-    if not speaker:
-        return True, ""
-    try:
-        from tools import kling_character_registry as reg
+    """Element O3 char ref — ELEMENT_CHAR_REF_SUBMIT_PARITY_V1 (shared with session GET)."""
+    from operator_workbench_contract import resolve_beat_element_char_ref_gate
 
-        if not reg.is_speaker_voice_ready(speaker):
-            return True, ""
-        char_path = resolve_beat_char_ref_path(beat)
-        if not char_path:
-            return False, f"Missing character reference image for {speaker!r}"
-        aligned, detail = reg.char_ref_matches_element_images(
-            char_path,
-            speaker,
-            allow_pose_dir_fallback=not bool(beat.get("reference_image_locked")),
-        )
-        if not aligned:
-            return False, detail
-        return True, ""
-    except Exception as exc:
-        return False, str(exc)
+    ok, err = resolve_beat_element_char_ref_gate(beat)
+    return ok, err or ""
 
 
 def beat_o3_voice_job_running(beat: dict) -> bool:
@@ -14024,13 +14171,13 @@ def magic_still_tts_scratch_path(
 ) -> Path:
     """On-disk path for silent magic_still + TTS mix used at stitch export."""
     if scratch_dir is None:
-        scratch_dir = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+        scratch_dir = kling_o3_trim_scratch_dir(event_dir)
     return Path(scratch_dir) / f"{beat_id}_magic_still_tts_{MAGIC_STILL_TTS_EXPORT_RECIPE}.mp4"
 
 
 def invalidate_magic_still_tts_scratch(beat_id: str, event_dir: str | Path) -> None:
     """Drop cached TTS mix after magic_still redo so stitch export picks up the new clip."""
-    scratch_dir = Path(event_dir) / "assembled" / "_kling_o3_trim_scratch"
+    scratch_dir = kling_o3_trim_scratch_dir(event_dir)
     for name in (
         f"{beat_id}_magic_still_tts_{MAGIC_STILL_TTS_EXPORT_RECIPE}.mp4",
         f"{beat_id}_magic_still_tts.mp4",
@@ -14905,8 +15052,7 @@ def resolve_segment_stitch_export_clip_paths(
     event_dir = Path(event_dir)
     out_dir = event_dir / "assembled"
     out_dir.mkdir(parents=True, exist_ok=True)
-    scratch_dir = out_dir / "_kling_o3_trim_scratch"
-    scratch_dir.mkdir(parents=True, exist_ok=True)
+    scratch_dir = kling_o3_trim_scratch_dir(event_dir)
 
     canonical_tail: Path | None = None
     phase_l = str(phase or "").lower()

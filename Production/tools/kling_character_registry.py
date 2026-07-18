@@ -460,9 +460,11 @@ def pin_proven_o3_bind_for_visual_canonical(
 
 
 def char_ref_aligned_for_intent_commit(char_path: str, speaker: str) -> tuple[bool, str]:
-    """Strict alignment for O3 submit — canonical frontal bytes when identity is locked."""
+    """Strict alignment for O3 submit — canonical frontal bytes when identity is stamped."""
     entry = get_character_entry(speaker) or {}
-    if entry.get("visual_canonical_locked") and entry.get("frontal_sha256"):
+    # frontal_sha256 is the byte authority (incl. auto_migrate_v1); visual_canonical_locked
+    # is set explicitly by set_element_identity but must not be required for strict mode.
+    if entry.get("frontal_sha256"):
         char_hash = (file_sha256(char_path) or "").lower()
         expected = str(entry.get("frontal_sha256") or "").strip().lower()
         if not char_hash:

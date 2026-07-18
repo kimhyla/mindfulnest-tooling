@@ -52,6 +52,7 @@ import {
 } from '../utils/o3TrimApplyContract';
 import {
   forgetCutPreviewsForBeat,
+  enqueueAutoCutPreview,
   recallCutPreviewUrl,
   rememberCutPreviewUrl,
 } from '../state/cutPreviewStore';
@@ -2097,6 +2098,21 @@ export function BgTab() {
       return false;
     }
     if (
+      result.error_code === 'ELEMENT_REGISTRATION_FAILED'
+      || result.error_code === 'ELEMENT_VISUAL_MISMATCH'
+    ) {
+      const message = result.error_message
+        ?? result.error
+        ?? 'Char ref must match Element identity before O3 generate.';
+      pushToast({
+        kind: 'error',
+        message,
+        source: 'bg-element-ref-submit-block',
+        ttlMs: 16_000,
+      });
+      return false;
+    }
+    if (
       isOperatorJobBusyError(result.error_code)
       || (result.status === 0 && /failed to fetch|networkerror|load failed|timeout|aborted/i.test(result.error ?? ''))
     ) {
@@ -2214,9 +2230,6 @@ export function BgTab() {
       pushToast({ kind: 'info', message: 'This beat is already generating.', source: 'bg-o3-beat-busy' });
       return;
     }
-    if (!opts?.promptAlreadyPersisted) {
-      markO3SubmitPending(beatId);
-    }
     try {
     if (isO3VoiceBeat(beat)) {
       if (
@@ -2302,6 +2315,7 @@ export function BgTab() {
         pushToast({ kind: 'info', message: 'This beat is already generating.', source: 'bg-o3-beat-busy' });
         return;
       }
+      markO3SubmitPending(beatId);
       await submitO3Voice(beatId, beatForO3Submit(beatId, latestBeat), promptToSave);
       return;
     }
@@ -4368,7 +4382,6 @@ function BeatGenCard({
           class="mn-btn mn-btn-primary"
           data-testid={`bg-generate-btn-${index}`}
           onClick={async () => {
-            onBeginGenerateSubmit?.();
             const saved = await promptField.flushSave();
             if (!saved) {
               onAbortGenerateSubmit?.();
@@ -4391,6 +4404,7 @@ function BeatGenCard({
               }
               return;
             }
+            onBeginGenerateSubmit?.();
             await onGenerate(promptField.getText(), { promptAlreadyPersisted: true });
           }}
           disabled={busy || elementCharRefBlocked}
@@ -5363,13 +5377,14 @@ function BgOptionTile({
   };
 
   // Saved trim/cut on disk — auto-load materialized preview when tile is selected.
+  // TRIM_PREVIEW_SERIAL_V1: enqueue so session remounts cannot fan out N concurrent encodes.
   useEffect(() => {
     if (!selected || !hasSavedCut || previewUrl || cutDraftDirty || cutBusy || pendingCut) return;
     if (!option.video_path || overlayTimelineDurationS <= 0) return;
     const trimBack = trimBackS > 0.009 ? trimBackS : cutPreviewTrimBackS();
     const sig = `${option.video_path}|${savedKeepStartS.toFixed(2)}|${trimBack.toFixed(2)}`;
     if (lastAutoPreviewRef.current === sig) return;
-    void refreshSavedCutPreview(savedKeepStartS, trimBack);
+    void enqueueAutoCutPreview(() => refreshSavedCutPreview(savedKeepStartS, trimBack));
   }, [
     selected,
     hasSavedCut,

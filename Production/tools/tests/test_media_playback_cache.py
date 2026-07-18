@@ -15,6 +15,8 @@ import sys
 sys.path.insert(0, str(TOOLS))
 
 from media_playback_cache import (  # noqa: E402
+    ensure_hot_serve_file,
+    event_dir_from_media_path,
     lookup_playback_cache_file,
     materialize_playback_cache,
     playback_cache_dir,
@@ -71,6 +73,65 @@ def test_lookup_playback_cache_miss_returns_none(tmp_path: Path) -> None:
     event_dir.mkdir()
     playback_cache_dir(event_dir)
     assert lookup_playback_cache_file(event_dir, "deadbeefcafebabe") is None
+
+
+def test_event_dir_from_media_path_finds_event_ancestor(tmp_path: Path) -> None:
+    event = tmp_path / "CloudStorage" / "Dropbox" / "Production" / "Event_6"
+    clip = event / "kling_o3_clips" / "master.mp4"
+    clip.parent.mkdir(parents=True)
+    clip.write_bytes(b"x")
+    assert event_dir_from_media_path(clip) == event.resolve()
+
+
+def test_ensure_hot_serve_file_remaps_cloud_master(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """CATEGORY: Dropbox masters serve from local APFS cache, not File Provider."""
+    hot = tmp_path / "hot-media"
+    monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    event = tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x" / "Production" / "Event_6"
+    src = event / "kling_o3_clips" / "master_delivery.mp4"
+    src.parent.mkdir(parents=True)
+    payload = b"\x00\x00\x00\x20ftypmp42" + b"cloud-master" * 40
+    src.write_bytes(payload)
+
+    served = ensure_hot_serve_file(src, event_dir=event)
+    assert served.is_file()
+    assert served.read_bytes() == payload
+    assert "CloudStorage" not in str(served)
+    assert served.parent == playback_cache_dir(event)
+    # Second call must hit cache (same path), not require Dropbox rematerialize
+    served2 = ensure_hot_serve_file(src, event_dir=event)
+    assert served2 == served
+
+
+def test_ensure_hot_serve_file_leaves_local_paths(tmp_path: Path) -> None:
+    event = tmp_path / "Event_local"
+    event.mkdir()
+    local = event / "already_local.mp4"
+    local.write_bytes(b"\x00\x00\x00\x20ftypmp42" + b"local")
+    assert ensure_hot_serve_file(local, event_dir=event) == local.resolve()
+
+
+def test_ensure_hot_serve_file_remaps_cloud_mp3_stem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CATEGORY HOT_SERVE_ALL_FILES_V1: Phase B voice stems must not stream Dropbox."""
+    hot = tmp_path / "hot-media"
+    monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    event = (
+        tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
+        / "Production" / "Event_3"
+    )
+    src = event / "phase_b_voice_stem_20260705-205227.mp3"
+    src.parent.mkdir(parents=True)
+    payload = b"ID3" + b"\x00" * 200 + b"cloud-stem-audio"
+    src.write_bytes(payload)
+
+    served = ensure_hot_serve_file(src, event_dir=event)
+    assert served.is_file()
+    assert served.read_bytes() == payload
+    assert "CloudStorage" not in str(served)
+    assert served.suffix == ".mp3"
+    assert served.parent == playback_cache_dir(event)
 
 
 @pytest.mark.skipif(

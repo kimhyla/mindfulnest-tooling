@@ -49,7 +49,7 @@ def _voice_ready_lorelai_beat(tmp_path: Path) -> dict:
 
 
 @patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
-@patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, ""))
+@patch("tools.kling_character_registry.char_ref_aligned_for_intent_commit", return_value=(True, ""))
 @patch("beat_generator.resolve_o3_element_list_entry")
 @patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
 @patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)
@@ -93,7 +93,7 @@ def test_commit_writes_intent_json(
 
 
 @patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
-@patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, ""))
+@patch("tools.kling_character_registry.char_ref_aligned_for_intent_commit", return_value=(True, ""))
 @patch("beat_generator.resolve_o3_element_list_entry")
 @patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
 @patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)
@@ -153,7 +153,7 @@ def test_commit_blocks_pose_dir_false_positive(
         "bg_ref_image": beat["bg_ref_image"],
     }
     with patch(
-        "tools.kling_character_registry.char_ref_matches_element_images",
+        "tools.kling_character_registry.char_ref_aligned_for_intent_commit",
         return_value=(False, "mismatch"),
     ), patch(
         "beat_generator.try_register_dropped_char_ref_on_element",
@@ -176,7 +176,7 @@ def test_commit_blocks_pose_dir_false_positive(
 
 
 @patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
-@patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, ""))
+@patch("tools.kling_character_registry.char_ref_aligned_for_intent_commit", return_value=(True, ""))
 @patch("beat_generator.resolve_o3_element_list_entry")
 @patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
 @patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)
@@ -225,7 +225,7 @@ def test_commit_does_not_delete_existing_g7(tmp_path, monkeypatch):
     beat = _voice_ready_lorelai_beat(tmp_path)
     beat["kling_o3_generation"] = 6
     with patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True), \
-         patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, "")), \
+         patch("tools.kling_character_registry.char_ref_aligned_for_intent_commit", return_value=(True, "")), \
          patch("beat_generator.resolve_o3_element_list_entry", return_value={"element_id": "1", "element_name": "L", "voice_id": "v"}), \
          patch("beat_generator.validate_proven_o3_element_submit", return_value=None), \
          patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None), \
@@ -276,17 +276,15 @@ def test_locked_element_char_ref_gate_rejects_pose_only_match(tmp_path):
         "reference_image": {"abs_path": str(char)},
     }
 
-    def _match(_path, _speaker, allow_pose_dir_fallback=True):
-        if allow_pose_dir_fallback:
-            return True, ""
+    def _aligned(_path, _speaker):
         return False, "not in refer_images"
 
     with patch(
         "tools.kling_character_registry.is_speaker_voice_ready",
         return_value=True,
     ), patch(
-        "tools.kling_character_registry.char_ref_matches_element_images",
-        side_effect=_match,
+        "tools.kling_character_registry.char_ref_aligned_for_intent_commit",
+        side_effect=_aligned,
     ), patch(
         "beat_generator.resolve_beat_char_ref_path",
         return_value=str(char),
@@ -313,7 +311,7 @@ def test_try_register_reconciles_when_only_pose_dir_matches(tmp_path):
         "tools.kling_character_registry.is_speaker_voice_ready",
         return_value=True,
     ), patch(
-        "tools.kling_character_registry.char_ref_matches_element_images",
+        "tools.kling_character_registry.char_ref_aligned_for_intent_commit",
         side_effect=_match,
     ), patch(
         "beat_generator.resolve_beat_char_ref_path",
@@ -347,17 +345,15 @@ def test_commit_reconciles_pose_only_already_matched(
         "bg_ref_image": beat["bg_ref_image"],
     }
     char_path = beat["reference_image"]["abs_path"]
-    calls = {"strict": 0}
+    calls = {"n": 0}
 
-    def _match(_path, _speaker, allow_pose_dir_fallback=True):
-        if not allow_pose_dir_fallback:
-            calls["strict"] += 1
-            return calls["strict"] >= 3, ""
-        return True, ""
+    def _aligned(_path, _speaker):
+        calls["n"] += 1
+        return calls["n"] >= 3, ""
 
     with patch(
-        "tools.kling_character_registry.char_ref_matches_element_images",
-        side_effect=_match,
+        "tools.kling_character_registry.char_ref_aligned_for_intent_commit",
+        side_effect=_aligned,
     ), patch(
         "beat_generator.try_register_dropped_char_ref_on_element",
         return_value={"ok": True, "action": "already_matched"},
@@ -382,7 +378,7 @@ def test_commit_reconciles_pose_only_already_matched(
 
 
 @patch("tools.kling_character_registry.is_speaker_voice_ready", return_value=True)
-@patch("tools.kling_character_registry.char_ref_matches_element_images", return_value=(True, ""))
+@patch("tools.kling_character_registry.char_ref_aligned_for_intent_commit", return_value=(True, ""))
 @patch("beat_generator.resolve_o3_element_list_entry")
 @patch("beat_generator.validate_proven_o3_element_submit", return_value=None)
 @patch("tools.kling_voice_bind.detect_voice_bind_drift", return_value=None)

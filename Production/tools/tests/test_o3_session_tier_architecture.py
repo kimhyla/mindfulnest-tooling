@@ -33,12 +33,13 @@ def test_read_only_get_no_lifecycle_heal_chain():
         assert retired not in block, f"retired heal {retired} still in session GET"
 
 
-def test_session_get_runs_terminal_disk_reconcile():
+def test_session_get_read_only_no_terminal_compose_on_hot_path():
     block = _handler_block("handle_bg_session_state")
-    assert "_compose_o3_session_terminal_view" in block
+    assert "_compose_o3_session_terminal_view" not in block
     assert "o3_terminal_outcomes" in block
-    src = (TOOLS / "o3_session_terminal_reconcile.py").read_text(encoding="utf-8")
-    assert "resolve_beat_o3_truth_for_session_compose" in src
+    assert "Session GET is read-only for gallery" in block
+    full = BACKGROUND.read_text(encoding="utf-8")
+    assert "def _run_o3_terminal_reconcile_at_startup" in full
 
 
 def test_session_get_enriches_job_busy():

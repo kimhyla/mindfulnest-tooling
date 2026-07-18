@@ -3,6 +3,10 @@
 import { signal } from '@preact/signals';
 import { apiGet } from '../api/client';
 import { stitchJobSessionKey, stitchJobNameForScope } from './producerSessionKeys';
+import {
+  expectedStitchJobSessionKeyNow,
+  sessionPayloadMayHydrate,
+} from './sessionHydrationAuthority';
 import { activeMilestoneId, activeProjectType } from './scope';
 import {
   runSessionFetch,
@@ -87,11 +91,16 @@ export async function ensureStitchJobSession(
     },
     onSuccess: (job) => {
       row.job = job;
-      stitchCachedJob.value = job;
-      stitchJobError.value = null;
+      // PSL_STALE_KEY_HYDRATION_GUARD_V1 — stale completions cache silently.
+      if (sessionPayloadMayHydrate(key, expectedStitchJobSessionKeyNow())) {
+        stitchCachedJob.value = job;
+        stitchJobError.value = null;
+      }
     },
     onError: (message) => {
-      stitchJobError.value = message;
+      if (sessionPayloadMayHydrate(key, expectedStitchJobSessionKeyNow())) {
+        stitchJobError.value = message;
+      }
     },
   });
 }

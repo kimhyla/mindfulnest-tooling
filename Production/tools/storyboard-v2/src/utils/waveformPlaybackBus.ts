@@ -1,4 +1,4 @@
-import { stopAllStitchClientMix } from '../audio/StitchSlotAudioMixEngine';
+import { stopAllStitchClientMix, pauseAllVideoSpeechChains } from '../audio/StitchSlotAudioMixEngine';
 
 /** Coordinates Phase A/B waveform players (only one should play at a time).
  *  PHASE_WAVEFORM_PLAY + PHASE_PRODUCER_AB — keep-alive mounts both panes. */
@@ -30,6 +30,8 @@ export function pauseAllWaveformPlayback(): void {
 /** Pause waveforms + linked preview media without resetting playhead (▶/⏸ toggle). */
 export function pauseAllPhasePlayback(): void {
   pauseAllWaveformPlayback();
+  stopAllStitchClientMix();
+  pauseAllVideoSpeechChains();
   pauseAppMediaElements(false);
 }
 
@@ -37,6 +39,7 @@ export function pauseAllPhasePlayback(): void {
 export function stopAllPhasePlayback(): void {
   pauseAllWaveformPlayback();
   stopAllStitchClientMix();
+  pauseAllVideoSpeechChains();
   pauseAppMediaElements(true);
   composerPoolRefPauseAll?.();
 }
