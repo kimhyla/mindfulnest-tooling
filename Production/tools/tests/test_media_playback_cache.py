@@ -111,6 +111,29 @@ def test_ensure_hot_serve_file_leaves_local_paths(tmp_path: Path) -> None:
     assert ensure_hot_serve_file(local, event_dir=event) == local.resolve()
 
 
+def test_ensure_hot_serve_file_remaps_cloud_mp3_stem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CATEGORY HOT_SERVE_ALL_FILES_V1: Phase B voice stems must not stream Dropbox."""
+    hot = tmp_path / "hot-media"
+    monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    event = (
+        tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
+        / "Production" / "Event_3"
+    )
+    src = event / "phase_b_voice_stem_20260705-205227.mp3"
+    src.parent.mkdir(parents=True)
+    payload = b"ID3" + b"\x00" * 200 + b"cloud-stem-audio"
+    src.write_bytes(payload)
+
+    served = ensure_hot_serve_file(src, event_dir=event)
+    assert served.is_file()
+    assert served.read_bytes() == payload
+    assert "CloudStorage" not in str(served)
+    assert served.suffix == ".mp3"
+    assert served.parent == playback_cache_dir(event)
+
+
 @pytest.mark.skipif(
     not Path("/usr/bin/ffmpeg").is_file() and not Path("/opt/homebrew/bin/ffmpeg").is_file(),
     reason="ffmpeg required for peaks generation",

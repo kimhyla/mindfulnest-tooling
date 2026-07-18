@@ -121,8 +121,9 @@ def playback_cache_path(event_dir: Path, source_path: Path) -> Path:
 
 def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> None:
     cache = playback_cache_dir(event_dir)
+    # HOT_SERVE_ALL_FILES_V1 — cache holds mp4 + audio stems + images (pb_*).
     files = sorted(
-        (p for p in cache.glob("pb_*.mp4") if p.is_file()),
+        (p for p in cache.glob("pb_*") if p.is_file()),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
