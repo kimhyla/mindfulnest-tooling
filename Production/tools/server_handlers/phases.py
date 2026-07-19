@@ -2830,11 +2830,14 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
         )
 
 def handle_phase_a_lipsync(h, body: dict) -> None:
-    """POST /api/phase_a/lipsync — Arlo Kling start+end still idle → Kling LipSync.
+    """POST /api/phase_a/lipsync — PHASE_A_PATH_A_ROUTE_V1.
 
-    Canonical for all events (Jul 2026): canonical Arlo still as start+end bookend,
-    Element binding, gaze-forward idle prompt, crossfade loop, Kling LipSync.
-    Phase B human lipsync stays on Kling Sync (handle_phase_b_lipsync).
+    Default route is the Path A layered pipeline
+    (``phase_a_path_a_pipeline.run_phase_a_path_a_lipsync``): static room plate
+    + green-screen cutout, trimmed-crossfade gesture idle track, silence-aligned
+    ≤50s chunks → Kling lipsync, pupil + still-span QC, chroma composite.
+    ``base_clip_id`` is recorded for state continuity only.
+    Spec: Production/docs/TECH_SPEC_PHASE_A_PATH_A_DEFAULT_ROUTE_v1.md
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -2919,9 +2922,30 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             retry_safe=False,
         )
 
+    # PHASE_A_PATH_A_ROUTE_V1: plate/cutout/idle units — not whole-frame still.
+    from phase_a_path_a_pipeline import (  # noqa: PLC0415
+        count_phase_a_path_a_chunks,
+        run_phase_a_path_a_lipsync,
+        validate_path_a_assets,
+    )
+
+    try:
+        validate_path_a_assets()
+    except FileNotFoundError as exc:
+        return h._send_error_v59(
+            404,
+            error_code="PATH_A_ASSETS_MISSING",
+            error_message=str(exc),
+            retry_safe=False,
+            extra={"hint": (
+                "Restore Phase A Path A plate/cutout/idle-unit assets — see "
+                "Production/tools/PHASE_A_PATH_A_LIPSYNC_RUNBOOK_v1.md."
+            )},
+        )
+
     ts_pre = datetime.now().strftime("%Y%m%d-%H%M%S")
     try:
-        audio_for_lipsync, _ = _apply_phase_audio_trim(
+        audio_for_lipsync, audio_duration = _apply_phase_audio_trim(
             h, audio_path, "a", state, ts_pre,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
@@ -2934,33 +2958,33 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             extra={"hint": "Adjust stem trim front/back seconds on the waveform row."},
         )
 
-    from phase_a_arlo_contract import resolve_phase_a_arlo_idle_still  # noqa: WPS433
-
-    prod_root = h.app.event_dir.parent
     try:
-        still_path = resolve_phase_a_arlo_idle_still(h.app.event_dir, prod_root)
-    except FileNotFoundError as exc:
+        chunk_jobs = max(1, count_phase_a_path_a_chunks(audio_for_lipsync))
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
         return h._send_error_v59(
-            404,
-            error_code="GENERIC_ERROR",
-            error_message=str(exc),
-            retry_safe=False,
-            extra={"hint": "Add canonical Arlo still under Production/NEW STYLE CHARACTERS/ARLO/."},
+            500,
+            error_code="LIPSYNC_PRE_CONDITIONING_FAILED",
+            error_message=f"chunk boundary detection failed: {exc}",
+            retry_safe=True,
+            extra={"stage": "path_a_chunking", "detail": str(exc)[:400],
+                   "hint": "Check ffmpeg + that the voice stem is decodable."},
         )
 
-    # Kling idle + Kling LipSync (start+end same still bookend).
-    lipsync_jobs = 2
-    lipsync_method = "idle_kling_lipsync_startend_still"
+    lipsync_method = "phase_a_path_a_layered"
     spend = h.app.state.read_spend()
-    if spend["budget_remaining"] < COST_PER_LIPSYNC * lipsync_jobs:
+    total_cost = COST_PER_LIPSYNC * chunk_jobs
+    if spend["budget_remaining"] < total_cost:
         return h._send_error_v59(
             402,
             error_code="BUDGET_EXCEEDED_FOR_LIP_SYNC",
-            error_message="budget exceeded for lip sync",
+            error_message="budget exceeded for chunked lip sync",
             retry_safe=False,
             extra={
                 "budget_remaining": spend["budget_remaining"],
-                "cost": COST_PER_LIPSYNC * lipsync_jobs,
+                "cost": total_cost,
+                "chunk_count": chunk_jobs,
+                "hint": "Raise budget via /api/budget/override or shorten the voice stem.",
             },
         )
 
@@ -2991,35 +3015,25 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
 
     _app = h.app
     _pin_captured = dict(_pin)
-    _stitch = h._auto_assemble_phase_a_stitched
-    _still_path = still_path
     _base_clip_id = base_clip_id
-    _lipsync_jobs = lipsync_jobs
+    _chunk_jobs = chunk_jobs
     _lipsync_method = lipsync_method
-    _prod_root = prod_root
+    _api_key = h.app.client.api_key
 
     def _bg(
         _out_path=out_path,
         _out_name=out_name,
         _audio_path=audio_for_lipsync,
-        _still=_still_path,
         _base_clip_id=_base_clip_id,
-        _jobs=_lipsync_jobs,
+        _jobs=_chunk_jobs,
         _method=_lipsync_method,
-        _prod_root=_prod_root,
-        _resume=False,
     ):
         try:
-            from phase_a_arlo_idle_lipsync import run_phase_a_arlo_idle_lipsync_startend_still
-
-            tmp_dir = _app.event_dir / "_tmp_phase_a_arlo_startend"
-            run_phase_a_arlo_idle_lipsync_startend_still(
+            # PHASE_A_PATH_A_ROUTE_V1
+            run_phase_a_path_a_lipsync(
                 _audio_path,
                 _out_path,
-                event_dir=_app.event_dir,
-                prod_root=_prod_root,
-                still=_still,
-                tmp_dir=tmp_dir,
+                api_key=_api_key,
             )
             if not _out_path.is_file():
                 raise RuntimeError(f"lipsync finished but output missing: {_out_path}")
@@ -3080,6 +3094,7 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
                     ("phase_a_lipsync_av_gap_s", round(_gap, 3)),
                     ("phase_a_lipsync_delivery_profile", _meta.get("delivery_profile")),
                     ("phase_a_lipsync_delivery_recipe", _meta.get("delivery_recipe")),
+                    ("phase_a_lipsync_route", "PHASE_A_PATH_A_ROUTE_V1"),
                 ):
                     st[key] = val
                     nested = st.setdefault("phase_a", {})
@@ -3110,7 +3125,8 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
 
             _app.state.mutate_state(_apply_done)
             print(
-                f"[phase_a_lipsync] media gate passed; visual review required → {_out_name} "
+                f"[phase_a_lipsync] PHASE_A_PATH_A_ROUTE_V1 media gate passed; "
+                f"visual review required → {_out_name} "
                 f"({_out_path.stat().st_size} bytes, av_gap={av_gap_s:.3f}s, qa={qa_dir})",
                 flush=True,
             )
@@ -3139,17 +3155,51 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             except Exception:  # noqa: BLE001
                 pass
 
-    _spawn_phase_a_lipsync_worker(_bg)
+    if not _spawn_phase_a_lipsync_worker(_bg):
+        def _apply_spawn_busy(st):
+            st["phase_a_lipsync_status"] = (
+                "error: worker_busy: another phase lipsync job is running"
+            )
+            st.pop("phase_a_lipsync_started_at", None)
+            st.pop("phase_a_lipsync_pending_output", None)
+            st.pop("phase_a_lipsync_pending_audio", None)
+            nested = st.setdefault("phase_a", {})
+            if isinstance(nested, dict):
+                nested["phase_a_lipsync_status"] = st["phase_a_lipsync_status"]
+                nested.pop("phase_a_lipsync_started_at", None)
+                nested.pop("phase_a_lipsync_pending_output", None)
+                nested.pop("phase_a_lipsync_pending_audio", None)
+            return st.get("_module_version", 0)
+
+        try:
+            h.app.state.mutate_state(_apply_spawn_busy)
+        except Exception:  # noqa: BLE001
+            pass
+        return h._send_error_v59(
+            409,
+            error_code="LIPSYNC_WORKER_BUSY",
+            error_message="another phase lipsync worker is already running",
+            retry_safe=True,
+            extra={"hint": "Wait for the in-flight lipsync job to finish, then resend."},
+        )
+
+    print(
+        f"[phase_a_lipsync] PHASE_A_PATH_A_ROUTE_V1 running: {chunk_jobs} chunks "
+        f"({audio_duration:.1f}s stem) → {out_name}",
+        flush=True,
+    )
     return h._send_json(202, {
         "ok": True,
         "status": "running",
         "phase": "a",
+        "route": "PHASE_A_PATH_A_ROUTE_V1",
         "vendor": lipsync_method,
-        "still": still_path.name,
+        "audio_duration_s": round(float(audio_duration), 3),
+        "chunk_count": chunk_jobs,
         "base_clip_id": base_clip_id,
         "base_clip_file": None,
         "message": (
-            "Kling Phase A lipsync is processing (still bookend idle + LipSync). "
+            f"Path A layered lipsync ({chunk_jobs} chunks, gesture idle + QC gates). "
             "Phase A will stop for visual review after media gates pass."
         ),
     })
