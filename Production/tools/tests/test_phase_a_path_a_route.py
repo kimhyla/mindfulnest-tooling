@@ -31,8 +31,14 @@ def test_handler_budget_gate_is_per_chunk():
 
 def test_pipeline_marker_and_green_key():
     assert pipe.PHASE_A_PATH_A_ROUTE_V1 == "PHASE_A_PATH_A_ROUTE_V1"
+    # Arlo stays green (blue scarf); Cedric-strength similarity + despill.
     assert "00FF00" in pipe.CHROMAKEY_GREEN or "0x00FF00" in pipe.CHROMAKEY_GREEN
+    assert "despill=type=green" in pipe.CHROMAKEY_GREEN
     assert pipe.DEFAULT_ROTATION[0].name == "A"
+    assert pipe.IDLE_UNIT_A.path.name.endswith("_crop_green_1920x1080.mp4")
+    # Full-body plate overlay — face-only CROP_* regresses cut-in-half.
+    assert (pipe.CROP_W, pipe.CROP_H) == (832, 468)
+    assert (pipe.CROP_X, pipe.CROP_Y) == (325, 157)
 
 
 def test_validate_path_a_assets_present():

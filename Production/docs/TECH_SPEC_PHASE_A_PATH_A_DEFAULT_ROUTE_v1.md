@@ -40,13 +40,19 @@ background `run_phase_a_path_a_lipsync` → A/V gap + QA frames → delivery enc
 |---|---|
 | Green cutout 1280×720 | `NEW STYLE CHARACTERS/ARLO/path_a_prep/arlo_cutout_green_1280x720_v1.png` |
 | Room plate 1280×720 | `NEW STYLE CHARACTERS/ARLO/path_a_prep/arlo_room_plate_1280x720_v1.png` |
-| Idle A (crop, lipsync) | `assets/lipsync_bases/arlo_path_a_gesture_idle_A_10s_crop_green_1920x1080.mp4` |
-| Idle A source (fullframe) | `…/arlo_path_a_gesture_idle_A_v6_10s_fullframe_green_1920x1080.mp4` |
+| Idle A (crop, lipsync) | `assets/lipsync_bases/<chosen>_crop_green_1920x1080.mp4` (provisional: `arlo_path_a_gesture_idle_o3_v12_10s_crop_green_1920x1080.mp4`) |
+| Idle A source (fullframe) | matching `*_fullframe_green_1920x1080.mp4` under lipsync_bases |
 
-Geometry: crop **832×468 @ (325, 157)** on the 1280×720 plate.
+Geometry: crop **832×468 @ (325, 157)** on the 1280×720 plate (full body —
+shrinking this box leaves still cutout legs and looks cut in half).
+
+Idle selection is **not** locked in v1 — operator swaps `IDLE_UNIT_A.path`
+(see runbook). Path A route + plate/cutout/geometry are the durable rewiring.
 
 ## 5. Out of scope
 
+- Locking the production idle unit (operator swaps `IDLE_UNIT_A.path` later).
 - Second idle unit B (optional later).
 - Changing Phase A visual-review / auto-stitch gates.
 - Whole-frame startend still idle route (retired as default).
+- Face-only Kling submit + paste-back (optional later; do not shrink CROP_*).

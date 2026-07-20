@@ -34,16 +34,21 @@ DROPBOX_PRODUCTION = Path(
 PATH_A_PREP = DROPBOX_PRODUCTION / "NEW STYLE CHARACTERS/ARLO/path_a_prep"
 LIPSYNC_BASES = DROPBOX_PRODUCTION / "assets/lipsync_bases"
 
+# Green cutout — Arlo keeps green (blue scarf collides with Cedric-style blue key).
 ARLO_CUTOUT_GREEN_PNG = PATH_A_PREP / "arlo_cutout_green_1280x720_v1.png"
 ARLO_ROOM_PLATE_PNG = PATH_A_PREP / "arlo_room_plate_1280x720_v1.png"
 
-# Character geometry on the 1280x720 plate (measured from green cutout bbox
-# center → 832x468 crop that fully contains Arlo).
+# Character geometry on the 1280x720 plate — MUST cover all of Arlo.
+# Path A overlays lipsync onto the green cutout in this box, then keys.
+# Shrinking this to "upper body only" leaves legs as the still cutout
+# (looks cut in half). Tighter Kling submit needs a separate face-paste
+# step; do not shrink CROP_* for that.
 CROP_W, CROP_H = 832, 468
 CROP_X, CROP_Y = 325, 157
 
-# Idle unit is the tight crop of approved ARLO_IDLE_A_v6 (fullframe → crop
-# 1248x702@488,236 on 1920x1080, then scale to 1920x1080).
+# Idle unit: provisional working default (O3 v12). Not a locked Kim pick —
+# swap IDLE_UNIT_A.path to any full-body crop under lipsync_bases when chosen.
+# fullframe → crop 1248x702@488,236 on 1920x1080, then scale to 1920x1080.
 UNIT_DURATION = 10.041667
 XFADE_SECONDS = 0.5
 
@@ -60,10 +65,11 @@ class IdleUnit:
         return UNIT_DURATION - self.head_trim - self.tail_trim
 
 
-# Single approved unit for v1 — self-rotates. Add a B unit later for variety.
+# Provisional unit — replace path when Kim selects the production idle.
 IDLE_UNIT_A = IdleUnit(
     "A",
-    LIPSYNC_BASES / "arlo_path_a_gesture_idle_A_10s_crop_green_1920x1080.mp4",
+    LIPSYNC_BASES
+    / "arlo_path_a_gesture_idle_o3_v12_10s_crop_green_1920x1080.mp4",
     0.3,
     0.5,
 )
@@ -75,7 +81,8 @@ MAX_CHUNK_SECONDS = 50.0
 SILENCE_DETECT_ARGS = "silencedetect=noise=-35dB:d=0.45"
 
 LIPSYNC_POST_FILTERS = "cas=0.45,eq=contrast=1.03:saturation=1.03"
-CHROMAKEY_GREEN = "chromakey=0x00FF00:0.30:0.08,despill=type=green"
+# Cedric blue params don't apply — Arlo scarf is blue. Green key + strong despill.
+CHROMAKEY_GREEN = "chromakey=0x00FF00:0.28:0.06,despill=type=green:mix=1:expand=1"
 
 # Body region for still scan (mouth excluded). Cropped idle fills frame with
 # Arlo; composite crop maps chest/shoulders on the 1280x720 plate placement.
