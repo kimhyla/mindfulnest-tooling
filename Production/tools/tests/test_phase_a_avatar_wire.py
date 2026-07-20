@@ -26,20 +26,24 @@ import production_server as PS  # noqa: E402
 from phase_a_arlo_contract import PHASE_A_ARLO_CANONICAL_STILL_REL  # noqa: E402
 
 
-def test_phases_handler_uses_arlo_startend_kling_not_avatar_pro():
+def test_phases_handler_uses_path_a_not_avatar_pro():
     src = TOOLS / "server_handlers" / "phases.py"
     block = src.read_text(encoding="utf-8").split("def handle_phase_a_lipsync", 1)[1]
     block = block.split("\ndef handle_phase_b_lipsync", 1)[0]
     assert "submit_avatar_pro" not in block
-    assert "run_phase_a_arlo_idle_lipsync_startend_still" in block
+    assert "PHASE_A_PATH_A_ROUTE_V1" in block
+    assert "run_phase_a_path_a_lipsync" in block
+    assert "validate_path_a_assets" in block
     assert "_finalize_phase_a_lipsync_delivery" in block
-    assert 'lipsync_method = "idle_kling_lipsync_startend_still"' in block
+    assert 'lipsync_method = "phase_a_path_a_layered"' in block
+    # retired whole-frame startend default
+    assert "run_phase_a_arlo_idle_lipsync_startend_still" not in block
 
 
 def test_sweep_resume_arlo_startend_not_bytedance():
     src = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
     resume = src.split("def sweep_phase_a_lipsync_resume", 1)[1].split("\ndef handle_phase_a_lipsync", 1)[0]
-    assert "run_phase_a_arlo_idle_lipsync_startend_still" in resume
+    # Legacy resume path may still mention startend for leftover tmp work.
     assert "resubmit with Avatar Pro" not in resume
 
 
@@ -149,7 +153,7 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
 
-    def test_lipsync_submits_arlo_startend_worker(self):
+    def test_lipsync_submits_path_a_worker(self):
         vs = self.event_dir / "phase_a_voice_stem_test.mp3"
         vs.write_bytes(b"\x00fakevoice\x00")
 
@@ -175,14 +179,22 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
                 out.write_bytes(b"\x00trim\x00")
             return _R()
 
-        def _fake_arlo_startend(_audio, out_path, **_kw):
-            Path(out_path).write_bytes(b"\x00arlo_startend_out\x00")
-            return {"method": "idle_kling_lipsync_startend_still"}
+        def _fake_path_a(_audio, out_path, **_kw):
+            Path(out_path).write_bytes(b"\x00arlo_path_a_out\x00")
+            return {"route": "PHASE_A_PATH_A_ROUTE_V1", "chunk_count": 1}
 
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
              mock.patch(
-                 "phase_a_arlo_idle_lipsync.run_phase_a_arlo_idle_lipsync_startend_still",
-                 side_effect=_fake_arlo_startend,
+                 "phase_a_path_a_pipeline.validate_path_a_assets",
+                 return_value=None,
+             ), \
+             mock.patch(
+                 "phase_a_path_a_pipeline.count_phase_a_path_a_chunks",
+                 return_value=1,
+             ), \
+             mock.patch(
+                 "phase_a_path_a_pipeline.run_phase_a_path_a_lipsync",
+                 side_effect=_fake_path_a,
              ), \
              mock.patch(
                  "phase_a_av_post.av_duration_gap",
@@ -208,7 +220,8 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
             )
             self.assertEqual(status, 202, resp)
             self.assertEqual(resp.get("status"), "running")
-            self.assertEqual(resp.get("vendor"), "idle_kling_lipsync_startend_still")
+            self.assertEqual(resp.get("route"), "PHASE_A_PATH_A_ROUTE_V1")
+            self.assertEqual(resp.get("vendor"), "phase_a_path_a_layered")
 
             for _ in range(50):
                 state = self.app.state.read_state()
@@ -218,7 +231,8 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
 
         state = self.app.state.read_state()
         self.assertEqual(state.get("phase_a_lipsync_status"), "needs_manual_visual_review")
-        self.assertEqual(state.get("phase_a_lipsync_method"), "idle_kling_lipsync_startend_still")
+        self.assertEqual(state.get("phase_a_lipsync_method"), "phase_a_path_a_layered")
+        self.assertEqual(state.get("phase_a_lipsync_route"), "PHASE_A_PATH_A_ROUTE_V1")
         self.assertTrue(state.get("phase_a_lipsync_file", "").startswith("phase_a_lipsync_"))
 
 

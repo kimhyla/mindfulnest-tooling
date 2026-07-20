@@ -387,6 +387,21 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         ),
     ),
     AuthorityConcept(
+        id="phase_a_lipsync_route",
+        status="shipped",
+        marker="PHASE_A_PATH_A_ROUTE_V1",
+        question="Which pipeline generates the Phase A module lipsync MP4?",
+        authority_shape="disk",
+        server_module="server_handlers/phases.py",
+        server_read="PHASE_A_PATH_A_ROUTE_V1",
+        server_write="run_phase_a_path_a_lipsync",
+        spec_doc="Production/docs/TECH_SPEC_PHASE_A_PATH_A_DEFAULT_ROUTE_v1.md",
+        notes=(
+            "Path A layered pipeline for Arlo (green plate + cutout + gesture "
+            "idle A + QC gates) is the single default Phase A lipsync route."
+        ),
+    ),
+    AuthorityConcept(
         id="sqlite_sidecar_authority",
         status="shipped",
         marker="BEATGEN_PER_EVENT_SQLITE_V1",
