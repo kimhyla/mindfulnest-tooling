@@ -1234,27 +1234,69 @@ def auto_upscale_image(data_uri: str, target_min: int = MIN_ANIMATION_SIZE) -> t
 
 class StateManager:
     def __init__(self, event_dir: Path, event_id: str):
+        # In-process lock (between server threads)
+        self.lock = threading.Lock()
+        self._bind_event_paths(event_dir, event_id)
+        self._init_files()
+
+    def _bind_event_paths(self, event_dir: Path, event_id: str) -> None:
+        """Bind every event-scoped path/key as one in-memory operation."""
+        from lib.state_repo import JsonStateRepository
+
+        event_dir = Path(event_dir)
         self.event_dir = event_dir
         self.event_id = event_id
         self.state_path = event_dir / "production_state.json"
-        from lib.state_repo import JsonStateRepository
         self.repo = JsonStateRepository(self.state_path)
         self.spend_path = event_dir / "production_spend.json"
-        self.spend_ledger_path = event_dir / "spend_ledger.jsonl"  # task_id -> first-charge lockout
+        self.spend_ledger_path = event_dir / "spend_ledger.jsonl"
         self.clips_dir = event_dir / "animation_clips"
-        self.clips_dir.mkdir(parents=True, exist_ok=True)
-        # In-process lock (between server threads)
-        self.lock = threading.Lock()
-        # Inter-process lock path — used by fcntl.lockf so the recovery CLI
-        # tool and the running server can safely mutate state.json concurrently.
-        # Tier 3 C2 CRITICAL fix (April 16 2026).
+        # Inter-process lock path — used by fcntl.lockf/msvcrt so recovery
+        # tools and the running server can safely mutate event files.
         self.file_lock_path = event_dir / ".state.lock"
-        # BS1: Directus-backed cross-machine semaphore scope.
-        # Resource key is per-event so different events don't block each other.
+        # Directus-backed cross-machine semaphore is event-specific.
         self.directus_lock_key = f"{event_id}/state"
-        self._init_files()
+
+    def rebind_event(self, event_dir: Path, event_id: str) -> None:
+        """Prepare, then atomically retarget all event-scoped authority.
+
+        Event switching previously changed only ``state_path``. That could
+        write state to the newly loaded event while charging spend and
+        acquiring locks for the startup event. Target files and durable
+        identity are validated on a separate manager before this instance is
+        changed, so preparation failure leaves the old binding untouched.
+        """
+        event_dir = Path(event_dir)
+        prepared = type(self)(event_dir, event_id)
+        prepared.ensure_event_instance_id()
+        with self.lock:
+            self.event_dir = prepared.event_dir
+            self.event_id = prepared.event_id
+            self.state_path = prepared.state_path
+            self.repo = prepared.repo
+            self.spend_path = prepared.spend_path
+            self.spend_ledger_path = prepared.spend_ledger_path
+            self.clips_dir = prepared.clips_dir
+            self.file_lock_path = prepared.file_lock_path
+            self.directus_lock_key = prepared.directus_lock_key
+
+    def ensure_event_instance_id(self) -> str:
+        """Return the event's durable identity, creating it under state locks."""
+        result: dict[str, str] = {}
+
+        def _ensure(state: dict) -> None:
+            value = state.get("event_instance_id")
+            if not isinstance(value, str) or not value.strip():
+                value = str(_stdlib_uuid.uuid4())
+                state["event_instance_id"] = value
+            result["event_instance_id"] = value
+
+        self.mutate_state(_ensure)
+        return result["event_instance_id"]
 
     def _init_files(self) -> None:
+        self.event_dir.mkdir(parents=True, exist_ok=True)
+        self.clips_dir.mkdir(parents=True, exist_ok=True)
         if not self.state_path.exists():
             # S5.5d (v3 architecture revision, 2026-05-03): fresh state.json
             # files are written in v3-shape directly (BG_VIDEO_PARTITION_V2,
@@ -1264,6 +1306,7 @@ class StateManager:
             now_iso = datetime.now(timezone.utc).isoformat()
             self._atomic_write_json(self.state_path, {
                 "event_id": self.event_id,
+                "event_instance_id": str(_stdlib_uuid.uuid4()),
                 "version": "v3",
                 "created_at": now_iso,
                 "updated_at": now_iso,
@@ -1300,6 +1343,8 @@ class StateManager:
         # Ensure lock file exists (fcntl.lockf needs an open fd on an existing file)
         if not self.file_lock_path.exists():
             self.file_lock_path.touch()
+        if sys.platform == "win32" and self.file_lock_path.stat().st_size == 0:
+            self.file_lock_path.write_bytes(b"\0")
 
     @staticmethod
     def _atomic_write_json(path: Path, obj: dict, *, prod_root: Path | None = None) -> None:
@@ -1453,21 +1498,14 @@ class StateManager:
                 self._release_file_lock(fd)
 
     def add_spend(self, category: str, amount: float, task_id: str | None = None) -> dict:
-        """Add spend. If task_id is provided, the ledger is checked first —
-        if that task_id has already been charged, this call is a no-op. This
-        prevents double-charge across recovery events (Tier 3 C3 CRITICAL).
-
-        Crash-safety: updates spend.json FIRST (atomic tmp+replace), then
-        appends+fsyncs the ledger entry. If the process crashes between the
-        two writes, spend.json is correctly updated; the missing ledger entry
-        just means the guard will (harmlessly) re-charge on the NEXT call for
-        the same task_id — but the same-call already updated spend, so there
-        is no actual double-charge. Worst case: one extra small charge on a
-        rare crash. Inverse ordering (ledger before spend) was a real
-        integrity hole — Phase 3 finding #5 (April 16 2026).
-
-        BS1: same cross-machine semaphore as mutate_state — fail closed on
-        Directus unreachable (spend must not drift between machines)."""
+        """Add legacy spend, or task-keyed provider spend exactly once."""
+        if task_id:
+            return self.record_spend_once(
+                category,
+                amount,
+                idempotency_key=f"legacy:{task_id}",
+                provider_task_id=task_id,
+            )
         with self.lock:
             dlock = _directus_lock_acquire(self.directus_lock_key, reason=f"add_spend:{category}")
             if dlock is None and not SINGLE_MACHINE_MODE:
@@ -1478,46 +1516,50 @@ class StateManager:
                 )
             fd = self._acquire_file_lock()
             try:
-                # Ledger-backed idempotency guard (C3 double-charge prevention)
-                if task_id and self.spend_ledger_path.exists():
-                    for line in self.spend_ledger_path.read_text().splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            entry = json.loads(line)
-                            if entry.get("task_id") == task_id:
-                                print(f"[spend] skip task_id={task_id[:16]} already in ledger")
-                                return json.loads(self.spend_path.read_text())
-                        except json.JSONDecodeError:
-                            continue
-
-                # 1. Update spend.json atomically FIRST
                 spend = json.loads(self.spend_path.read_text())
                 spend["spent"].setdefault(category, 0.0)
                 spend["spent"][category] += amount
                 spend["total_spent"] = sum(spend["spent"].values())
                 spend["budget_remaining"] = spend["budget"] - spend["total_spent"]
                 self._atomic_write_json(self.spend_path, spend)
-
-                # 2. Append to ledger (fsync for durability) AFTER spend update
-                if task_id:
-                    ledger_entry = {
-                        "task_id": task_id,
-                        "category": category,
-                        "amount": amount,
-                        "charged_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    with self.spend_ledger_path.open("a") as lf:
-                        lf.write(json.dumps(ledger_entry) + "\n")
-                        lf.flush()
-                        try:
-                            os.fsync(lf.fileno())
-                        except OSError:
-                            pass  # macOS Dropbox may not support fsync — best effort
-
                 return spend
             finally:
                 self._release_file_lock(fd)
+                _directus_lock_release(dlock)
+
+    def record_spend_once(
+        self,
+        category: str,
+        amount: float,
+        *,
+        idempotency_key: str,
+        provider_task_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Record provider spend ledger-first under event and Directus locks."""
+        with self.lock:
+            dlock = _directus_lock_acquire(
+                self.directus_lock_key,
+                reason=f"record_spend_once:{category}",
+            )
+            if dlock is None and not SINGLE_MACHINE_MODE:
+                raise RuntimeError(
+                    "Directus lock unreachable — refusing to update spend to prevent "
+                    "cross-machine drift. Start Directus, or set "
+                    "PRODUCTION_SERVER_SINGLE_MACHINE=1 to skip."
+                )
+            try:
+                from lib.provider_spend import record_spend_once
+
+                return record_spend_once(
+                    self.event_dir,
+                    category=category,
+                    amount=amount,
+                    idempotency_key=idempotency_key,
+                    provider_task_id=provider_task_id,
+                    metadata=metadata,
+                )
+            finally:
                 _directus_lock_release(dlock)
 
     def override_budget(self, amount: float = 5.0) -> dict:

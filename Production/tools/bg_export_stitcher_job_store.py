@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from lib import fcntl_compat as fcntl
 
 BG_EXPORT_TO_STITCHER_ASYNC_V1 = "BG_EXPORT_TO_STITCHER_ASYNC_V1"
 TERMINAL_EXPORT_STATUSES = frozenset({"done", "failed", "interrupted"})

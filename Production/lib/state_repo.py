@@ -10,12 +10,13 @@ Per LD-794 V59 spec §Phase A. Authored 2026-05-18.
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
 import sqlite3
+import sys
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -32,6 +33,38 @@ except ImportError:  # pragma: no cover
 # the sidecar .lock file + fcntl.lockf below.
 _INPROC_LOCKS: dict[str, threading.Lock] = {}
 _INPROC_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _exclusive_file_lock(lock_path: Path):
+    """Cross-platform one-byte advisory lock for repository mutations."""
+    if not lock_path.exists():
+        lock_path.touch()
+    with open(lock_path, "r+b") as lock_file:
+        if lock_path.stat().st_size == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        if sys.platform == "win32":
+            import msvcrt
+
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            if sys.platform == "win32":
+                import msvcrt
+
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _get_inproc_lock(path: Path) -> threading.Lock:
@@ -106,15 +139,11 @@ class JsonStateRepository:
             lock_path.touch()
         inproc_lock = _get_inproc_lock(self.state_path)
         with inproc_lock:
-            with open(lock_path, "r+", encoding="utf-8") as lf:
-                fcntl.lockf(lf.fileno(), fcntl.LOCK_EX)
-                try:
-                    state = self.read()
-                    new_state = fn(state)
-                    atomic_json_write(str(self.state_path), new_state)
-                    return new_state
-                finally:
-                    fcntl.lockf(lf.fileno(), fcntl.LOCK_UN)
+            with _exclusive_file_lock(lock_path):
+                state = self.read()
+                new_state = fn(state)
+                atomic_json_write(str(self.state_path), new_state)
+                return new_state
 
     def read_field(self, dotted_path: str, default: Any = None) -> Any:
         parts = dotted_path.split(".")

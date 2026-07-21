@@ -1,7 +1,6 @@
 """STITCH_SLOT_MEDIA_ARTIFACTS_V1 — fcntl lock + atomic cache writes for stitch_editor_cache."""
 from __future__ import annotations
 
-import fcntl
 import os
 import subprocess
 import threading
@@ -9,6 +8,8 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
+
+from lib import fcntl_compat as fcntl
 
 STITCH_CACHE_BUILD_WAIT_TIMEOUT_S = 600.0
 STITCH_CACHE_BUILD_POLL_INTERVAL_S = 0.25

@@ -8,7 +8,6 @@ Production/ — local operator Mac only.
 """
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import subprocess
@@ -17,6 +16,8 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import fcntl_compat as fcntl
 from typing import Any
 
 from lib.paths import EVENT_DIR, TOOLING_ROOT, dropbox_root

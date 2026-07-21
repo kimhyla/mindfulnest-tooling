@@ -354,21 +354,17 @@ def handle_event_load(h, body: dict) -> None:
         old_event_id = h.app.event_dir.name
         old_storyboard = h.app.storyboard_path.name
 
+        # Prepare and validate target files/identity before mutating AppContext.
+        # A failure here leaves the prior app and StateManager scope intact.
+        h.app.state.rebind_event(new_event_dir, new_event_id)
         h.app.event_dir = new_event_dir
         h.app.storyboard_path = new_storyboard_path
         h.app.event_id = new_event_id
         h.app.storyboard_stem = new_storyboard_path.stem
         h.app.event_generation = old_gen + 1
-        # S5 v3.1 fix — StateManager caches state_path at construct time.
-        # On event swap we must re-point it so subsequent state reads/writes
-        # hit the NEW event's production_state.json (was reading Event_1's
-        # state regardless of swap).
-        try:
-            h.app.state.event_dir = new_event_dir
-            h.app.state.state_path = new_event_dir / "production_state.json"
-            h.app.state.event_id = new_event_id
-        except AttributeError:
-            pass
+        # EVENT_SCOPED_AUTHORITY_REBIND_V1 — state, spend, media directories,
+        # local lock path, repository, and Directus lock key must move as one
+        # unit. Repointing only state_path can charge or lock the prior event.
         # Invalidate caches that key on event_dir / storyboard_path.
         # Clear cross-event image override caches alongside the storyboard
         # caches — same bug class as the S5 StateManager state_path fix
