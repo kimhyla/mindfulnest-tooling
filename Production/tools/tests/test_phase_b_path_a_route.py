@@ -121,12 +121,16 @@ def _make_freeze_sandwich(dest: Path, tmp: Path) -> None:
 
 
 def _make_eye_band_clip(dest: Path, *, white_span: bool) -> None:
-    """832x464 clip, dark frames; optionally a 3s white span in the middle."""
+    """832x464 clip with eye detail; optionally a 3s white span."""
     if white_span:
         # frames 48-84 at 12fps = 4-7s (geq has N, not t; escape commas)
-        vf = r"geq=lum=if(between(N\,48\,84)\,235\,30):cb=128:cr=128"
+        vf = (
+            r"geq=lum=if(between(N\,48\,84)\,235\,"
+            r"50+20*sin(X)):cb=128:cr=128"
+        )
     else:
-        vf = "geq=lum=30:cb=128:cr=128"
+        # Non-uniform dark detail avoids the fail-closed all-dark crop guard.
+        vf = "geq=lum='50+20*sin(X)':cb=128:cr=128"
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error",
          "-f", "lavfi", "-i", "nullsrc=s=832x464:r=12:d=12",

@@ -1,0 +1,953 @@
+#!/usr/bin/env python3
+"""Profile-driven layered character lipsync engine.
+
+The engine builds in a local work directory, validates every provider result
+and the final composite, then atomically delivers the video and JSON manifest.
+It deliberately has no character-specific absolute paths.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Callable
+
+TOOLS_DIR = Path(__file__).resolve().parent
+DEFAULT_MAX_CHUNK_SECONDS = 50.0
+SILENCE_DETECT_ARGS = "silencedetect=noise=-35dB:d=0.45"
+
+
+@dataclass(frozen=True)
+class Crop:
+    x: int
+    y: int
+    width: int
+    height: int
+
+    @property
+    def ffmpeg(self) -> str:
+        return f"{self.width}:{self.height}:{self.x}:{self.y}"
+
+
+@dataclass(frozen=True)
+class Size:
+    width: int
+    height: int
+
+    @property
+    def ffmpeg(self) -> str:
+        return f"{self.width}:{self.height}"
+
+
+@dataclass(frozen=True)
+class IdleUnit:
+    name: str
+    relative_path: str
+    duration: float
+    head_trim: float = 0.0
+    tail_trim: float = 0.0
+
+    @property
+    def trimmed_duration(self) -> float:
+        return self.duration - self.head_trim - self.tail_trim
+
+
+@dataclass(frozen=True)
+class QCRegion:
+    crop: Crop
+    fps: int
+    threshold: float
+    min_span_seconds: float
+    min_mean: float = 2.0
+    max_mean: float = 253.0
+    min_stddev: float = 1.0
+
+
+@dataclass(frozen=True)
+class LayeredLipsyncProfile:
+    profile_id: str
+    route_id: str
+    method_id: str
+    provider_content: str
+    placement_mode: str
+    cutout_mode: str
+    key_rgb: tuple[int, int, int]
+    plate_relative_path: str
+    cutout_relative_path: str
+    idle_units: tuple[IdleUnit, ...]
+    source_size: Size
+    canvas_size: Size
+    provider_crop: Crop
+    provider_input_size: Size
+    provider_output_size: Size
+    placement: Crop
+    xfade_seconds: float
+    chroma_filter: str
+    despill_filter: str
+    post_filters: str
+    provider_eye_qc: QCRegion
+    idle_body_qc: QCRegion
+    composite_body_qc: QCRegion
+    max_chunk_seconds: float = DEFAULT_MAX_CHUNK_SECONDS
+    boundary_pad_start: float = 0.5
+    boundary_pad_end: float = 0.5
+    max_parallel_submissions: int = 3
+    fps: int = 24
+
+
+PHASE_B_PATH_A_ROUTE_V1 = "PHASE_B_PATH_A_ROUTE_V1"
+CEDRIC_PROFILE = LayeredLipsyncProfile(
+    profile_id="cedric",
+    route_id=PHASE_B_PATH_A_ROUTE_V1,
+    method_id="layered_chromakey_kling_lipsync_v2",
+    provider_content="whole_character",
+    placement_mode="character_box",
+    cutout_mode="static_frame",
+    key_rgb=(0, 0, 255),
+    plate_relative_path=(
+        "NEW STYLE CHARACTERS/CEDRIC/path_a_prep/"
+        "cedric_room_plate_1280x720_v1.png"
+    ),
+    cutout_relative_path=(
+        "NEW STYLE CHARACTERS/CEDRIC/path_a_prep/"
+        "cedric_cutout_blue_1280x720_v1.png"
+    ),
+    idle_units=(
+        IdleUnit(
+            "A",
+            "assets/lipsync_bases/"
+            "cedric_path_a_gesture_idle_10s_loop_v1_blue_1920x1080.mp4",
+            10.041667,
+            0.6,
+            1.2,
+        ),
+        IdleUnit(
+            "B",
+            "assets/lipsync_bases/"
+            "cedric_path_a_gesture_idle_B_10s_loop_v1_blue_1920x1080.mp4",
+            10.041667,
+            1.3,
+            0.5,
+        ),
+    ),
+    source_size=Size(1920, 1080),
+    canvas_size=Size(1280, 720),
+    # Cedric's established provider input is the complete 1920x1080 idle.
+    provider_crop=Crop(0, 0, 1920, 1080),
+    provider_input_size=Size(1920, 1080),
+    provider_output_size=Size(832, 464),
+    placement=Crop(292, 150, 832, 468),
+    xfade_seconds=0.5,
+    chroma_filter="chromakey=0x0000FF:0.28:0.06",
+    despill_filter="despill=type=blue",
+    post_filters="cas=0.45,eq=contrast=1.03:saturation=1.03",
+    provider_eye_qc=QCRegion(Crop(266, 60, 300, 130), 6, 0.4, 0.33),
+    idle_body_qc=QCRegion(Crop(800, 700, 560, 190), 12, 0.31, 0.5),
+    composite_body_qc=QCRegion(Crop(346, 302, 534, 232), 12, 0.31, 0.5),
+)
+
+# Arlo's green idle is a complete-character Path A asset, equivalent to
+# Cedric's complete-character blue idle. Provider framing and final placement
+# therefore preserve the full 16:9 frame.
+ARLO_PROFILE = LayeredLipsyncProfile(
+    profile_id="arlo",
+    route_id="ARLO_LAYERED_LIPSYNC_CLI_V2",
+    method_id="layered_fullbody_greenscreen_kling_lipsync_v2",
+    provider_content="whole_character",
+    placement_mode="full_canvas",
+    cutout_mode="key_canvas",
+    key_rgb=(6, 239, 10),
+    plate_relative_path="NEW STYLE CHARACTERS/ARLO/arlo_room_plate_1024x576_v1.png",
+    cutout_relative_path=(
+        "NEW STYLE CHARACTERS/ARLO/arlo_key_canvas_1024x576_v2.png"
+    ),
+    idle_units=(
+        IdleUnit(
+            "arlo_idle",
+            "NEW STYLE CHARACTERS/arlo idle.mp4",
+            15.041667,
+            0.35,
+            0.45,
+        ),
+    ),
+    source_size=Size(1916, 1080),
+    canvas_size=Size(1024, 576),
+    # Like Cedric Path A, the provider frame contains the complete character.
+    # The green idle is already spatially aligned to the canonical 16:9 still.
+    provider_crop=Crop(0, 0, 1916, 1080),
+    provider_input_size=Size(1920, 1080),
+    provider_output_size=Size(832, 464),
+    placement=Crop(0, 0, 1024, 576),
+    xfade_seconds=0.5,
+    # Measured from the installed idle's corner pixels (median RGB 6,239,10).
+    # The tighter tolerance preserves Arlo's olive vest while removing the key.
+    chroma_filter="chromakey=0x06EF0A:0.18:0.05",
+    despill_filter="despill=type=green",
+    post_filters="cas=0.4,eq=contrast=1.02:saturation=1.02",
+    # Eyes occupy this band after the complete 1916x1080 frame maps to 832x464.
+    provider_eye_qc=QCRegion(Crop(350, 125, 150, 95), 6, 0.4, 0.33),
+    idle_body_qc=QCRegion(Crop(650, 530, 600, 430), 12, 0.25, 0.5),
+    composite_body_qc=QCRegion(Crop(346, 282, 322, 230), 12, 0.25, 0.5),
+)
+
+PROFILES = {"cedric": CEDRIC_PROFILE, "arlo": ARLO_PROFILE}
+
+
+class LayeredLipsyncQCError(RuntimeError):
+    """A fail-closed media or QC gate refused the build."""
+
+
+def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=True, **kwargs)
+
+
+def ffprobe_duration(path: Path) -> float:
+    result = run(
+        [
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "csv=p=0", str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    return float(result.stdout.strip())
+
+
+def ffprobe_size(path: Path) -> Size:
+    result = run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=width,height", "-of", "json", str(path),
+        ],
+        capture_output=True,
+        text=True,
+    )
+    streams = json.loads(result.stdout).get("streams") or []
+    if not streams:
+        raise LayeredLipsyncQCError(f"no video stream: {path}")
+    return Size(int(streams[0]["width"]), int(streams[0]["height"]))
+
+
+def resolve_production_root(
+    production_root: Path | None = None,
+    *,
+    event_dir: Path | None = None,
+) -> Path:
+    if production_root is not None:
+        return Path(production_root).expanduser().resolve()
+    env = os.environ.get("MN_PRODUCTION_ROOT", "").strip()
+    if env:
+        return Path(env).expanduser().resolve()
+    if event_dir is not None:
+        return Path(event_dir).expanduser().resolve().parent
+    raise ValueError(
+        "production root required: pass production_root/event_dir or set "
+        "MN_PRODUCTION_ROOT"
+    )
+
+
+def profile_paths(profile: LayeredLipsyncProfile, production_root: Path) -> dict:
+    root = Path(production_root)
+    return {
+        "plate": root / Path(profile.plate_relative_path),
+        "cutout": root / Path(profile.cutout_relative_path),
+        "idle_units": tuple(root / Path(unit.relative_path) for unit in profile.idle_units),
+    }
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as source:
+        while block := source.read(1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def source_hashes(
+    profile: LayeredLipsyncProfile,
+    production_root: Path,
+    audio_path: Path,
+) -> dict[str, object]:
+    paths = profile_paths(profile, production_root)
+    return {
+        "audio": sha256_file(audio_path),
+        "plate": sha256_file(paths["plate"]),
+        "cutout": sha256_file(paths["cutout"]),
+        "idle_units": {
+            unit.name: sha256_file(path)
+            for unit, path in zip(profile.idle_units, paths["idle_units"])
+        },
+    }
+
+
+def _validate_crop(name: str, crop: Crop, size: Size) -> None:
+    if min(crop.x, crop.y) < 0 or min(crop.width, crop.height) <= 0:
+        raise ValueError(f"{name} has invalid non-positive geometry: {crop}")
+    if crop.x + crop.width > size.width or crop.y + crop.height > size.height:
+        raise ValueError(f"{name} {crop} exceeds {size}")
+
+
+def validate_profile(profile: LayeredLipsyncProfile) -> None:
+    if profile.provider_content not in {"whole_character", "region"}:
+        raise ValueError(
+            f"unsupported provider_content: {profile.provider_content}"
+        )
+    if profile.placement_mode not in {"full_canvas", "character_box"}:
+        raise ValueError(f"unsupported placement_mode: {profile.placement_mode}")
+    if profile.cutout_mode not in {"key_canvas", "static_frame"}:
+        raise ValueError(f"unsupported cutout_mode: {profile.cutout_mode}")
+    if (
+        profile.provider_content == "whole_character"
+        and profile.provider_crop
+        != Crop(0, 0, profile.source_size.width, profile.source_size.height)
+    ):
+        raise ValueError(
+            "whole_character provider frames must preserve the complete source"
+        )
+    if (
+        profile.placement_mode == "full_canvas"
+        and profile.placement
+        != Crop(0, 0, profile.canvas_size.width, profile.canvas_size.height)
+    ):
+        raise ValueError(
+            "full_canvas placement must cover the complete output canvas"
+        )
+    _validate_crop("provider_crop", profile.provider_crop, profile.source_size)
+    _validate_crop("placement", profile.placement, profile.canvas_size)
+    _validate_crop(
+        "provider_eye_qc", profile.provider_eye_qc.crop, profile.provider_output_size
+    )
+    _validate_crop("idle_body_qc", profile.idle_body_qc.crop, profile.source_size)
+    _validate_crop(
+        "composite_body_qc", profile.composite_body_qc.crop, profile.canvas_size
+    )
+    if not profile.idle_units:
+        raise ValueError("profile requires at least one idle unit")
+    if any(unit.trimmed_duration <= profile.xfade_seconds for unit in profile.idle_units):
+        raise ValueError("idle trims must leave more than one xfade duration")
+    if (
+        profile.max_chunk_seconds
+        <= profile.boundary_pad_start + profile.boundary_pad_end
+    ):
+        raise ValueError("chunk duration must exceed boundary padding")
+    if profile.max_parallel_submissions < 1:
+        raise ValueError("max_parallel_submissions must be positive")
+
+
+def validate_key_canvas(path: Path, key_rgb: tuple[int, int, int]) -> None:
+    """Reject an occluding foreground asset where a pure key canvas is required."""
+    import numpy as np
+    from PIL import Image
+
+    pixels = np.asarray(Image.open(path).convert("RGB"), dtype=np.int16)
+    key = np.asarray(key_rgb, dtype=np.int16)
+    distance = np.abs(pixels - key).max(axis=2)
+    off_key_ratio = float((distance > 3).mean())
+    if off_key_ratio > 0.001:
+        raise LayeredLipsyncQCError(
+            f"key_canvas contains {off_key_ratio:.2%} non-key pixels: {path}"
+        )
+
+
+def validate_assets(profile: LayeredLipsyncProfile, production_root: Path) -> None:
+    validate_profile(profile)
+    paths = profile_paths(profile, production_root)
+    required = [paths["plate"], paths["cutout"], *paths["idle_units"]]
+    missing = [str(path) for path in required if not path.is_file()]
+    if missing:
+        raise FileNotFoundError("layered lipsync assets missing: " + ", ".join(missing))
+    if profile.cutout_mode == "key_canvas":
+        validate_key_canvas(paths["cutout"], profile.key_rgb)
+
+
+def build_idle_track(
+    profile: LayeredLipsyncProfile,
+    production_root: Path,
+    dest: Path,
+    duration: float,
+) -> list[IdleUnit]:
+    paths = profile_paths(profile, production_root)
+    sequence: list[IdleUnit] = []
+    total = 0.0
+    while total < duration + profile.xfade_seconds:
+        unit = profile.idle_units[len(sequence) % len(profile.idle_units)]
+        total = (
+            unit.trimmed_duration
+            if not sequence
+            else total + unit.trimmed_duration - profile.xfade_seconds
+        )
+        sequence.append(unit)
+
+    inputs: list[str] = []
+    filters: list[str] = []
+    for index, unit in enumerate(sequence):
+        inputs.extend(["-i", str(paths["idle_units"][index % len(profile.idle_units)])])
+        filters.append(
+            f"[{index}:v]trim=start={unit.head_trim}:"
+            f"end={unit.duration - unit.tail_trim},setpts=PTS-STARTPTS,"
+            f"fps={profile.fps},scale={profile.source_size.ffmpeg}:flags=lanczos,"
+            f"setsar=1:1,settb=AVTB[v{index}]"
+        )
+    previous = "v0"
+    offset = 0.0
+    for index in range(1, len(sequence)):
+        offset += sequence[index - 1].trimmed_duration - profile.xfade_seconds
+        filters.append(
+            f"[{previous}][v{index}]xfade=transition=fade:"
+            f"duration={profile.xfade_seconds}:offset={offset:.4f}[x{index}]"
+        )
+        previous = f"x{index}"
+    filters.append(
+        f"[{previous}]trim=duration={duration},setpts=PTS-STARTPTS[vout]"
+    )
+    run(
+        [
+            "ffmpeg", "-y", "-v", "error", *inputs,
+            "-filter_complex", ";".join(filters), "-map", "[vout]", "-an",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "medium",
+            str(dest),
+        ]
+    )
+    return sequence
+
+
+def detect_chunk_boundaries(
+    stem: Path,
+    max_chunk: float = DEFAULT_MAX_CHUNK_SECONDS,
+) -> list[float]:
+    process = subprocess.run(
+        [
+            "ffmpeg", "-i", str(stem), "-af", SILENCE_DETECT_ARGS,
+            "-f", "null", "-",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    silences: list[tuple[float, float]] = []
+    start: float | None = None
+    for line in process.stderr.splitlines():
+        match = re.search(r"silence_start: ([\d.]+)", line)
+        if match:
+            start = float(match.group(1))
+        match = re.search(r"silence_end: ([\d.]+)", line)
+        if match and start is not None:
+            silences.append((start, float(match.group(1))))
+            start = None
+
+    total = ffprobe_duration(stem)
+    cuts: list[float] = []
+    position = 0.0
+    while total - position > max_chunk:
+        candidates = [
+            silence
+            for silence in silences
+            if position < sum(silence) / 2 <= position + max_chunk
+        ]
+        if not candidates:
+            raise RuntimeError(
+                f"no silence found in ({position}, {position + max_chunk}]"
+            )
+        cut = round(sum(candidates[-1]) / 2, 2)
+        cuts.append(cut)
+        position = cut
+    return cuts
+
+
+def cut_chunks(
+    profile: LayeredLipsyncProfile,
+    stem: Path,
+    idle_track: Path,
+    cuts: list[float],
+    work: Path,
+) -> list[float]:
+    """Cut the unpadded stem first and tightly crop provider video inputs."""
+    total = ffprobe_duration(stem)
+    bounds = [0.0, *cuts, total]
+    durations: list[float] = []
+    for index, (start, end) in enumerate(zip(bounds, bounds[1:])):
+        duration = end - start
+        durations.append(duration)
+        run(
+            [
+                "ffmpeg", "-y", "-v", "error", "-i", str(stem),
+                "-ss", str(start), "-t", str(duration), "-c:a", "libmp3lame",
+                "-q:a", "2", str(work / f"chunk_{index}_audio_raw.mp3"),
+            ]
+        )
+        run(
+            [
+                "ffmpeg", "-y", "-v", "error", "-i", str(idle_track),
+                "-ss", str(start), "-t", str(duration),
+                "-vf",
+                f"crop={profile.provider_crop.ffmpeg},"
+                f"scale={profile.provider_input_size.ffmpeg}:flags=lanczos,"
+                f"setsar=1:1,fps={profile.fps}",
+                "-an", "-c:v", "libx264", "-preset", "medium", "-crf", "15",
+                "-pix_fmt", "yuv420p", str(work / f"chunk_{index}_video_raw.mp4"),
+            ]
+        )
+    return durations
+
+
+def apply_chunk_boundary_padding(
+    profile: LayeredLipsyncProfile,
+    work: Path,
+    chunk_durations: list[float],
+) -> list[float]:
+    """Apply boundary context only after silence-aligned chunks exist."""
+    padded_durations: list[float] = []
+    for index, raw_duration in enumerate(chunk_durations):
+        padded_duration = (
+            raw_duration + profile.boundary_pad_start + profile.boundary_pad_end
+        )
+        if padded_duration > profile.max_chunk_seconds + 0.05:
+            raise ValueError(
+                f"padded chunk {index} is {padded_duration:.3f}s, "
+                f"over {profile.max_chunk_seconds:.3f}s"
+            )
+        run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-f", "lavfi", "-t", str(profile.boundary_pad_start),
+                "-i", "anullsrc=r=44100:cl=mono",
+                "-i", str(work / f"chunk_{index}_audio_raw.mp3"),
+                "-f", "lavfi", "-t", str(profile.boundary_pad_end),
+                "-i", "anullsrc=r=44100:cl=mono",
+                "-filter_complex", "[0:a][1:a][2:a]concat=n=3:v=0:a=1[out]",
+                "-map", "[out]", "-c:a", "libmp3lame", "-q:a", "2",
+                str(work / f"chunk_{index}_audio.mp3"),
+            ]
+        )
+        run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-i", str(work / f"chunk_{index}_video_raw.mp4"),
+                "-vf",
+                f"tpad=start_mode=clone:start_duration={profile.boundary_pad_start}:"
+                f"stop_mode=clone:stop_duration={profile.boundary_pad_end},"
+                f"trim=duration={padded_duration},setpts=PTS-STARTPTS",
+                "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "15",
+                "-pix_fmt", "yuv420p", str(work / f"chunk_{index}_video.mp4"),
+            ]
+        )
+        padded_durations.append(padded_duration)
+    return padded_durations
+
+
+def submit_lipsync_chunks(
+    work: Path,
+    n_chunks: int,
+    api_key: str,
+    *,
+    max_workers: int,
+    client_factory: Callable[[str], object] | None = None,
+) -> dict[int, dict]:
+    """Submit bounded parallel jobs and retain task IDs/provider results."""
+    if client_factory is None:
+        if str(TOOLS_DIR) not in sys.path:
+            sys.path.insert(0, str(TOOLS_DIR))
+        from lipsync_sender import LipSyncClient, install_public_dns_fallback
+
+        install_public_dns_fallback()
+        client_factory = LipSyncClient
+
+    def worker(index: int) -> tuple[int, dict]:
+        client = client_factory(api_key)
+        task_id: str | None = None
+        try:
+            task_id = client.submit(
+                work / f"chunk_{index}_video.mp4",
+                work / f"chunk_{index}_audio.mp3",
+                transport="url",
+            )
+            result = client.poll_until_done(task_id)
+            outputs = result.get("outputs") or []
+            status = str(result.get("status") or "unknown")
+            record = {
+                "status": status,
+                "task_id": task_id,
+                "outputs": list(outputs),
+            }
+            if status.lower() == "completed" and outputs:
+                client.download(
+                    outputs[0], work / f"chunk_{index}_lipsync.mp4"
+                )
+            return index, record
+        except Exception as exc:  # noqa: BLE001
+            return index, {
+                "status": "exception",
+                "task_id": task_id,
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+    results: dict[int, dict] = {}
+    with ThreadPoolExecutor(max_workers=min(max_workers, n_chunks)) as executor:
+        futures = [executor.submit(worker, index) for index in range(n_chunks)]
+        for future in as_completed(futures):
+            index, record = future.result()
+            results[index] = record
+    return results
+
+
+def _gray_frames(path: Path, region: QCRegion):
+    import numpy as np
+
+    crop = region.crop
+    raw = run(
+        [
+            "ffmpeg", "-v", "error", "-i", str(path),
+            "-vf", f"fps={region.fps},crop={crop.ffmpeg},format=gray",
+            "-f", "rawvideo", "-pix_fmt", "gray", "-",
+        ],
+        capture_output=True,
+    ).stdout
+    pixels = crop.width * crop.height
+    count = len(raw) // pixels
+    if count < 2:
+        raise LayeredLipsyncQCError(
+            f"uninformative QC crop ({count} frame(s)): {path}"
+        )
+    frames = np.frombuffer(raw[: count * pixels], dtype=np.uint8).reshape(
+        count, crop.height, crop.width
+    )
+    mean = float(frames.mean())
+    stddev = float(frames.std())
+    if (
+        mean <= region.min_mean
+        or mean >= region.max_mean
+        or stddev < region.min_stddev
+    ):
+        raise LayeredLipsyncQCError(
+            f"uninformative QC crop mean={mean:.3f} stddev={stddev:.3f}: {path}"
+        )
+    return frames
+
+
+def qc_pupil_scan(
+    path: Path,
+    region: QCRegion,
+) -> list[tuple[float, float]]:
+    import numpy as np
+
+    frames = _gray_frames(path, region)
+    dark = (frames < 70).sum(axis=(1, 2)).astype(float)
+    median = float(np.median(dark))
+    if median <= 0:
+        raise LayeredLipsyncQCError(f"eye crop has no dark detail: {path}")
+    bad = dark < region.threshold * median
+    spans: list[tuple[float, float]] = []
+    index = 0
+    min_frames = max(2, round(region.min_span_seconds * region.fps))
+    while index < len(frames):
+        if bad[index]:
+            end = index
+            while end < len(frames) and bad[end]:
+                end += 1
+            if end - index >= min_frames:
+                spans.append(
+                    (round(index / region.fps, 2), round(end / region.fps, 2))
+                )
+            index = end
+        else:
+            index += 1
+    return spans
+
+
+def qc_still_scan(
+    path: Path,
+    region: QCRegion,
+) -> list[tuple[float, float]]:
+    import numpy as np
+
+    frames = _gray_frames(path, region).astype(np.int16)
+    differences = np.abs(np.diff(frames, axis=0)).mean(axis=(1, 2))
+    still = differences < region.threshold
+    spans: list[tuple[float, float]] = []
+    start: int | None = None
+    for index, is_still in enumerate(still):
+        if is_still and start is None:
+            start = index
+        if not is_still and start is not None:
+            duration = (index - start) / region.fps
+            if duration >= region.min_span_seconds:
+                spans.append((round(start / region.fps, 2), round(duration, 2)))
+            start = None
+    if start is not None:
+        duration = (len(frames) - 1 - start) / region.fps
+        if duration >= region.min_span_seconds:
+            spans.append((round(start / region.fps, 2), round(duration, 2)))
+    return spans
+
+
+def validate_provider_output(
+    path: Path,
+    profile: LayeredLipsyncProfile,
+) -> None:
+    actual = ffprobe_size(path)
+    if actual != profile.provider_output_size:
+        raise LayeredLipsyncQCError(
+            f"provider output is {actual}, expected {profile.provider_output_size}"
+        )
+    run(["ffmpeg", "-v", "error", "-i", str(path), "-f", "null", "-"])
+
+
+def pad_concat_lipsync(
+    profile: LayeredLipsyncProfile,
+    work: Path,
+    chunk_durations: list[float],
+    dest: Path,
+) -> None:
+    concat_lines: list[str] = []
+    for index, raw_duration in enumerate(chunk_durations):
+        exact = work / f"chunk_{index}_exact.mp4"
+        run(
+            [
+                "ffmpeg", "-y", "-v", "error",
+                "-i", str(work / f"chunk_{index}_lipsync.mp4"),
+                "-vf",
+                f"trim=start={profile.boundary_pad_start},setpts=PTS-STARTPTS,"
+                f"fps={profile.fps},scale={profile.placement.width}:"
+                f"{profile.placement.height}:flags=lanczos,"
+                f"tpad=stop_mode=clone:stop_duration=2,"
+                f"trim=duration={raw_duration},setpts=PTS-STARTPTS",
+                "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "15",
+                "-pix_fmt", "yuv420p", str(exact),
+            ]
+        )
+        concat_lines.append(f"file '{exact.name}'")
+    concat_file = work / "concat_lipsync.txt"
+    concat_file.write_text("\n".join(concat_lines) + "\n", encoding="utf-8")
+    run(
+        [
+            "ffmpeg", "-y", "-v", "error", "-f", "concat", "-safe", "0",
+            "-i", str(concat_file), "-c", "copy", str(dest),
+        ]
+    )
+    run(["ffmpeg", "-v", "error", "-i", str(dest), "-f", "null", "-"])
+
+
+def composite_on_plate(
+    profile: LayeredLipsyncProfile,
+    production_root: Path,
+    lipsync_track: Path,
+    stem: Path,
+    dest: Path,
+) -> None:
+    paths = profile_paths(profile, production_root)
+    filters = (
+        f"[1:v]{profile.post_filters}[ls];"
+        f"[0:v]scale={profile.canvas_size.ffmpeg}:flags=lanczos[base];"
+        f"[base][ls]overlay={profile.placement.x}:{profile.placement.y}:"
+        f"shortest=1[full];"
+        f"[full]{profile.chroma_filter},{profile.despill_filter}[keyed];"
+        f"[2:v]scale={profile.canvas_size.ffmpeg}:flags=lanczos[plate];"
+        f"[plate][keyed]overlay=0:0:shortest=1,"
+        f"fps={profile.fps},format=yuv420p[out]"
+    )
+    run(
+        [
+            "ffmpeg", "-y", "-loglevel", "fatal", "-stream_loop", "-1",
+            "-i", str(paths["cutout"]), "-i", str(lipsync_track),
+            "-loop", "1", "-i", str(paths["plate"]), "-i", str(stem),
+            "-filter_complex", filters, "-map", "[out]", "-map", "3:a",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-c:a", "aac", "-b:a", "160k", "-shortest", str(dest),
+        ]
+    )
+    run(["ffmpeg", "-v", "error", "-i", str(dest), "-f", "null", "-"])
+
+
+def manifest_path_for(output: Path) -> Path:
+    return output.with_suffix(".json")
+
+
+def atomic_deliver(
+    local_output: Path,
+    output: Path,
+    manifest: dict,
+) -> Path:
+    """Stage both files in the destination directory and replace atomically."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path = manifest_path_for(output)
+    output_fd, output_tmp_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", suffix=".tmp", dir=output.parent
+    )
+    os.close(output_fd)
+    manifest_fd, manifest_tmp_name = tempfile.mkstemp(
+        prefix=f".{manifest_path.name}.", suffix=".tmp", dir=output.parent
+    )
+    os.close(manifest_fd)
+    output_tmp = Path(output_tmp_name)
+    manifest_tmp = Path(manifest_tmp_name)
+    old_manifest = manifest_path.read_bytes() if manifest_path.exists() else None
+    try:
+        with local_output.open("rb") as source, output_tmp.open("wb") as target:
+            while block := source.read(1024 * 1024):
+                target.write(block)
+        manifest_tmp.write_text(
+            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+        )
+        os.replace(manifest_tmp, manifest_path)
+        try:
+            os.replace(output_tmp, output)
+        except Exception:
+            if old_manifest is None:
+                manifest_path.unlink(missing_ok=True)
+            else:
+                restore_fd, restore_name = tempfile.mkstemp(
+                    prefix=f".{manifest_path.name}.restore.",
+                    dir=output.parent,
+                )
+                os.close(restore_fd)
+                restore = Path(restore_name)
+                restore.write_bytes(old_manifest)
+                os.replace(restore, manifest_path)
+            raise
+    finally:
+        output_tmp.unlink(missing_ok=True)
+        manifest_tmp.unlink(missing_ok=True)
+    return manifest_path
+
+
+def run_layered_lipsync(
+    profile: LayeredLipsyncProfile,
+    audio_path: Path,
+    output_path: Path,
+    *,
+    api_key: str,
+    production_root: Path | None = None,
+    event_dir: Path | None = None,
+    work_dir: Path | None = None,
+    client_factory: Callable[[str], object] | None = None,
+) -> dict:
+    root = resolve_production_root(production_root, event_dir=event_dir)
+    audio_path = Path(audio_path).expanduser().resolve()
+    output_path = Path(output_path).expanduser().resolve()
+    validate_assets(profile, root)
+    work = (
+        Path(work_dir).expanduser().resolve()
+        if work_dir is not None
+        else Path(tempfile.mkdtemp(prefix=f"layered_{profile.profile_id}_"))
+    )
+    work.mkdir(parents=True, exist_ok=True)
+
+    total = ffprobe_duration(audio_path)
+    idle = work / "idle_track.mp4"
+    sequence = build_idle_track(profile, root, idle, total)
+    idle_stills = qc_still_scan(idle, profile.idle_body_qc)
+    if idle_stills:
+        raise LayeredLipsyncQCError(f"idle still spans: {idle_stills}")
+
+    raw_chunk_limit = (
+        profile.max_chunk_seconds
+        - profile.boundary_pad_start
+        - profile.boundary_pad_end
+    )
+    cuts = detect_chunk_boundaries(audio_path, raw_chunk_limit)
+    chunk_durations = cut_chunks(profile, audio_path, idle, cuts, work)
+    padded_durations = apply_chunk_boundary_padding(
+        profile, work, chunk_durations
+    )
+    results = submit_lipsync_chunks(
+        work,
+        len(chunk_durations),
+        api_key,
+        max_workers=profile.max_parallel_submissions,
+        client_factory=client_factory,
+    )
+    failed = {
+        index: record
+        for index, record in results.items()
+        if record.get("status", "").lower() != "completed"
+        or not record.get("outputs")
+    }
+    if failed or len(results) != len(chunk_durations):
+        raise RuntimeError(f"lipsync chunk failures: {failed or 'missing results'}")
+
+    for index in range(len(chunk_durations)):
+        provider_output = work / f"chunk_{index}_lipsync.mp4"
+        validate_provider_output(provider_output, profile)
+        eye_spans = qc_pupil_scan(provider_output, profile.provider_eye_qc)
+        if eye_spans:
+            raise LayeredLipsyncQCError(
+                f"chunk {index} pupil spans: {eye_spans}"
+            )
+
+    lipsync_track = work / "lipsync_full.mp4"
+    pad_concat_lipsync(profile, work, chunk_durations, lipsync_track)
+    local_output = work / "composite_local.mp4"
+    composite_on_plate(profile, root, lipsync_track, audio_path, local_output)
+    final_stills = qc_still_scan(local_output, profile.composite_body_qc)
+    if final_stills:
+        raise LayeredLipsyncQCError(f"composite still spans: {final_stills}")
+    run(["ffmpeg", "-v", "error", "-i", str(local_output), "-f", "null", "-"])
+
+    manifest = {
+        "profile": profile.profile_id,
+        "route": profile.route_id,
+        "method": profile.method_id,
+        "production_root": str(root),
+        "audio": str(audio_path),
+        "output": str(output_path),
+        "chunk_count": len(chunk_durations),
+        "cuts": cuts,
+        "chunk_durations": [round(value, 3) for value in chunk_durations],
+        "padded_chunk_durations": [
+            round(value, 3) for value in padded_durations
+        ],
+        "units": [unit.name for unit in sequence],
+        "lipsync": {str(index): results[index] for index in sorted(results)},
+        "profile_config": asdict(profile),
+        "source_sha256": source_hashes(profile, root, audio_path),
+        "output_sha256": sha256_file(local_output),
+    }
+    atomic_deliver(local_output, output_path, manifest)
+    return manifest
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--profile", required=True, choices=sorted(PROFILES))
+    parser.add_argument("--production-root", required=True, type=Path)
+    parser.add_argument("--audio", required=True, type=Path)
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--work", type=Path)
+    args = parser.parse_args()
+
+    from credentials_lib.credentials import load_wavespeed_api_key
+
+    try:
+        api_key = load_wavespeed_api_key(
+            args.production_root / "API_KEYS_MASTER.md"
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    try:
+        run_layered_lipsync(
+            PROFILES[args.profile],
+            args.audio,
+            args.output,
+            api_key=api_key,
+            production_root=args.production_root,
+            work_dir=args.work,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[layered_lipsync] FAILED: {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
