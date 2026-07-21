@@ -2259,8 +2259,12 @@ class LipsyncPollingThread(threading.Thread):
             sweep_phase_module_lipsync_polls(self.state, self.client)
             from server_handlers.phases import sweep_phase_a_lipsync_resume
             sweep_phase_a_lipsync_resume(self.state)
-            # PHASE_B_PATH_A_ORPHAN_SWEEP_V1 — clear wedged Phase B running state.
-            from server_handlers.phases import sweep_phase_b_lipsync_orphan
+            # Durable Phase B layered resume + orphan clear.
+            from server_handlers.phases import (
+                reconcile_phase_b_layered_lipsync,
+                sweep_phase_b_lipsync_orphan,
+            )
+            reconcile_phase_b_layered_lipsync(self.state, self.client)
             sweep_phase_b_lipsync_orphan(self.state)
         except Exception as exc:  # noqa: BLE001
             print(f"[lipsync-poller] phase module sweep error: {exc}", flush=True)

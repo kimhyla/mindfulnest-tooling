@@ -19,6 +19,7 @@ from layered_character_lipsync import (
     atomic_deliver,
     build_idle_track as _build_idle_track,
     composite_on_plate as _composite_on_plate,
+    count_layered_lipsync_chunks,
     cut_chunks as _cut_chunks,
     detect_chunk_boundaries,
     ffprobe_duration,
@@ -253,7 +254,8 @@ def count_phase_b_path_a_chunks(
     stem: Path,
     max_chunk: float = MAX_CHUNK_SECONDS,
 ) -> int:
-    return len(detect_chunk_boundaries(Path(stem), max_chunk)) + 1
+    profile = replace(CEDRIC_PROFILE, max_chunk_seconds=max_chunk)
+    return count_layered_lipsync_chunks(profile, Path(stem))
 
 
 def validate_path_a_assets(

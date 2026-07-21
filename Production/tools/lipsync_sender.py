@@ -91,6 +91,10 @@ class LipsyncHostingError(RuntimeError):
     """Raised when no public URL host can pass the lipsync preflight."""
 
 
+class PaidSubmissionUnknownError(RuntimeError):
+    """A paid POST may have been accepted but returned no durable task ID."""
+
+
 def _sha256_file(file_path: Path) -> str:
     digest = hashlib.sha256()
     with file_path.open("rb") as fh:
@@ -759,21 +763,18 @@ class LipSyncClient:
         body_size = len(json.dumps(body))
         print(f"[lipsync] Payload size: {body_size / 1024 / 1024:.1f} MB ({transport} via curl)")
 
-        last_error = None
-        for attempt in range(MAX_RETRIES):
-            try:
-                payload = self._curl_json("POST", LIPSYNC_SUBMIT_URL, body, timeout=120)
-                break
-            except Exception as exc:
-                last_error = exc
-                if attempt < MAX_RETRIES - 1:
-                    wait = RETRY_BACKOFF[attempt]
-                    print(f"[lipsync] Attempt {attempt+1} failed: {exc}, retrying in {wait}s...")
-                    time.sleep(wait)
-                else:
-                    raise RuntimeError(
-                        f"WaveSpeed submit failed after {MAX_RETRIES} attempts: {last_error}"
-                    )
+        try:
+            payload = self._curl_json(
+                "POST",
+                LIPSYNC_SUBMIT_URL,
+                body,
+                timeout=120,
+            )
+        except Exception as exc:
+            raise PaidSubmissionUnknownError(
+                "WaveSpeed lipsync submission outcome is unknown; refusing "
+                "automatic retry because the paid task may exist"
+            ) from exc
 
         # Extract job_id from response
         # Response shape: {"code":200, "data":{"id":"...", ...}}

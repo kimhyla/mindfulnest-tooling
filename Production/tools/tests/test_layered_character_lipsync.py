@@ -183,11 +183,12 @@ def test_chunking_happens_before_per_chunk_padding(
         lambda *_args: list(engine.CEDRIC_PROFILE.idle_units),
     )
     monkeypatch.setattr(engine, "qc_still_scan", lambda *_args: [])
-    monkeypatch.setattr(
-        engine,
-        "detect_chunk_boundaries",
-        lambda *_args: events.append("boundaries") or [30.0],
-    )
+    def fake_boundaries(_audio: Path, raw_limit: float) -> list[float]:
+        assert raw_limit == 49.0
+        events.append("boundaries")
+        return [30.0]
+
+    monkeypatch.setattr(engine, "detect_chunk_boundaries", fake_boundaries)
 
     def fake_cut(*_args):
         events.append("cut")
@@ -240,6 +241,7 @@ def test_chunking_happens_before_per_chunk_padding(
     assert events == ["boundaries", "cut", "pad"]
     assert manifest["lipsync"]["0"]["task_id"] == "task-0"
     assert delivered["padded_chunk_durations"] == [31.0, 31.0]
+    assert delivered["plan_sha256"] == manifest["plan_sha256"]
     assert delivered["source_sha256"]["audio"] == "offline"
     assert delivered["output_sha256"] == engine.sha256_file(local_output)
 
@@ -294,7 +296,30 @@ def test_atomic_delivery_writes_output_and_manifest(tmp_path: Path) -> None:
 
     sidecar = engine.atomic_deliver(local, destination, manifest)
     assert destination.read_bytes() == b"new-video"
-    assert json.loads(sidecar.read_text(encoding="utf-8")) == manifest
+    delivered_manifest = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert delivered_manifest == {**manifest, "committed": True}
+
+
+def test_atomic_delivery_installs_video_before_committed_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    local = tmp_path / "local.mp4"
+    local.write_bytes(b"new-video")
+    destination = tmp_path / "out.mp4"
+    sidecar = engine.manifest_path_for(destination)
+    real_replace = os.replace
+    targets: list[Path] = []
+
+    def record_replace(source, target):
+        targets.append(Path(target))
+        return real_replace(source, target)
+
+    monkeypatch.setattr(engine.os, "replace", record_replace)
+    engine.atomic_deliver(local, destination, {"profile": "arlo"})
+
+    assert targets[-2:] == [destination, sidecar]
+    assert json.loads(sidecar.read_text())["committed"] is True
 
 
 def test_atomic_delivery_failure_leaves_destination_untouched(

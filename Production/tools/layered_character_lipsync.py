@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -101,6 +102,43 @@ class LayeredLipsyncProfile:
     boundary_pad_end: float = 0.5
     max_parallel_submissions: int = 3
     fps: int = 24
+
+
+@dataclass(frozen=True)
+class LayeredLipsyncPlan:
+    audio_duration: float
+    max_provider_seconds: float
+    boundary_pad_start: float
+    boundary_pad_end: float
+    raw_chunk_limit: float
+    cuts: tuple[float, ...]
+    chunk_durations: tuple[float, ...]
+    padded_chunk_durations: tuple[float, ...]
+
+    @property
+    def chunk_count(self) -> int:
+        return len(self.chunk_durations)
+
+    @property
+    def plan_sha256(self) -> str:
+        payload = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class PreparedLayeredInputs:
+    work_dir: Path
+    idle_track: Path
+    idle_units: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class LayeredBuildResult:
+    video_path: Path
+    build_output_sha256: str
+    plan: LayeredLipsyncPlan
+    idle_units: tuple[str, ...]
+    provider_records: dict[int, dict]
 
 
 PHASE_B_PATH_A_ROUTE_V1 = "PHASE_B_PATH_A_ROUTE_V1"
@@ -461,6 +499,52 @@ def detect_chunk_boundaries(
     return cuts
 
 
+def plan_layered_lipsync(
+    profile: LayeredLipsyncProfile,
+    audio_path: Path,
+) -> LayeredLipsyncPlan:
+    """Create the single chunk plan used by budget, preparation, and build."""
+    validate_profile(profile)
+    audio_path = Path(audio_path)
+    total = ffprobe_duration(audio_path)
+    raw_limit = (
+        profile.max_chunk_seconds
+        - profile.boundary_pad_start
+        - profile.boundary_pad_end
+    )
+    cuts = tuple(detect_chunk_boundaries(audio_path, raw_limit))
+    bounds = (0.0, *cuts, total)
+    raw_durations = tuple(
+        end - start for start, end in zip(bounds, bounds[1:])
+    )
+    padded_durations = tuple(
+        duration + profile.boundary_pad_start + profile.boundary_pad_end
+        for duration in raw_durations
+    )
+    if any(
+        duration > profile.max_chunk_seconds + 0.05
+        for duration in padded_durations
+    ):
+        raise ValueError("planned padded chunk exceeds provider duration limit")
+    return LayeredLipsyncPlan(
+        audio_duration=total,
+        max_provider_seconds=profile.max_chunk_seconds,
+        boundary_pad_start=profile.boundary_pad_start,
+        boundary_pad_end=profile.boundary_pad_end,
+        raw_chunk_limit=raw_limit,
+        cuts=cuts,
+        chunk_durations=raw_durations,
+        padded_chunk_durations=padded_durations,
+    )
+
+
+def count_layered_lipsync_chunks(
+    profile: LayeredLipsyncProfile,
+    audio_path: Path,
+) -> int:
+    return plan_layered_lipsync(profile, audio_path).chunk_count
+
+
 def cut_chunks(
     profile: LayeredLipsyncProfile,
     stem: Path,
@@ -774,7 +858,7 @@ def atomic_deliver(
     output: Path,
     manifest: dict,
 ) -> Path:
-    """Stage both files in the destination directory and replace atomically."""
+    """Install video first and its committed manifest last, with rollback."""
     output.parent.mkdir(parents=True, exist_ok=True)
     manifest_path = manifest_path_for(output)
     output_fd, output_tmp_name = tempfile.mkstemp(
@@ -787,34 +871,196 @@ def atomic_deliver(
     os.close(manifest_fd)
     output_tmp = Path(output_tmp_name)
     manifest_tmp = Path(manifest_tmp_name)
-    old_manifest = manifest_path.read_bytes() if manifest_path.exists() else None
+    output_backup = output.parent / f".{output.name}.rollback"
+    manifest_backup = output.parent / f".{manifest_path.name}.rollback"
     try:
         with local_output.open("rb") as source, output_tmp.open("wb") as target:
             while block := source.read(1024 * 1024):
                 target.write(block)
+        committed_manifest = dict(manifest)
+        committed_manifest["committed"] = True
         manifest_tmp.write_text(
-            json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+            json.dumps(committed_manifest, indent=2) + "\n", encoding="utf-8"
         )
-        os.replace(manifest_tmp, manifest_path)
+        output_backup.unlink(missing_ok=True)
+        manifest_backup.unlink(missing_ok=True)
+        had_output = output.exists()
+        had_manifest = manifest_path.exists()
+        if had_output:
+            shutil.copy2(output, output_backup)
+        if had_manifest:
+            shutil.copy2(manifest_path, manifest_backup)
+        output_installed = False
+        manifest_installed = False
         try:
             os.replace(output_tmp, output)
+            output_installed = True
+            os.replace(manifest_tmp, manifest_path)
+            manifest_installed = True
         except Exception:
-            if old_manifest is None:
-                manifest_path.unlink(missing_ok=True)
-            else:
-                restore_fd, restore_name = tempfile.mkstemp(
-                    prefix=f".{manifest_path.name}.restore.",
-                    dir=output.parent,
-                )
-                os.close(restore_fd)
-                restore = Path(restore_name)
-                restore.write_bytes(old_manifest)
-                os.replace(restore, manifest_path)
+            if output_installed:
+                if had_output and output_backup.exists():
+                    os.replace(output_backup, output)
+                elif not had_output:
+                    output.unlink(missing_ok=True)
+            if manifest_installed:
+                if had_manifest and manifest_backup.exists():
+                    os.replace(manifest_backup, manifest_path)
+                elif not had_manifest:
+                    manifest_path.unlink(missing_ok=True)
             raise
+        output_backup.unlink(missing_ok=True)
+        manifest_backup.unlink(missing_ok=True)
     finally:
         output_tmp.unlink(missing_ok=True)
         manifest_tmp.unlink(missing_ok=True)
+        if output_backup.exists() and not output.exists():
+            os.replace(output_backup, output)
+        if manifest_backup.exists() and not manifest_path.exists():
+            os.replace(manifest_backup, manifest_path)
     return manifest_path
+
+
+def prepare_layered_lipsync_inputs(
+    profile: LayeredLipsyncProfile,
+    plan: LayeredLipsyncPlan,
+    audio_path: Path,
+    *,
+    production_root: Path,
+    work_dir: Path,
+) -> PreparedLayeredInputs:
+    """Materialize the exact idle/audio/video inputs declared by ``plan``."""
+    validate_assets(profile, production_root)
+    work = Path(work_dir)
+    work.mkdir(parents=True, exist_ok=True)
+    idle = work / "idle_track.mp4"
+    sequence = build_idle_track(
+        profile,
+        production_root,
+        idle,
+        plan.audio_duration,
+    )
+    idle_stills = qc_still_scan(idle, profile.idle_body_qc)
+    if idle_stills:
+        raise LayeredLipsyncQCError(f"idle still spans: {idle_stills}")
+    actual_durations = cut_chunks(
+        profile,
+        Path(audio_path),
+        idle,
+        list(plan.cuts),
+        work,
+    )
+    if len(actual_durations) != plan.chunk_count or any(
+        abs(actual - expected) > 0.01
+        for actual, expected in zip(actual_durations, plan.chunk_durations)
+    ):
+        raise RuntimeError("materialized chunk durations differ from immutable plan")
+    apply_chunk_boundary_padding(profile, work, actual_durations)
+    return PreparedLayeredInputs(
+        work_dir=work,
+        idle_track=idle,
+        idle_units=tuple(unit.name for unit in sequence),
+    )
+
+
+def build_layered_lipsync(
+    profile: LayeredLipsyncProfile,
+    plan: LayeredLipsyncPlan,
+    audio_path: Path,
+    prepared: PreparedLayeredInputs,
+    *,
+    production_root: Path,
+    provider_records: dict[int, dict],
+) -> LayeredBuildResult:
+    """Validate provider files and build a local, event-neutral composite."""
+    work = prepared.work_dir
+    if set(provider_records) != set(range(plan.chunk_count)):
+        raise RuntimeError("provider records do not match immutable chunk plan")
+    for index in range(plan.chunk_count):
+        record = provider_records[index]
+        if (
+            str(record.get("status") or "").lower() != "completed"
+            or not record.get("outputs")
+        ):
+            raise RuntimeError(f"lipsync chunk {index} not completed: {record}")
+        provider_output = work / f"chunk_{index}_lipsync.mp4"
+        validate_provider_output(provider_output, profile)
+        eye_spans = qc_pupil_scan(provider_output, profile.provider_eye_qc)
+        if eye_spans:
+            raise LayeredLipsyncQCError(
+                f"chunk {index} pupil spans: {eye_spans}"
+            )
+
+    lipsync_track = work / "lipsync_full.mp4"
+    pad_concat_lipsync(
+        profile,
+        work,
+        list(plan.chunk_durations),
+        lipsync_track,
+    )
+    local_output = work / "composite_local.mp4"
+    composite_on_plate(
+        profile,
+        production_root,
+        lipsync_track,
+        Path(audio_path),
+        local_output,
+    )
+    final_stills = qc_still_scan(local_output, profile.composite_body_qc)
+    if final_stills:
+        raise LayeredLipsyncQCError(f"composite still spans: {final_stills}")
+    run(["ffmpeg", "-v", "error", "-i", str(local_output), "-f", "null", "-"])
+    return LayeredBuildResult(
+        video_path=local_output,
+        build_output_sha256=sha256_file(local_output),
+        plan=plan,
+        idle_units=prepared.idle_units,
+        provider_records=provider_records,
+    )
+
+
+def deliver_layered_lipsync(
+    profile: LayeredLipsyncProfile,
+    build: LayeredBuildResult,
+    audio_path: Path,
+    output_path: Path,
+    *,
+    production_root: Path,
+    manifest_context: dict | None = None,
+) -> dict:
+    """Deliver build bytes and commit a matching manifest last."""
+    manifest = {
+        "profile": profile.profile_id,
+        "route": profile.route_id,
+        "method": profile.method_id,
+        "production_root": str(production_root),
+        "audio": str(audio_path),
+        "output": str(output_path),
+        "chunk_count": build.plan.chunk_count,
+        "cuts": list(build.plan.cuts),
+        "chunk_durations": [
+            round(value, 3) for value in build.plan.chunk_durations
+        ],
+        "padded_chunk_durations": [
+            round(value, 3) for value in build.plan.padded_chunk_durations
+        ],
+        "plan_sha256": build.plan.plan_sha256,
+        "units": list(build.idle_units),
+        "lipsync": {
+            str(index): build.provider_records[index]
+            for index in sorted(build.provider_records)
+        },
+        "profile_config": asdict(profile),
+        "source_sha256": source_hashes(profile, production_root, Path(audio_path)),
+        "build_output_sha256": build.build_output_sha256,
+        "delivery_output_sha256": sha256_file(build.video_path),
+        "output_sha256": sha256_file(build.video_path),
+    }
+    if manifest_context:
+        manifest.update(manifest_context)
+    atomic_deliver(build.video_path, Path(output_path), manifest)
+    manifest["committed"] = True
+    return manifest
 
 
 def run_layered_lipsync(
@@ -831,34 +1077,23 @@ def run_layered_lipsync(
     root = resolve_production_root(production_root, event_dir=event_dir)
     audio_path = Path(audio_path).expanduser().resolve()
     output_path = Path(output_path).expanduser().resolve()
-    validate_assets(profile, root)
     work = (
         Path(work_dir).expanduser().resolve()
         if work_dir is not None
         else Path(tempfile.mkdtemp(prefix=f"layered_{profile.profile_id}_"))
     )
     work.mkdir(parents=True, exist_ok=True)
-
-    total = ffprobe_duration(audio_path)
-    idle = work / "idle_track.mp4"
-    sequence = build_idle_track(profile, root, idle, total)
-    idle_stills = qc_still_scan(idle, profile.idle_body_qc)
-    if idle_stills:
-        raise LayeredLipsyncQCError(f"idle still spans: {idle_stills}")
-
-    raw_chunk_limit = (
-        profile.max_chunk_seconds
-        - profile.boundary_pad_start
-        - profile.boundary_pad_end
-    )
-    cuts = detect_chunk_boundaries(audio_path, raw_chunk_limit)
-    chunk_durations = cut_chunks(profile, audio_path, idle, cuts, work)
-    padded_durations = apply_chunk_boundary_padding(
-        profile, work, chunk_durations
+    plan = plan_layered_lipsync(profile, audio_path)
+    prepared = prepare_layered_lipsync_inputs(
+        profile,
+        plan,
+        audio_path,
+        production_root=root,
+        work_dir=work,
     )
     results = submit_lipsync_chunks(
         work,
-        len(chunk_durations),
+        plan.chunk_count,
         api_key,
         max_workers=profile.max_parallel_submissions,
         client_factory=client_factory,
@@ -869,48 +1104,23 @@ def run_layered_lipsync(
         if record.get("status", "").lower() != "completed"
         or not record.get("outputs")
     }
-    if failed or len(results) != len(chunk_durations):
+    if failed or len(results) != plan.chunk_count:
         raise RuntimeError(f"lipsync chunk failures: {failed or 'missing results'}")
-
-    for index in range(len(chunk_durations)):
-        provider_output = work / f"chunk_{index}_lipsync.mp4"
-        validate_provider_output(provider_output, profile)
-        eye_spans = qc_pupil_scan(provider_output, profile.provider_eye_qc)
-        if eye_spans:
-            raise LayeredLipsyncQCError(
-                f"chunk {index} pupil spans: {eye_spans}"
-            )
-
-    lipsync_track = work / "lipsync_full.mp4"
-    pad_concat_lipsync(profile, work, chunk_durations, lipsync_track)
-    local_output = work / "composite_local.mp4"
-    composite_on_plate(profile, root, lipsync_track, audio_path, local_output)
-    final_stills = qc_still_scan(local_output, profile.composite_body_qc)
-    if final_stills:
-        raise LayeredLipsyncQCError(f"composite still spans: {final_stills}")
-    run(["ffmpeg", "-v", "error", "-i", str(local_output), "-f", "null", "-"])
-
-    manifest = {
-        "profile": profile.profile_id,
-        "route": profile.route_id,
-        "method": profile.method_id,
-        "production_root": str(root),
-        "audio": str(audio_path),
-        "output": str(output_path),
-        "chunk_count": len(chunk_durations),
-        "cuts": cuts,
-        "chunk_durations": [round(value, 3) for value in chunk_durations],
-        "padded_chunk_durations": [
-            round(value, 3) for value in padded_durations
-        ],
-        "units": [unit.name for unit in sequence],
-        "lipsync": {str(index): results[index] for index in sorted(results)},
-        "profile_config": asdict(profile),
-        "source_sha256": source_hashes(profile, root, audio_path),
-        "output_sha256": sha256_file(local_output),
-    }
-    atomic_deliver(local_output, output_path, manifest)
-    return manifest
+    build = build_layered_lipsync(
+        profile,
+        plan,
+        audio_path,
+        prepared,
+        production_root=root,
+        provider_records=results,
+    )
+    return deliver_layered_lipsync(
+        profile,
+        build,
+        audio_path,
+        output_path,
+        production_root=root,
+    )
 
 
 def main() -> int:
