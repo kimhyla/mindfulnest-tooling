@@ -37,11 +37,19 @@ from kling_startend_pipeline import (  # noqa: E402
     load_api_keys,
     robust_https_request,
 )
-from lipsync_sender import LIPSYNC_PROVIDER_CONTRACT, LipSyncClient, LipsyncHostingError  # noqa: E402
+from lipsync_sender import (  # noqa: E402
+    COST_PER_LIPSYNC,
+    LIPSYNC_PROVIDER_CONTRACT,
+    LipSyncClient,
+    LipsyncHostingError,
+    PaidSubmissionUnknownError,
+)
 from video_delivery import encode_delivery_video, encode_lipsync_input  # noqa: E402
 import beat_generator as bg_sidecar  # noqa: E402
 import kling_character_registry as reg  # noqa: E402
 import production_server as ps  # noqa: E402
+
+COST_PER_O3_CLIP = 0.26
 
 O3_MODEL_URLS = {
     "std": "https://api.wavespeed.ai/api/v3/kwaivgi/kling-video-o3-std/reference-to-video",
@@ -118,6 +126,32 @@ def _visual_prompt(base_prompt: str, *, speaker: str) -> str:
     return prompt
 
 
+def _charge_known_provider_task(
+    event_dir: Path,
+    *,
+    category: str,
+    amount: float,
+    task_id: str,
+    beat_id: str,
+    stage: str,
+) -> None:
+    """Ledger-first spend as soon as a provider task id is known."""
+    from lib.provider_spend import record_spend_once
+
+    record_spend_once(
+        event_dir,
+        category=category,
+        amount=float(amount),
+        idempotency_key=f"wavespeed:{category}:{task_id}",
+        provider_task_id=str(task_id),
+        metadata={
+            "beat_id": beat_id,
+            "pipeline": "arlo_o3_voice",
+            "stage": stage,
+        },
+    )
+
+
 def _submit_o3(*, api_key: str, model: str, character: Path, background: Path, prompt: str, duration: int) -> tuple[str, dict]:
     payload = {
         "images": [_data_uri(character), _data_uri(background)],
@@ -145,14 +179,33 @@ def _submit_o3(*, api_key: str, model: str, character: Path, background: Path, p
         if resolved_ip:
             cmd += ["--resolve", f"api.wavespeed.ai:443:{resolved_ip}"]
         cmd.append(O3_MODEL_URLS[model])
-        result = subprocess.run(cmd, capture_output=True, timeout=140)
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=140)
+        except Exception as exc:
+            raise PaidSubmissionUnknownError(
+                "WaveSpeed O3 submission outcome is unknown; refusing automatic "
+                "retry because the paid task may exist"
+            ) from exc
         marker = b"\n__STATUS__"
         idx = result.stdout.rfind(marker)
         if idx < 0:
-            raise RuntimeError(result.stderr.decode("utf-8", "replace") or "curl returned no status marker")
+            raise PaidSubmissionUnknownError(
+                "WaveSpeed O3 submission returned no HTTP status marker; "
+                "paid task may exist"
+            )
         status = int(result.stdout[idx + len(marker):].strip())
         raw = result.stdout[:idx]
-        body = json.loads(raw.decode("utf-8"))
+        try:
+            body = json.loads(raw.decode("utf-8"))
+        except json.JSONDecodeError as exc:
+            if status < 400:
+                raise PaidSubmissionUnknownError(
+                    "WaveSpeed O3 submission response was not JSON after "
+                    f"HTTP {status}; paid task may exist"
+                ) from exc
+            raise RuntimeError(
+                f"O3 {model} submit HTTP {status}: {raw[:1000].decode('utf-8', 'replace')}"
+            ) from exc
         if status >= 400:
             raise RuntimeError(f"O3 {model} submit HTTP {status}: {raw[:1000].decode('utf-8', 'replace')}")
         task_id = (body.get("data") or {}).get("id") or body.get("id") or body.get("task_id")
@@ -376,6 +429,7 @@ def _submit_and_poll_lipsync_with_fallback(
     beat_id: str,
     beat: dict,
     persist,
+    event_dir: Path,
 ) -> tuple[str, dict, str]:
     """Submit Kling lipsync with schema-compliant URL transport first.
 
@@ -399,6 +453,18 @@ def _submit_and_poll_lipsync_with_fallback(
         }), flush=True)
         try:
             lipsync_task = client.submit(lipsync_input, lipsync_audio, transport=transport)
+        except PaidSubmissionUnknownError:
+            persist({
+                "kling_o3_voice_fix_status": "failed_provider_fetch",
+                "kling_o3_voice_first_phase": "lipsync_submit",
+                "kling_o3_voice_first_error_code": "PAID_SUBMISSION_UNKNOWN",
+                "kling_o3_voice_first_error": (
+                    "lipsync submission outcome unknown; do not resubmit blindly"
+                ),
+                "kling_o3_voice_first_lipsync_transport": transport,
+                "kling_o3_voice_first_completed_at": datetime.now(timezone.utc).isoformat(),
+            }, remove=("kling_o3_voice_first_ui_job_id",))
+            raise
         except LipsyncHostingError as exc:
             if transport == "url" and "data_uri" in attempts[index + 1:]:
                 print(json.dumps({
@@ -435,6 +501,14 @@ def _submit_and_poll_lipsync_with_fallback(
             }, remove=("kling_o3_voice_fix_ui_job_id",))
             raise
         last_task = lipsync_task
+        _charge_known_provider_task(
+            event_dir,
+            category="lipsync",
+            amount=COST_PER_LIPSYNC,
+            task_id=lipsync_task,
+            beat_id=beat_id,
+            stage="lipsync",
+        )
         fields = {
             "kling_o3_voice_fix_task_id": lipsync_task,
             "kling_o3_voice_fix_lipsync_transport": transport,
@@ -660,6 +734,14 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
         prompt=_visual_prompt(beat.get("kling_o3_prompt") or "", speaker=speaker),
         duration=duration,
     )
+    _charge_known_provider_task(
+        event_dir,
+        category="kling_animation",
+        amount=COST_PER_O3_CLIP,
+        task_id=o3_task,
+        beat_id=beat_id,
+        stage="o3",
+    )
     persist({
         "kling_o3_task_id": o3_task,
         "kling_o3_submit_response": submit_response,
@@ -730,6 +812,7 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
             beat_id=beat_id,
             beat=beat,
             persist=persist,
+            event_dir=event_dir,
         )
     except Exception:
         _restore_prior_video_state(beat, prior_video=prior_video, prior_status=prior_status, prior_beat_status=prior_beat_status)
@@ -824,7 +907,9 @@ def run_pipeline(beat_id: str, *, model: str = "pro", sharpen: bool = True, atte
     _upsert_o3_option(beat, video_path=str(active), label="latest O3 voice video", active=True, now=now)
     import beat_generator as bg_mod  # noqa: PLC0415
 
-    bg_mod.sync_o3_selection_pipeline_fields(beat, sc)
+    with bg_mod._sidecar_lock:
+        sc_for_sync = bg_mod.read_sidecar()
+    bg_mod.sync_o3_selection_pipeline_fields(beat, sc_for_sync)
     final_fields["kling_o3_options"] = beat.get("kling_o3_options")
     final_fields["kling_o3_selected_option_key"] = beat.get("kling_o3_selected_option_key")
     if beat.get("kling_o3_active_clip_pipeline"):
