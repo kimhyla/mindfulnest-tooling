@@ -60,6 +60,9 @@ def test_arlo_uses_cedric_whole_character_contract() -> None:
     assert profile.idle_units[0].relative_path.endswith(
         "arlo_fullbody_idle_green_1916x1080_v1.mp4"
     )
+    # Beat Gen voice-first face-return padding (not Cedric's short 0.5/0.5).
+    assert profile.boundary_pad_start == 0.7
+    assert profile.boundary_pad_end == 2.5
     engine.validate_profile(profile)
 
     with pytest.raises(ValueError, match="complete source"):
