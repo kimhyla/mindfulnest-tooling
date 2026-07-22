@@ -14,7 +14,6 @@ import hashlib
 import json
 import os
 import sqlite3
-import sys
 import threading
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,9 +22,12 @@ from typing import Any, Callable, Protocol
 try:
     # When imported from server (sys.path includes Production/)
     from lib.atomic_json_write import atomic_json_write  # type: ignore[import]
+    from lib import fcntl_compat as fcntl  # type: ignore[import]
 except ImportError:  # pragma: no cover
     # When imported from repo root (pytest, scripts using REPO_ROOT/sys.path)
     from Production.lib.atomic_json_write import atomic_json_write
+    from Production.lib import fcntl_compat as fcntl
+
 
 # Class-level registry of per-path in-process locks. Ensures multiple
 # JsonStateRepository instances pointing at the same state file serialize
@@ -45,26 +47,12 @@ def _exclusive_file_lock(lock_path: Path):
             lock_file.write(b"\0")
             lock_file.flush()
         lock_file.seek(0)
-        if sys.platform == "win32":
-            import msvcrt
-
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
+        fcntl.lockf(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:
             lock_file.seek(0)
-            if sys.platform == "win32":
-                import msvcrt
-
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
+            fcntl.lockf(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _get_inproc_lock(path: Path) -> threading.Lock:

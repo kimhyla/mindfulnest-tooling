@@ -40,6 +40,10 @@ CLEAR_KEYS = [
     "phase_a_lipsync_pending_output",
     "phase_a_lipsync_pending_audio",
     "phase_a_lipsync_reliability_note",
+    # Preview prefers fresh stitched over lipsync — must clear layered-era stitch
+    # or Phase A UI keeps showing July 22 instead of June 27 lipsync.
+    "phase_a_stitched_file",
+    "phase_a_stitched_mtime",
 ]
 
 

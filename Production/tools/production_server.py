@@ -72,6 +72,7 @@ if _TOOLS_DIR_FOR_BOOTSTRAP not in sys.path:
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
 from lib.v3_partition import _iter_v3_beats  # noqa: E402 V59 Phase 5: walk all v3 partitions + legacy
 from lib.paths import DROPBOX_ROOT  # noqa: E402 LD-505 Phase B: MN_DROPBOX_ROOT, not __file__ chain
+from lib import fcntl_compat as fcntl  # noqa: E402 Windows has no stdlib fcntl
 from lib.server_port_guard import (  # noqa: E402 PRODUCTION_SERVER_PORT_GUARD_V1
     port_startup_guard,
     register_server_port,
@@ -1384,49 +1385,28 @@ class StateManager:
             pass
 
     def _acquire_file_lock(self, timeout: float = 10.0):
-        """Acquire inter-process exclusive lock. Cross-platform: fcntl on Unix, msvcrt on Windows.
+        """Acquire inter-process exclusive lock via fcntl_compat (Unix + Windows).
         Returns an open file descriptor to pass to _release_file_lock.
         Raises TimeoutError if another process holds the lock past timeout."""
         fd = os.open(str(self.file_lock_path), os.O_RDWR)
         deadline = time.time() + timeout
-        if sys.platform == "win32":
-            import msvcrt
-            while True:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                    return fd
-                except OSError:
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError(
-                            f"Could not acquire state file lock within {timeout}s "
-                            f"(another process holds {self.file_lock_path})"
-                        )
-                    time.sleep(0.1)
-        else:
-            import fcntl
-            while True:
-                try:
-                    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return fd
-                except (BlockingIOError, OSError):
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError(
-                            f"Could not acquire state file lock within {timeout}s "
-                            f"(another process holds {self.file_lock_path})"
-                        )
-                    time.sleep(0.1)
+        while True:
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except (BlockingIOError, OSError):
+                if time.time() >= deadline:
+                    os.close(fd)
+                    raise TimeoutError(
+                        f"Could not acquire state file lock within {timeout}s "
+                        f"(another process holds {self.file_lock_path})"
+                    )
+                time.sleep(0.1)
 
     @staticmethod
     def _release_file_lock(fd: int) -> None:
         try:
-            if sys.platform == "win32":
-                import msvcrt
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.lockf(fd, fcntl.LOCK_UN)
+            fcntl.lockf(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 
@@ -1894,38 +1874,20 @@ class StitchEditorState:
     def _acquire_lock(self, timeout: float = 10.0):
         fd = os.open(str(self.file_lock_path), os.O_RDWR)
         deadline = time.time() + timeout
-        if sys.platform == "win32":
-            import msvcrt  # noqa: PLC0415
-            while True:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                    return fd
-                except OSError:
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError(f"StitchEditorState lock timeout ({timeout}s)")
-                    time.sleep(0.1)
-        else:
-            import fcntl  # noqa: PLC0415
-            while True:
-                try:
-                    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return fd
-                except (BlockingIOError, OSError):
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError(f"StitchEditorState lock timeout ({timeout}s)")
-                    time.sleep(0.1)
+        while True:
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except (BlockingIOError, OSError):
+                if time.time() >= deadline:
+                    os.close(fd)
+                    raise TimeoutError(f"StitchEditorState lock timeout ({timeout}s)")
+                time.sleep(0.1)
 
     @staticmethod
     def _release_lock(fd: int) -> None:
         try:
-            if sys.platform == "win32":
-                import msvcrt  # noqa: PLC0415
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl  # noqa: PLC0415
-                fcntl.lockf(fd, fcntl.LOCK_UN)
+            fcntl.lockf(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 
@@ -7169,7 +7131,6 @@ class ProductionHandler(BaseHTTPRequestHandler):
                    )
 
         lock_path = _scene_lock_path(scope_type, scope_root, scope_target_video)
-        import fcntl  # noqa: PLC0415
         lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
         try:
             try:
@@ -10956,8 +10917,7 @@ body {{padding-top:44px!important;}}
         lock_path = preview_dir / ".lock"
 
         # Open lock fd once; closed in `finally`. Use lockf for compatibility
-        # with the existing StateManager fcntl pattern (production_server:710).
-        import fcntl  # noqa: PLC0415  — only needed in this handler
+        # with the existing StateManager fcntl_compat pattern.
         lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
         try:
             try:
@@ -11470,13 +11430,12 @@ body {{padding-top:44px!important;}}
                 _FULL_MODULE_RE,
             )
 
-            # fcntl lock around the cache-miss build (April 26 2026 audit
-            # fix, mirrors preview_stitched lock pattern at lines 9046-9056).
+            # fcntl_compat lock around the cache-miss build (April 26 2026 audit
+            # fix, mirrors preview_stitched lock pattern).
             # Two concurrent calls with the same cache_hash would otherwise
             # both spawn ffmpeg, both write to the same per-segment paths,
             # and race on os.replace. Lock is non-blocking — second caller
             # gets HTTP 409 (matches preview_stitched UX).
-            import fcntl  # noqa: PLC0415
             lock_path = cache_dir / ".lock"
             lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
             try:

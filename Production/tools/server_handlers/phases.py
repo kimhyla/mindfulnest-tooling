@@ -54,6 +54,7 @@ from lib.v3_partition import _iter_v3_beats
 from lib.event_library import event_watercolors_dir
 from lib.watercolor_assets import list_watercolor_items, resolve_watercolor_path
 from lib.paths import DROPBOX_ROOT
+from lib import fcntl_compat as fcntl
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
@@ -4191,7 +4192,6 @@ def _phase_ensure_overlay_mp4(
     final_path = preview_dir / f"phase_{phase}_preview_{cache_hash}.mp4"
     lock_path = preview_dir / ".lock"
 
-    import fcntl  # noqa: PLC0415
     lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:
