@@ -50,9 +50,11 @@ def test_ensure_stem_duration_floor_pads_short_output(tmp_path: Path) -> None:
     assert abs(_ffprobe_duration(dst) - 2.5) < 0.12
 
 
-def test_phase_a_layered_orphan_reconcile_markers() -> None:
+def test_phase_a_bytedance_resume_markers() -> None:
     src = (HERE / "server_handlers" / "phases.py").read_text(encoding="utf-8")
-    assert "sweep_phase_a_lipsync_orphan" in src
-    assert "reconcile_phase_a_layered_lipsync" in src
+    assert "sweep_phase_a_lipsync_resume" in src
+    assert "run_phase_a_base_clip_bytedance_lipsync" in src
     assert "phase_a_lipsync_pending_output" in src
-    assert "phase_a_lipsync_job_id" in src
+    assert "resume=True" in src
+    # Layered reconcile kept available but not the Send default.
+    assert "reconcile_phase_a_layered_lipsync" in src

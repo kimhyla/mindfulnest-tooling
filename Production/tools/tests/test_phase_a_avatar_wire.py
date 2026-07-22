@@ -1,4 +1,4 @@
-"""Phase A Arlo layered route — handler contract + HTTP integration."""
+"""Phase A ByteDance base-clip route — handler contract + HTTP integration."""
 from __future__ import annotations
 
 import json
@@ -13,7 +13,6 @@ import unittest.mock as mock
 import urllib.error
 import urllib.request
 from pathlib import Path
-from types import SimpleNamespace
 
 TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
@@ -24,41 +23,42 @@ os.environ["MINDFULNEST_T1_ENABLED"] = "1"
 os.environ.pop("MINDFULNEST_WRITE_PATH", None)
 
 import production_server as PS  # noqa: E402
-from phase_a_arlo_contract import PHASE_A_ARLO_CANONICAL_STILL_REL  # noqa: E402
+from phase_a_arlo_contract import PHASE_A_ARLO_BASE_CLIP_CANONICAL  # noqa: E402
+
+# Module may already be imported by earlier tests without the env flag.
+PS.SINGLE_MACHINE_MODE = True
 
 
-def test_phases_handler_uses_arlo_layered_not_startend_still():
+def test_phases_handler_uses_bytedance_not_layered():
     src = TOOLS / "server_handlers" / "phases.py"
     block = src.read_text(encoding="utf-8").split("def handle_phase_a_lipsync", 1)[1]
     block = block.split("\ndef handle_phase_b_lipsync", 1)[0]
     assert "submit_avatar_pro" not in block
     assert "run_phase_a_arlo_idle_lipsync_startend_still" not in block
-    assert "PHASE_A_ARLO_LAYERED_ROUTE_V1" in block
-    assert "create_layered_job" in block
-    assert "execute_layered_job" in block
-    assert "plan_layered_lipsync" in block
+    assert "execute_layered_job" not in block
+    assert "create_layered_job" not in block
+    assert "run_phase_a_base_clip_bytedance_lipsync" in block
+    assert "PHASE_A_BYTEDANCE_METHOD" in block or "base_clip_bytedance_tight_v1" in block
     assert "_finalize_phase_a_lipsync_delivery" in block
-    assert 'terminal_status="needs_manual_visual_review"' in block
+    assert 'needs_manual_visual_review' in block
 
 
-def test_phase_a_reconcile_and_orphan_wired():
+def test_phase_a_resume_wired_not_orphan_default():
     phases = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
-    assert "def sweep_phase_a_lipsync_orphan" in phases
-    assert "def reconcile_phase_a_layered_lipsync" in phases
-    assert "def sweep_phase_a_lipsync_resume" not in phases
+    assert "def sweep_phase_a_lipsync_resume" in phases
+    assert "def reconcile_phase_a_layered_lipsync" in phases  # available, not Send default
+    assert "def sweep_phase_a_lipsync_orphan" not in phases
     server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
-    assert "reconcile_phase_a_layered_lipsync" in server
-    assert "sweep_phase_a_lipsync_orphan" in server
-    assert "sweep_phase_a_lipsync_resume" not in server
+    assert "sweep_phase_a_lipsync_resume" in server
+    assert "sweep_phase_a_lipsync_orphan" not in server
+    assert "reconcile_phase_b_layered_lipsync" in server
 
 
 def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
     proj = tmp / "Claude Mindfulnest Project Files"
-    still_dir = proj / "Production" / "NEW STYLE CHARACTERS" / "ARLO"
-    still_dir.mkdir(parents=True, exist_ok=True)
-    (still_dir / Path(PHASE_A_ARLO_CANONICAL_STILL_REL).name).write_bytes(
-        b"\x89PNG\r\n\x1a\nfake_arlo_still",
-    )
+    bases = proj / "Production" / "assets" / "lipsync_bases"
+    bases.mkdir(parents=True, exist_ok=True)
+    (bases / f"{PHASE_A_ARLO_BASE_CLIP_CANONICAL}.mp4").write_bytes(b"\x00fake_arlo_idle\x00")
     event_dir = proj / "Production" / "Event_V3TEST"
     event_dir.mkdir(parents=True, exist_ok=True)
     storyboard = event_dir / "storyboard_test.html"
@@ -145,9 +145,9 @@ def _http_post(port: int, path: str, body: dict, timeout: float = 30.0):
         return e.code, payload, dict(e.headers or {})
 
 
-class TestPhaseALayeredHttp(unittest.TestCase):
+class TestPhaseABytedanceHttp(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="phase_a_layered_"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="phase_a_bytedance_"))
         self.event_dir, self.storyboard, self.event_id = _make_event_fixture(self.tmp)
         self.port = _find_free_port()
         self.server, self.thread, self.app = _start_server(
@@ -158,7 +158,7 @@ class TestPhaseALayeredHttp(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
 
-    def test_lipsync_submits_arlo_layered_worker(self):
+    def test_lipsync_submits_bytedance_worker(self):
         vs = self.event_dir / "phase_a_voice_stem_test.mp3"
         vs.write_bytes(b"\x00fakevoice\x00")
 
@@ -184,50 +184,19 @@ class TestPhaseALayeredHttp(unittest.TestCase):
                 out.write_bytes(b"\x00trim\x00")
             return _R()
 
-        plan = SimpleNamespace(chunk_count=1, chunks=[{"index": 0}])
-        durable_job = {
-            "job_id": "job-arlo-test",
-            "method": "layered_fullbody_greenscreen_kling_lipsync_v2",
-            "route": "PHASE_A_ARLO_LAYERED_ROUTE_V1",
-            "chunks": [{"index": 0}],
-            "delivery": {
-                "output_file": "phase_a_lipsync_test.mp4",
-                "base_clip_id": "arlo_idle_wizard_desk_v8",
-            },
-            "context": {"event_dir": str(self.event_dir)},
-        }
-        job_path = self.event_dir / "_jobs" / "phase_a_job-arlo-test.json"
-        job_path.parent.mkdir(parents=True, exist_ok=True)
-        job_path.write_text("{}", encoding="utf-8")
-
-        def _fake_execute(_path, _profile, **kwargs):
-            out = self.event_dir / durable_job["delivery"]["output_file"]
-            source = self.event_dir / "_tmp_arlo_layered_source.mp4"
-            source.write_bytes(b"\x00arlo_layered_out\x00")
-            delivery_meta = kwargs["delivery_callback"](source, out, durable_job)
-            kwargs["state_commit_callback"](durable_job, {"ok": True}, delivery_meta)
-            return durable_job
+        def _fake_bytedance(base_video, audio_raw, out_path, **kwargs):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(b"\x00bytedance_out\x00")
+            return {
+                "method": "base_clip_bytedance_tight_v1",
+                "base_clip": base_video.name,
+                "output": out_path.name,
+            }
 
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
              mock.patch(
-                 "arlo_layered_lipsync.validate_arlo_layered_assets",
-                 return_value=None,
-             ), \
-             mock.patch(
-                 "layered_character_lipsync.plan_layered_lipsync",
-                 return_value=plan,
-             ), \
-             mock.patch(
-                 "layered_lipsync_jobs.create_layered_job",
-                 return_value=(job_path, durable_job),
-             ), \
-             mock.patch(
-                 "layered_lipsync_jobs.execute_layered_job",
-                 side_effect=_fake_execute,
-             ), \
-             mock.patch(
-                 "layered_lipsync_jobs.verify_captured_event",
-                 return_value=None,
+                 "phase_a_middle_permanent.run_phase_a_base_clip_bytedance_lipsync",
+                 side_effect=_fake_bytedance,
              ), \
              mock.patch(
                  "phase_a_av_post.av_duration_gap",
@@ -253,11 +222,8 @@ class TestPhaseALayeredHttp(unittest.TestCase):
             )
             self.assertEqual(status, 202, resp)
             self.assertEqual(resp.get("status"), "running")
-            self.assertEqual(
-                resp.get("vendor"),
-                "layered_fullbody_greenscreen_kling_lipsync_v2",
-            )
-            self.assertEqual(resp.get("route"), "PHASE_A_ARLO_LAYERED_ROUTE_V1")
+            self.assertEqual(resp.get("vendor"), "base_clip_bytedance_tight_v1")
+            self.assertEqual(resp.get("base_clip_id"), PHASE_A_ARLO_BASE_CLIP_CANONICAL)
 
             for _ in range(80):
                 state = self.app.state.read_state()
@@ -269,9 +235,8 @@ class TestPhaseALayeredHttp(unittest.TestCase):
         self.assertEqual(state.get("phase_a_lipsync_status"), "needs_manual_visual_review")
         self.assertEqual(
             state.get("phase_a_lipsync_method"),
-            "layered_fullbody_greenscreen_kling_lipsync_v2",
+            "base_clip_bytedance_tight_v1",
         )
-        self.assertEqual(state.get("phase_a_lipsync_route"), "PHASE_A_ARLO_LAYERED_ROUTE_V1")
         self.assertTrue(state.get("phase_a_lipsync_file", "").startswith("phase_a_lipsync_"))
 
 
