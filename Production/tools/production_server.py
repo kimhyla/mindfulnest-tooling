@@ -81,6 +81,29 @@ from lib.server_port_guard import (  # noqa: E402 PRODUCTION_SERVER_PORT_GUARD_V
 # Checkout root (…/mindfulnest-tooling). Resolves /files?path=Production/… when cwd is not Dropbox.
 _MN_REPO_ROOT = Path(__file__).resolve().parents[2]
 
+
+def _configure_stdio_encoding() -> None:
+    """WIN_STDIO_UTF8_V1 — Windows cp1252 consoles crash on arrows/emoji in print().
+
+    That UnicodeEncodeError previously escaped from hot-serve into HTTP 500
+    for otherwise-valid Phase A stems and other /files payloads. Reconfigure
+    early so request-path logging cannot take down media delivery.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_stdio_encoding()
+
 # scope_router — mandatory partition router for v59 authoring-workflow
 # mutations (LD SCOPE_ROUTER_V1, C-1). Replaces hardcoded `videos.intro`
 # lifts in mutation handlers; resolve() validates body scope keys and
@@ -12025,7 +12048,7 @@ body {{padding-top:44px!important;}}
         local_p = Path(local)
         if local_p != Path(path):
             print(
-                f"[hot-serve] cloud→local {Path(path).name} → {local_p}",
+                f"[hot-serve] cloud->local {Path(path).name} -> {local_p}",
                 flush=True,
             )
         # Never stream cloud File Provider bytes — refresh retry if rematerialize failed.
