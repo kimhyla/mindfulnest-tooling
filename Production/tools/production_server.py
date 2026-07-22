@@ -2257,14 +2257,16 @@ class LipsyncPollingThread(threading.Thread):
         try:
             from server_handlers.phases import sweep_phase_module_lipsync_polls
             sweep_phase_module_lipsync_polls(self.state, self.client)
-            from server_handlers.phases import sweep_phase_a_lipsync_resume
-            sweep_phase_a_lipsync_resume(self.state)
-            # Durable Phase B layered resume + orphan clear.
+            # Durable Phase A/B layered resume + orphan clear.
             from server_handlers.phases import (
+                reconcile_phase_a_layered_lipsync,
                 reconcile_phase_b_layered_lipsync,
+                sweep_phase_a_lipsync_orphan,
                 sweep_phase_b_lipsync_orphan,
             )
+            reconcile_phase_a_layered_lipsync(self.state, self.client)
             reconcile_phase_b_layered_lipsync(self.state, self.client)
+            sweep_phase_a_lipsync_orphan(self.state)
             sweep_phase_b_lipsync_orphan(self.state)
         except Exception as exc:  # noqa: BLE001
             print(f"[lipsync-poller] phase module sweep error: {exc}", flush=True)

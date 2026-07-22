@@ -38,7 +38,7 @@ def run_arlo_layered_lipsync(
     work_dir: Path | None = None,
     profile: LayeredLipsyncProfile = ARLO_PROFILE,
 ) -> dict:
-    """Run isolated Arlo layered lipsync; no server route is wired here."""
+    """CLI/helper entry for Arlo layered lipsync (server uses durable jobs)."""
     return run_layered_lipsync(
         profile,
         audio_path,

@@ -13,12 +13,14 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 
-def test_phase_a_handler_uses_arlo_startend_kling_not_bytedance() -> None:
+def test_phase_a_handler_uses_arlo_layered_not_bytedance() -> None:
     src = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
     block = src.split("def handle_phase_a_lipsync", 1)[1].split("\ndef handle_phase_b_lipsync", 1)[0]
     assert "submit_avatar_pro" not in block
-    assert "run_phase_a_arlo_idle_lipsync_startend_still" in block
-    assert "idle_kling_lipsync_startend_still" in block
+    assert "run_phase_a_arlo_idle_lipsync_startend_still" not in block
+    assert "PHASE_A_ARLO_LAYERED_ROUTE_V1" in block
+    assert "execute_layered_job" in block
+    assert "layered_fullbody_greenscreen_kling_lipsync_v2" in block or "ARLO_PROFILE" in block
 
 
 def test_bytedance_chaining_is_not_default() -> None:

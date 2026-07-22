@@ -32,7 +32,8 @@ def test_profiles_are_immutable_relative_and_portable(
         root / "NEW STYLE CHARACTERS/ARLO/arlo_room_plate_1024x576_v1.png"
     )
     assert paths["idle_units"][0] == (
-        root / "NEW STYLE CHARACTERS/arlo idle.mp4"
+        root
+        / "NEW STYLE CHARACTERS/ARLO/arlo_fullbody_idle_green_1916x1080_v1.mp4"
     )
     assert not Path(engine.ARLO_PROFILE.plate_relative_path).is_absolute()
     with pytest.raises(Exception):
@@ -47,13 +48,18 @@ def test_event_parent_is_production_root(tmp_path: Path) -> None:
 
 def test_arlo_uses_cedric_whole_character_contract() -> None:
     profile = engine.ARLO_PROFILE
+    assert profile.route_id == "PHASE_A_ARLO_LAYERED_ROUTE_V1"
     assert profile.source_size == engine.Size(1916, 1080)
-    assert profile.canvas_size == engine.Size(1024, 576)
+    assert profile.canvas_size == engine.Size(1280, 720)
     assert profile.provider_content == "whole_character"
     assert profile.provider_crop == engine.Crop(0, 0, 1916, 1080)
     assert profile.placement_mode == "full_canvas"
-    assert profile.placement == engine.Crop(0, 0, 1024, 576)
+    assert profile.placement == engine.Crop(0, 0, 1280, 720)
     assert profile.cutout_mode == "key_canvas"
+    assert profile.cutout_relative_path.endswith("arlo_key_canvas_1280x720_v1.png")
+    assert profile.idle_units[0].relative_path.endswith(
+        "arlo_fullbody_idle_green_1916x1080_v1.mp4"
+    )
     engine.validate_profile(profile)
 
     with pytest.raises(ValueError, match="complete source"):

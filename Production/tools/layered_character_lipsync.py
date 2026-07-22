@@ -194,10 +194,10 @@ CEDRIC_PROFILE = LayeredLipsyncProfile(
 
 # Arlo's green idle is a complete-character Path A asset, equivalent to
 # Cedric's complete-character blue idle. Provider framing and final placement
-# therefore preserve the full 16:9 frame.
+# therefore preserve the full 16:9 frame, delivered on the module 1280x720 canvas.
 ARLO_PROFILE = LayeredLipsyncProfile(
     profile_id="arlo",
-    route_id="ARLO_LAYERED_LIPSYNC_CLI_V2",
+    route_id="PHASE_A_ARLO_LAYERED_ROUTE_V1",
     method_id="layered_fullbody_greenscreen_kling_lipsync_v2",
     provider_content="whole_character",
     placement_mode="full_canvas",
@@ -205,25 +205,25 @@ ARLO_PROFILE = LayeredLipsyncProfile(
     key_rgb=(6, 239, 10),
     plate_relative_path="NEW STYLE CHARACTERS/ARLO/arlo_room_plate_1024x576_v1.png",
     cutout_relative_path=(
-        "NEW STYLE CHARACTERS/ARLO/arlo_key_canvas_1024x576_v2.png"
+        "NEW STYLE CHARACTERS/ARLO/arlo_key_canvas_1280x720_v1.png"
     ),
     idle_units=(
         IdleUnit(
             "arlo_idle",
-            "NEW STYLE CHARACTERS/arlo idle.mp4",
+            "NEW STYLE CHARACTERS/ARLO/arlo_fullbody_idle_green_1916x1080_v1.mp4",
             15.041667,
             0.35,
             0.45,
         ),
     ),
     source_size=Size(1916, 1080),
-    canvas_size=Size(1024, 576),
+    canvas_size=Size(1280, 720),
     # Like Cedric Path A, the provider frame contains the complete character.
     # The green idle is already spatially aligned to the canonical 16:9 still.
     provider_crop=Crop(0, 0, 1916, 1080),
     provider_input_size=Size(1920, 1080),
     provider_output_size=Size(832, 464),
-    placement=Crop(0, 0, 1024, 576),
+    placement=Crop(0, 0, 1280, 720),
     xfade_seconds=0.5,
     # Measured from the installed idle's corner pixels (median RGB 6,239,10).
     # The tighter tolerance preserves Arlo's olive vest while removing the key.
@@ -233,7 +233,8 @@ ARLO_PROFILE = LayeredLipsyncProfile(
     # Eyes occupy this band after the complete 1916x1080 frame maps to 832x464.
     provider_eye_qc=QCRegion(Crop(350, 125, 150, 95), 6, 0.4, 0.33),
     idle_body_qc=QCRegion(Crop(650, 530, 600, 430), 12, 0.25, 0.5),
-    composite_body_qc=QCRegion(Crop(346, 282, 322, 230), 12, 0.25, 0.5),
+    # 1024x576 composition Crop(346,282,322,230) scaled by 1.25 to 1280x720.
+    composite_body_qc=QCRegion(Crop(432, 352, 403, 288), 12, 0.25, 0.5),
 )
 
 PROFILES = {"cedric": CEDRIC_PROFILE, "arlo": ARLO_PROFILE}
