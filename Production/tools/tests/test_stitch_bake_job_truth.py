@@ -75,8 +75,9 @@ def test_reconcile_stale_running_jobs_when_lock_free(tmp_path: Path) -> None:
 
 
 def test_active_bake_job_summary_prefers_running(tmp_path: Path) -> None:
-    import fcntl
     import os
+
+    from lib import fcntl_compat as fcntl
 
     lock_path = tmp_path / "stitch_bake.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -153,8 +154,9 @@ def test_handle_stitch_bake_status_returns_job(tmp_path: Path) -> None:
 
 
 def test_load_job_includes_bake_job_summary(tmp_path: Path) -> None:
-    import fcntl
     import os
+
+    from lib import fcntl_compat as fcntl
 
     from server_handlers import stitch_editor as se
 

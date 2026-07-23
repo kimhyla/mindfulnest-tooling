@@ -71,6 +71,8 @@ python3 -m pytest \
   "$ROOT/Production/tools/tests/test_stitch_audio_file_serve.py" \
   "$ROOT/Production/tools/tests/test_cr_upload_audio.py" \
   "$ROOT/Production/tools/tests/test_phase_b_whiteout_fade.py" \
+  "$ROOT/Production/tools/tests/test_layered_character_lipsync.py" \
+  "$ROOT/Production/tools/tests/test_layered_lipsync_credentials.py" \
   "$ROOT/Production/tools/tests/test_stitch_module_seek.py" \
   "$ROOT/Production/tools/tests/test_module_slot_start_offsets.py" \
   "$ROOT/Production/tools/tests/test_stitch_module_preview.py" \

@@ -64,6 +64,29 @@ def load_credentials(keys_file=None):
     return creds
 
 
+def load_wavespeed_api_key(keys_file=None):
+    """Load only the WaveSpeed key without requiring unrelated services.
+
+    Layered lipsync does not use Directus, BFL, or OpenAI. Requiring those
+    credentials made an otherwise valid lipsync CLI fail before submission.
+    Environment remains authoritative; the existing Dropbox markdown file is
+    the compatibility fallback.
+    """
+    key = os.environ.get("WAVESPEED_API_KEY", "").strip()
+    if key:
+        return key
+
+    md_creds = _from_md_fallback(keys_file)
+    key = str((md_creds or {}).get("wavespeed_key") or "").strip()
+    if not key:
+        raise ValueError(
+            "Missing WAVESPEED_API_KEY. Run via `doppler run --` or provide "
+            "API_KEYS_MASTER.md with a WaveSpeed row."
+        )
+    _emit_fallback_warning()
+    return key
+
+
 def _from_env():
     """Load credentials from environment variables.
 

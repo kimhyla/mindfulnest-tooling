@@ -72,6 +72,7 @@ if _TOOLS_DIR_FOR_BOOTSTRAP not in sys.path:
 from lib.atomic_json_write import atomic_json_write  # noqa: E402 (Windows/Dropbox retry-safe JSON writes per LD-368)
 from lib.v3_partition import _iter_v3_beats  # noqa: E402 V59 Phase 5: walk all v3 partitions + legacy
 from lib.paths import DROPBOX_ROOT  # noqa: E402 LD-505 Phase B: MN_DROPBOX_ROOT, not __file__ chain
+from lib import fcntl_compat as fcntl  # noqa: E402 Windows has no stdlib fcntl
 from lib.server_port_guard import (  # noqa: E402 PRODUCTION_SERVER_PORT_GUARD_V1
     port_startup_guard,
     register_server_port,
@@ -80,6 +81,29 @@ from lib.server_port_guard import (  # noqa: E402 PRODUCTION_SERVER_PORT_GUARD_V
 
 # Checkout root (…/mindfulnest-tooling). Resolves /files?path=Production/… when cwd is not Dropbox.
 _MN_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _configure_stdio_encoding() -> None:
+    """WIN_STDIO_UTF8_V1 — Windows cp1252 consoles crash on arrows/emoji in print().
+
+    That UnicodeEncodeError previously escaped from hot-serve into HTTP 500
+    for otherwise-valid Phase A stems and other /files payloads. Reconfigure
+    early so request-path logging cannot take down media delivery.
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
+
+_configure_stdio_encoding()
 
 # scope_router — mandatory partition router for v59 authoring-workflow
 # mutations (LD SCOPE_ROUTER_V1, C-1). Replaces hardcoded `videos.intro`
@@ -1234,27 +1258,69 @@ def auto_upscale_image(data_uri: str, target_min: int = MIN_ANIMATION_SIZE) -> t
 
 class StateManager:
     def __init__(self, event_dir: Path, event_id: str):
+        # In-process lock (between server threads)
+        self.lock = threading.Lock()
+        self._bind_event_paths(event_dir, event_id)
+        self._init_files()
+
+    def _bind_event_paths(self, event_dir: Path, event_id: str) -> None:
+        """Bind every event-scoped path/key as one in-memory operation."""
+        from lib.state_repo import JsonStateRepository
+
+        event_dir = Path(event_dir)
         self.event_dir = event_dir
         self.event_id = event_id
         self.state_path = event_dir / "production_state.json"
-        from lib.state_repo import JsonStateRepository
         self.repo = JsonStateRepository(self.state_path)
         self.spend_path = event_dir / "production_spend.json"
-        self.spend_ledger_path = event_dir / "spend_ledger.jsonl"  # task_id -> first-charge lockout
+        self.spend_ledger_path = event_dir / "spend_ledger.jsonl"
         self.clips_dir = event_dir / "animation_clips"
-        self.clips_dir.mkdir(parents=True, exist_ok=True)
-        # In-process lock (between server threads)
-        self.lock = threading.Lock()
-        # Inter-process lock path — used by fcntl.lockf so the recovery CLI
-        # tool and the running server can safely mutate state.json concurrently.
-        # Tier 3 C2 CRITICAL fix (April 16 2026).
+        # Inter-process lock path — used by fcntl.lockf/msvcrt so recovery
+        # tools and the running server can safely mutate event files.
         self.file_lock_path = event_dir / ".state.lock"
-        # BS1: Directus-backed cross-machine semaphore scope.
-        # Resource key is per-event so different events don't block each other.
+        # Directus-backed cross-machine semaphore is event-specific.
         self.directus_lock_key = f"{event_id}/state"
-        self._init_files()
+
+    def rebind_event(self, event_dir: Path, event_id: str) -> None:
+        """Prepare, then atomically retarget all event-scoped authority.
+
+        Event switching previously changed only ``state_path``. That could
+        write state to the newly loaded event while charging spend and
+        acquiring locks for the startup event. Target files and durable
+        identity are validated on a separate manager before this instance is
+        changed, so preparation failure leaves the old binding untouched.
+        """
+        event_dir = Path(event_dir)
+        prepared = type(self)(event_dir, event_id)
+        prepared.ensure_event_instance_id()
+        with self.lock:
+            self.event_dir = prepared.event_dir
+            self.event_id = prepared.event_id
+            self.state_path = prepared.state_path
+            self.repo = prepared.repo
+            self.spend_path = prepared.spend_path
+            self.spend_ledger_path = prepared.spend_ledger_path
+            self.clips_dir = prepared.clips_dir
+            self.file_lock_path = prepared.file_lock_path
+            self.directus_lock_key = prepared.directus_lock_key
+
+    def ensure_event_instance_id(self) -> str:
+        """Return the event's durable identity, creating it under state locks."""
+        result: dict[str, str] = {}
+
+        def _ensure(state: dict) -> None:
+            value = state.get("event_instance_id")
+            if not isinstance(value, str) or not value.strip():
+                value = str(_stdlib_uuid.uuid4())
+                state["event_instance_id"] = value
+            result["event_instance_id"] = value
+
+        self.mutate_state(_ensure)
+        return result["event_instance_id"]
 
     def _init_files(self) -> None:
+        self.event_dir.mkdir(parents=True, exist_ok=True)
+        self.clips_dir.mkdir(parents=True, exist_ok=True)
         if not self.state_path.exists():
             # S5.5d (v3 architecture revision, 2026-05-03): fresh state.json
             # files are written in v3-shape directly (BG_VIDEO_PARTITION_V2,
@@ -1264,6 +1330,7 @@ class StateManager:
             now_iso = datetime.now(timezone.utc).isoformat()
             self._atomic_write_json(self.state_path, {
                 "event_id": self.event_id,
+                "event_instance_id": str(_stdlib_uuid.uuid4()),
                 "version": "v3",
                 "created_at": now_iso,
                 "updated_at": now_iso,
@@ -1300,6 +1367,8 @@ class StateManager:
         # Ensure lock file exists (fcntl.lockf needs an open fd on an existing file)
         if not self.file_lock_path.exists():
             self.file_lock_path.touch()
+        if sys.platform == "win32" and self.file_lock_path.stat().st_size == 0:
+            self.file_lock_path.write_bytes(b"\0")
 
     @staticmethod
     def _atomic_write_json(path: Path, obj: dict, *, prod_root: Path | None = None) -> None:
@@ -1316,49 +1385,28 @@ class StateManager:
             pass
 
     def _acquire_file_lock(self, timeout: float = 10.0):
-        """Acquire inter-process exclusive lock. Cross-platform: fcntl on Unix, msvcrt on Windows.
+        """Acquire inter-process exclusive lock via fcntl_compat (Unix + Windows).
         Returns an open file descriptor to pass to _release_file_lock.
         Raises TimeoutError if another process holds the lock past timeout."""
         fd = os.open(str(self.file_lock_path), os.O_RDWR)
         deadline = time.time() + timeout
-        if sys.platform == "win32":
-            import msvcrt
-            while True:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                    return fd
-                except OSError:
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError(
-                            f"Could not acquire state file lock within {timeout}s "
-                            f"(another process holds {self.file_lock_path})"
-                        )
-                    time.sleep(0.1)
-        else:
-            import fcntl
-            while True:
-                try:
-                    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return fd
-                except (BlockingIOError, OSError):
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError(
-                            f"Could not acquire state file lock within {timeout}s "
-                            f"(another process holds {self.file_lock_path})"
-                        )
-                    time.sleep(0.1)
+        while True:
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except (BlockingIOError, OSError):
+                if time.time() >= deadline:
+                    os.close(fd)
+                    raise TimeoutError(
+                        f"Could not acquire state file lock within {timeout}s "
+                        f"(another process holds {self.file_lock_path})"
+                    )
+                time.sleep(0.1)
 
     @staticmethod
     def _release_file_lock(fd: int) -> None:
         try:
-            if sys.platform == "win32":
-                import msvcrt
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-                fcntl.lockf(fd, fcntl.LOCK_UN)
+            fcntl.lockf(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 
@@ -1453,21 +1501,14 @@ class StateManager:
                 self._release_file_lock(fd)
 
     def add_spend(self, category: str, amount: float, task_id: str | None = None) -> dict:
-        """Add spend. If task_id is provided, the ledger is checked first —
-        if that task_id has already been charged, this call is a no-op. This
-        prevents double-charge across recovery events (Tier 3 C3 CRITICAL).
-
-        Crash-safety: updates spend.json FIRST (atomic tmp+replace), then
-        appends+fsyncs the ledger entry. If the process crashes between the
-        two writes, spend.json is correctly updated; the missing ledger entry
-        just means the guard will (harmlessly) re-charge on the NEXT call for
-        the same task_id — but the same-call already updated spend, so there
-        is no actual double-charge. Worst case: one extra small charge on a
-        rare crash. Inverse ordering (ledger before spend) was a real
-        integrity hole — Phase 3 finding #5 (April 16 2026).
-
-        BS1: same cross-machine semaphore as mutate_state — fail closed on
-        Directus unreachable (spend must not drift between machines)."""
+        """Add legacy spend, or task-keyed provider spend exactly once."""
+        if task_id:
+            return self.record_spend_once(
+                category,
+                amount,
+                idempotency_key=f"legacy:{task_id}",
+                provider_task_id=task_id,
+            )
         with self.lock:
             dlock = _directus_lock_acquire(self.directus_lock_key, reason=f"add_spend:{category}")
             if dlock is None and not SINGLE_MACHINE_MODE:
@@ -1478,46 +1519,50 @@ class StateManager:
                 )
             fd = self._acquire_file_lock()
             try:
-                # Ledger-backed idempotency guard (C3 double-charge prevention)
-                if task_id and self.spend_ledger_path.exists():
-                    for line in self.spend_ledger_path.read_text().splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            entry = json.loads(line)
-                            if entry.get("task_id") == task_id:
-                                print(f"[spend] skip task_id={task_id[:16]} already in ledger")
-                                return json.loads(self.spend_path.read_text())
-                        except json.JSONDecodeError:
-                            continue
-
-                # 1. Update spend.json atomically FIRST
                 spend = json.loads(self.spend_path.read_text())
                 spend["spent"].setdefault(category, 0.0)
                 spend["spent"][category] += amount
                 spend["total_spent"] = sum(spend["spent"].values())
                 spend["budget_remaining"] = spend["budget"] - spend["total_spent"]
                 self._atomic_write_json(self.spend_path, spend)
-
-                # 2. Append to ledger (fsync for durability) AFTER spend update
-                if task_id:
-                    ledger_entry = {
-                        "task_id": task_id,
-                        "category": category,
-                        "amount": amount,
-                        "charged_at": datetime.now(timezone.utc).isoformat(),
-                    }
-                    with self.spend_ledger_path.open("a") as lf:
-                        lf.write(json.dumps(ledger_entry) + "\n")
-                        lf.flush()
-                        try:
-                            os.fsync(lf.fileno())
-                        except OSError:
-                            pass  # macOS Dropbox may not support fsync — best effort
-
                 return spend
             finally:
                 self._release_file_lock(fd)
+                _directus_lock_release(dlock)
+
+    def record_spend_once(
+        self,
+        category: str,
+        amount: float,
+        *,
+        idempotency_key: str,
+        provider_task_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Record provider spend ledger-first under event and Directus locks."""
+        with self.lock:
+            dlock = _directus_lock_acquire(
+                self.directus_lock_key,
+                reason=f"record_spend_once:{category}",
+            )
+            if dlock is None and not SINGLE_MACHINE_MODE:
+                raise RuntimeError(
+                    "Directus lock unreachable — refusing to update spend to prevent "
+                    "cross-machine drift. Start Directus, or set "
+                    "PRODUCTION_SERVER_SINGLE_MACHINE=1 to skip."
+                )
+            try:
+                from lib.provider_spend import record_spend_once
+
+                return record_spend_once(
+                    self.event_dir,
+                    category=category,
+                    amount=amount,
+                    idempotency_key=idempotency_key,
+                    provider_task_id=provider_task_id,
+                    metadata=metadata,
+                )
+            finally:
                 _directus_lock_release(dlock)
 
     def override_budget(self, amount: float = 5.0) -> dict:
@@ -1829,38 +1874,20 @@ class StitchEditorState:
     def _acquire_lock(self, timeout: float = 10.0):
         fd = os.open(str(self.file_lock_path), os.O_RDWR)
         deadline = time.time() + timeout
-        if sys.platform == "win32":
-            import msvcrt  # noqa: PLC0415
-            while True:
-                try:
-                    msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
-                    return fd
-                except OSError:
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError(f"StitchEditorState lock timeout ({timeout}s)")
-                    time.sleep(0.1)
-        else:
-            import fcntl  # noqa: PLC0415
-            while True:
-                try:
-                    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    return fd
-                except (BlockingIOError, OSError):
-                    if time.time() >= deadline:
-                        os.close(fd)
-                        raise TimeoutError(f"StitchEditorState lock timeout ({timeout}s)")
-                    time.sleep(0.1)
+        while True:
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return fd
+            except (BlockingIOError, OSError):
+                if time.time() >= deadline:
+                    os.close(fd)
+                    raise TimeoutError(f"StitchEditorState lock timeout ({timeout}s)")
+                time.sleep(0.1)
 
     @staticmethod
     def _release_lock(fd: int) -> None:
         try:
-            if sys.platform == "win32":
-                import msvcrt  # noqa: PLC0415
-                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl  # noqa: PLC0415
-                fcntl.lockf(fd, fcntl.LOCK_UN)
+            fcntl.lockf(fd, fcntl.LOCK_UN)
         finally:
             os.close(fd)
 
@@ -2215,10 +2242,23 @@ class LipsyncPollingThread(threading.Thread):
         try:
             from server_handlers.phases import sweep_phase_module_lipsync_polls
             sweep_phase_module_lipsync_polls(self.state, self.client)
-            from server_handlers.phases import sweep_phase_a_lipsync_resume
-            sweep_phase_a_lipsync_resume(self.state)
-            # PHASE_B_PATH_A_ORPHAN_SWEEP_V1 — clear wedged Phase B running state.
-            from server_handlers.phases import sweep_phase_b_lipsync_orphan
+            # Phase A layered default (orphan + reconcile); ByteDance resume
+            # only when MN_PHASE_A_BYTEDANCE=1. Phase B layered resume + orphan.
+            from server_handlers.phases import (
+                reconcile_phase_a_layered_lipsync,
+                reconcile_phase_b_layered_lipsync,
+                sweep_phase_a_lipsync_orphan,
+                sweep_phase_b_lipsync_orphan,
+            )
+            import os as _os_phase_a_flag
+            reconcile_phase_a_layered_lipsync(self.state, self.client)
+            sweep_phase_a_lipsync_orphan(self.state)
+            if _os_phase_a_flag.environ.get("MN_PHASE_A_BYTEDANCE", "").strip() in {
+                "1", "true", "TRUE", "yes", "YES",
+            }:
+                from server_handlers.phases import sweep_phase_a_lipsync_resume
+                sweep_phase_a_lipsync_resume(self.state)
+            reconcile_phase_b_layered_lipsync(self.state, self.client)
             sweep_phase_b_lipsync_orphan(self.state)
         except Exception as exc:  # noqa: BLE001
             print(f"[lipsync-poller] phase module sweep error: {exc}", flush=True)
@@ -7094,7 +7134,6 @@ class ProductionHandler(BaseHTTPRequestHandler):
                    )
 
         lock_path = _scene_lock_path(scope_type, scope_root, scope_target_video)
-        import fcntl  # noqa: PLC0415
         lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
         try:
             try:
@@ -10881,8 +10920,7 @@ body {{padding-top:44px!important;}}
         lock_path = preview_dir / ".lock"
 
         # Open lock fd once; closed in `finally`. Use lockf for compatibility
-        # with the existing StateManager fcntl pattern (production_server:710).
-        import fcntl  # noqa: PLC0415  — only needed in this handler
+        # with the existing StateManager fcntl_compat pattern.
         lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
         try:
             try:
@@ -11395,13 +11433,12 @@ body {{padding-top:44px!important;}}
                 _FULL_MODULE_RE,
             )
 
-            # fcntl lock around the cache-miss build (April 26 2026 audit
-            # fix, mirrors preview_stitched lock pattern at lines 9046-9056).
+            # fcntl_compat lock around the cache-miss build (April 26 2026 audit
+            # fix, mirrors preview_stitched lock pattern).
             # Two concurrent calls with the same cache_hash would otherwise
             # both spawn ffmpeg, both write to the same per-segment paths,
             # and race on os.replace. Lock is non-blocking — second caller
             # gets HTTP 409 (matches preview_stitched UX).
-            import fcntl  # noqa: PLC0415
             lock_path = cache_dir / ".lock"
             lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o644)
             try:
@@ -11977,7 +12014,7 @@ body {{padding-top:44px!important;}}
         local_p = Path(local)
         if local_p != Path(path):
             print(
-                f"[hot-serve] cloud→local {Path(path).name} → {local_p}",
+                f"[hot-serve] cloud->local {Path(path).name} -> {local_p}",
                 flush=True,
             )
         # Never stream cloud File Provider bytes — refresh retry if rematerialize failed.

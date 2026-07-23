@@ -28,7 +28,6 @@ import base64
 import concurrent.futures
 import contextlib
 import copy
-import fcntl
 import hashlib
 import http.client
 import io
@@ -47,6 +46,8 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from lib import fcntl_compat as fcntl
 
 # ---------------------------------------------------------------------------
 # Paths (LD-505 Phase C — runtime-resolved via init_bg_paths(event_dir))

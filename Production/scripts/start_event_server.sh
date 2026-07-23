@@ -12,8 +12,12 @@
 #
 # Kim workflow:
 #   1. Ask agent (or run):  bash Production/scripts/start_event_server.sh Event_3
+#      On Windows (no launchd): powershell -File Production/scripts/start_event_server.ps1 Event_3
 #   2. Open bookmark:       http://localhost:5113/?event=Event_3
 #   3. Leave that tab on that URL — do not use Event dropdown to switch events.
+#
+# Agents: never tell Kim to open a dedicated URL until that port answers
+# /api/event/current for the matching event_id (connection refused = server down).
 #
 # Multiple events (one tab each):
 #   bash Production/scripts/start_event_server.sh Event_2 Event_4 Event_1

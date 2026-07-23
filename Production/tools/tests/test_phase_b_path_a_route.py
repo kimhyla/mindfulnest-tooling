@@ -32,7 +32,8 @@ def _handler_block() -> str:
 def test_handler_block_is_path_a_single_route():
     block = _handler_block()
     assert "PHASE_B_PATH_A_ROUTE_V1" in block
-    assert "run_phase_b_path_a_lipsync" in block
+    assert "execute_layered_job" in block
+    assert "create_layered_job" in block
     assert "validate_path_a_assets" in block
     # single route: the duration fork and whole-frame submits are gone
     assert "LIPSYNC_SINGLE_PASS_MAX_S" not in block
@@ -42,8 +43,10 @@ def test_handler_block_is_path_a_single_route():
 
 def test_handler_budget_gate_is_per_chunk():
     block = _handler_block()
-    assert "count_phase_b_path_a_chunks" in block
+    assert "plan_layered_lipsync" in block
     assert "COST_PER_LIPSYNC * chunk_jobs" in block
+    assert "_apply_phase_audio_trim" in block
+    assert "_apply_phase_lipsync_audio_prep(" not in block
 
 
 def test_handler_terminal_writer_unchanged():
@@ -56,13 +59,19 @@ def test_handler_terminal_writer_unchanged():
 def test_orphan_sweep_wired_into_polling_thread():
     server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
     assert "sweep_phase_b_lipsync_orphan" in server
-    assert "PHASE_B_PATH_A_ORPHAN_SWEEP_V1" in server
+    assert "reconcile_phase_b_layered_lipsync" in server
 
 
 def test_reject_clears_running_shape_keys():
     import server_handlers.phases as phases
 
-    for key in ("lipsync_pending_output", "lipsync_pending_audio", "lipsync_started_at"):
+    for key in (
+        "lipsync_pending_output",
+        "lipsync_pending_audio",
+        "lipsync_started_at",
+        "lipsync_job_id",
+        "lipsync_manifest_file",
+    ):
         assert key in phases._PHASE_LIPSYNC_DERIVED_KEYS
 
 
@@ -121,12 +130,16 @@ def _make_freeze_sandwich(dest: Path, tmp: Path) -> None:
 
 
 def _make_eye_band_clip(dest: Path, *, white_span: bool) -> None:
-    """832x464 clip, dark frames; optionally a 3s white span in the middle."""
+    """832x464 clip with eye detail; optionally a 3s white span."""
     if white_span:
         # frames 48-84 at 12fps = 4-7s (geq has N, not t; escape commas)
-        vf = r"geq=lum=if(between(N\,48\,84)\,235\,30):cb=128:cr=128"
+        vf = (
+            r"geq=lum=if(between(N\,48\,84)\,235\,"
+            r"50+20*sin(X)):cb=128:cr=128"
+        )
     else:
-        vf = "geq=lum=30:cb=128:cr=128"
+        # Non-uniform dark detail avoids the fail-closed all-dark crop guard.
+        vf = "geq=lum='50+20*sin(X)':cb=128:cr=128"
     subprocess.run(
         ["ffmpeg", "-y", "-v", "error",
          "-f", "lavfi", "-i", "nullsrc=s=832x464:r=12:d=12",
@@ -269,34 +282,56 @@ def test_orphan_sweep_ignores_terminal_states(_no_worker):
 
 def test_orphan_sweep_leaves_alive_worker_alone(monkeypatch: pytest.MonkeyPatch):
     import server_handlers.phases as phases
+    from layered_lipsync_jobs import ModuleLipsyncWorkerOwner
 
     class _AliveThread:
         @staticmethod
         def is_alive() -> bool:
             return True
 
-    monkeypatch.setattr(phases, "_phase_a_lipsync_worker", _AliveThread())
+    owner = ModuleLipsyncWorkerOwner(
+        phase="b",
+        event_instance_id="instance",
+        event_dir=Path("/tmp/Event_3"),
+        event_generation=1,
+        job_id="job-alive",
+        server_instance_id="server",
+    )
+    monkeypatch.setattr(phases, "_module_lipsync_worker", _AliveThread())
+    monkeypatch.setattr(phases, "_module_lipsync_worker_owner", owner)
     mgr = _FakeStateMgr({
         "phase_b_lipsync_status": "running",
         "phase_b_lipsync_started_at": time.time() - 1800,
     })
+    mgr.event_dir = Path("/tmp/Event_3")
     phases.sweep_phase_b_lipsync_orphan(mgr)
     assert mgr.read_state()["phase_b_lipsync_status"] == "running"
 
 
 def test_orphan_sweep_stale_guard_for_hung_worker(monkeypatch: pytest.MonkeyPatch):
     import server_handlers.phases as phases
+    from layered_lipsync_jobs import ModuleLipsyncWorkerOwner
 
     class _AliveThread:
         @staticmethod
         def is_alive() -> bool:
             return True
 
-    monkeypatch.setattr(phases, "_phase_a_lipsync_worker", _AliveThread())
+    owner = ModuleLipsyncWorkerOwner(
+        phase="b",
+        event_instance_id="instance",
+        event_dir=Path("/tmp/Event_3"),
+        event_generation=1,
+        job_id="job-stale",
+        server_instance_id="server",
+    )
+    monkeypatch.setattr(phases, "_module_lipsync_worker", _AliveThread())
+    monkeypatch.setattr(phases, "_module_lipsync_worker_owner", owner)
     mgr = _FakeStateMgr({
         "phase_b_lipsync_status": "running",
         "phase_b_lipsync_started_at": time.time() - 7200,
     })
+    mgr.event_dir = Path("/tmp/Event_3")
     phases.sweep_phase_b_lipsync_orphan(mgr)
     assert mgr.read_state()["phase_b_lipsync_status"].startswith("error: stale_timeout")
 

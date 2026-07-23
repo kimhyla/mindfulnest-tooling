@@ -25,25 +25,17 @@ import os
 import re
 import subprocess
 import sys
-import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-# fcntl is POSIX-only. On Windows we fall back to a process-local threading.Lock,
-# which serializes within-process queue mutation. Cross-process safety on Windows
-# would require msvcrt.locking() or the portalocker package; the current MCP
-# deployment ships only the MCP server as a writer, so process-local lock is
-# sufficient for committed Windows configs.
+# Advisory locks via fcntl_compat (stdlib fcntl is POSIX-only; Windows uses msvcrt).
 try:
-    import fcntl  # type: ignore[import-not-found]
-    _HAVE_FCNTL = True
-except ImportError:
-    fcntl = None  # type: ignore[assignment]
-    _HAVE_FCNTL = False
-
-_THREAD_LOCK = threading.Lock()
+    from . import fcntl_compat as fcntl
+except ImportError:  # allow running as a script without package context
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import fcntl_compat as fcntl  # type: ignore
 
 # Local import — directus_admin_client is a sibling in the same package.
 try:
@@ -416,39 +408,25 @@ _LOCK_PATH = _PENDING_QUEUE_PATH.with_suffix(".lock")
 def _queue_file_lock():
     """Advisory lock around pending_directus_writes.json mutation.
 
-    On POSIX (macOS/Linux), uses an fcntl.flock on a sidecar lock file for
-    cross-process safety. Closes the concurrent-writer race documented in
-    LD-661 `MCP_QUEUE_RACE_KNOWN_PHASE1_V1`: two processes (e.g., the
-    Directus MCP server + a parallel script) racing on read-parse-append-write
-    would lose entries; fcntl.flock serializes them.
-
-    On Windows (no fcntl module), falls back to a process-local
-    threading.Lock. This serializes within-process writers but does NOT
-    serialize cross-process writers. Production Windows deployments with
-    multiple writer processes would need to close that gap (msvcrt.locking
-    or portalocker) before relying on the queue under contention; the MCP
-    server is currently the sole writer in committed Windows configs, so
-    process-local lock is sufficient.
+    Uses fcntl_compat (fcntl on POSIX, msvcrt on Windows) on a sidecar lock
+    file for cross-process safety. Closes the concurrent-writer race
+    documented in LD-661 ``MCP_QUEUE_RACE_KNOWN_PHASE1_V1``: two processes
+    racing on read-parse-append-write would lose entries; flock serializes them.
 
     Lock file is a sidecar (`pending_directus_writes.lock`) — locking the
     queue file directly would race with reads of an empty file at startup.
     Lock is released on context exit even on exception.
     """
     _LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if _HAVE_FCNTL:
-        # Open in append mode so the file exists; fcntl works on the fd.
-        fd = os.open(str(_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o600)
+    fd = os.open(str(_LOCK_PATH), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
-            yield
+            fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            finally:
-                os.close(fd)
-    else:
-        with _THREAD_LOCK:
-            yield
+            os.close(fd)
 
 
 def queue_write_offline(collection: str, payload: dict, reason: str = "offline") -> Path:

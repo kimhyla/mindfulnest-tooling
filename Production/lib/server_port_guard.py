@@ -9,7 +9,6 @@ Registry + flock live under ~/.mindfulnest/runtime/servers/ (local, not Dropbox)
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import signal
@@ -21,6 +20,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
+
+from . import fcntl_compat as fcntl
 
 DEDICATED_PORT_MIN = 5111
 DEDICATED_PORT_MAX = 5199

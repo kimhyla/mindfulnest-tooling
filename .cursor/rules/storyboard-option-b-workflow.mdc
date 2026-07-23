@@ -31,6 +31,14 @@ This runs full mirror, storyboard bundle fanout, parity check, **dedicated port 
 
 Deploy/smoke **must** use the port for the target event — never assume 5111.
 
+**Connection refused = that event's server is not running on this machine.**  
+Before telling Kim to open a URL: verify `/api/event/current` on that port, or start it:
+
+- Mac: `bash Production/scripts/start_event_server.sh Event_3`
+- Windows: `powershell -File Production/scripts/start_event_server.ps1 Event_3`
+
+Status: `powershell -File Production/scripts/status_event_servers.ps1` (Windows) or `bash Production/scripts/status_event_servers.sh` (Mac).
+
 ## Proof required before "live"
 
 Report: git HEAD sha, served build-sha match, parity exit 0, event URL. See `Production/docs/STORYBOARD_OPTION_B_SPEC_v1.md`.

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from lib import fcntl_compat as fcntl
 
 STITCH_BAKE_JOB_TRUTH_V1 = "STITCH_BAKE_JOB_TRUTH_V1"
 TERMINAL_BAKE_STATUSES = frozenset({"done", "failed", "interrupted"})

@@ -48,6 +48,7 @@ _PSERVER_TOOLS_DIR = Path(__file__).resolve().parent.parent  # Production/tools/
 from lib.atomic_json_write import atomic_json_write
 from lib.v3_partition import _iter_v3_beats
 from lib.paths import DROPBOX_ROOT
+from lib import fcntl_compat as fcntl
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
@@ -4937,8 +4938,6 @@ def _execute_stitch_bake_job(
     pin["_bake_job_id"] = job_id
     fd = None
     try:
-        import fcntl  # noqa: PLC0415
-
         fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
         fcntl.flock(fd, fcntl.LOCK_EX)
 
@@ -5015,8 +5014,6 @@ def _execute_stitch_bake_job(
     finally:
         if fd is not None:
             try:
-                import fcntl  # noqa: PLC0415
-
                 fcntl.flock(fd, fcntl.LOCK_UN)
                 os.close(fd)
             except Exception:

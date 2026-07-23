@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from lib.paths import API_KEYS_MASTER_PATH
+from lib import fcntl_compat as fcntl
 from tools import kling_o3_client
 from tools import kling_o3_job_store as job_store
 from tools.production_server import _KLING_O3_JOBS, _bg_module, parse_api_keys
@@ -1396,8 +1397,6 @@ def _execute_bg_export_to_stitcher_job(
     def _worker_body():
         nonlocal fd
         try:
-            import fcntl  # noqa: PLC0415
-
             fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR)
             fcntl.flock(fd, fcntl.LOCK_EX)
 
@@ -1454,8 +1453,6 @@ def _execute_bg_export_to_stitcher_job(
         finally:
             if fd is not None:
                 try:
-                    import fcntl  # noqa: PLC0415
-
                     fcntl.flock(fd, fcntl.LOCK_UN)
                     os.close(fd)
                 except OSError:

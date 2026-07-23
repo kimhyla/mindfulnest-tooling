@@ -54,6 +54,7 @@ from lib.v3_partition import _iter_v3_beats
 from lib.event_library import event_watercolors_dir
 from lib.watercolor_assets import list_watercolor_items, resolve_watercolor_path
 from lib.paths import DROPBOX_ROOT
+from lib import fcntl_compat as fcntl
 import scope_router
 from ffmpeg_utils import strip_audio as _strip_clip_audio
 from lipsync_sender import LipSyncClient, COST_PER_LIPSYNC
@@ -97,6 +98,9 @@ PHASE_B_LIPSYNC_STALE_SEC: int = 3600
 
 _phase_a_lipsync_worker: threading.Thread | None = None
 _phase_a_lipsync_worker_lock = threading.Lock()
+_module_lipsync_worker: threading.Thread | None = None
+_module_lipsync_worker_owner = None
+_module_lipsync_worker_lock = threading.Lock()
 
 # Cleared on reject/regen so lipsync/mix/stitch no longer reference stale outputs.
 _PHASE_LIPSYNC_DERIVED_KEYS = (
@@ -112,6 +116,14 @@ _PHASE_LIPSYNC_DERIVED_KEYS = (
     "lipsync_pending_out",
     "lipsync_pending_output",
     "lipsync_pending_audio",
+    "lipsync_job_id",
+    "lipsync_route",
+    "lipsync_manifest_file",
+    "lipsync_delivery_profile",
+    "lipsync_delivery_recipe",
+    "lipsync_chunk_count",
+    "lipsync_estimated_cost_usd",
+    "lipsync_charged_cost_usd",
     "mixed_audio_file",
     "mixed_audio_mtime",
     "stitched_file",
@@ -2673,13 +2685,45 @@ def _spawn_phase_a_lipsync_worker(target, *args, **kwargs) -> bool:
         return True
 
 
+def _spawn_module_lipsync_worker(owner, target, *args, **kwargs) -> bool:
+    """Start a durable layered worker only for its complete owner identity."""
+    global _module_lipsync_worker, _module_lipsync_worker_owner
+    with _module_lipsync_worker_lock:
+        if _module_lipsync_worker is not None and _module_lipsync_worker.is_alive():
+            return False
+        _module_lipsync_worker_owner = owner
+
+        def _run_owned():
+            global _module_lipsync_worker_owner
+            try:
+                target(*args, **kwargs)
+            finally:
+                with _module_lipsync_worker_lock:
+                    if _module_lipsync_worker_owner == owner:
+                        _module_lipsync_worker_owner = None
+
+        _module_lipsync_worker = threading.Thread(
+            target=_run_owned,
+            daemon=True,
+            name=(
+                f"ModuleLipsync-{owner.phase}-"
+                f"{owner.folder_event_id if hasattr(owner, 'folder_event_id') else owner.job_id[:8]}"
+            ),
+        )
+        _module_lipsync_worker.start()
+        return True
+
+
 def sweep_phase_a_lipsync_resume(state_mgr) -> None:
-    """Resume Phase A Kling start+end still jobs after server restart.
+    """Resume opt-in Phase A ByteDance jobs after server restart.
+
+    Wired only when MN_PHASE_A_BYTEDANCE=1. Default Send uses layered
+    orphan/reconcile instead.
 
     Beat + Phase B module lipsync use persistent pollers with task_id. Phase A
-    runs a long Kling idle + LipSync pipeline in a worker thread — that thread
-    dies on restart while state stays ``running``. When tmp work exists on disk,
-    re-spawn the worker.
+    runs ByteDance LatentSync in a worker thread — that thread dies on restart
+    while state stays ``running``. When tmp work exists on disk, re-spawn the
+    worker with resume=True.
     """
     with _phase_a_lipsync_worker_lock:
         if _phase_a_lipsync_worker is not None and _phase_a_lipsync_worker.is_alive():
@@ -2730,27 +2774,37 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
     if not audio_path.is_file():
         return
 
+    from phase_a_arlo_contract import coerce_phase_a_arlo_base_clip_id  # noqa: WPS433
+    from phase_a_chipper_kling_lipsync import resolve_lipsync_base  # noqa: WPS433
+    from phase_a_middle_permanent import (  # noqa: WPS433
+        METHOD as PHASE_A_BYTEDANCE_METHOD,
+        run_phase_a_base_clip_bytedance_lipsync,
+    )
+
     prod_root = event_dir.parent
-
-    class _AppShim:
-        pass
-
-    app = _AppShim()
-    app.state = state_mgr
-    app.event_dir = event_dir
-    app.event_generation = getattr(state_mgr, "event_generation", None)
+    base_clip_id = coerce_phase_a_arlo_base_clip_id(
+        snap.get("phase_a_chipper_sitting_clip_id"),
+    )
+    try:
+        base_video = resolve_lipsync_base(
+            prod_root / "assets" / "lipsync_bases",
+            base_clip_id,
+        )
+    except FileNotFoundError as exc:
+        print(f"[phase_a_lipsync-resume] base missing: {exc}", flush=True)
+        return
 
     def _resume_bg():
         try:
-            from phase_a_arlo_idle_lipsync import run_phase_a_arlo_idle_lipsync_startend_still
-
-            tmp_dir = event_dir / "_tmp_phase_a_arlo_startend"
-            run_phase_a_arlo_idle_lipsync_startend_still(
+            tmp_dir = event_dir / "_tmp_phase_a_permanent"
+            run_phase_a_base_clip_bytedance_lipsync(
+                base_video,
                 audio_path,
                 out_path,
-                event_dir=event_dir,
-                prod_root=prod_root,
                 tmp_dir=tmp_dir,
+                chain_chunks=False,
+                single_pass=True,
+                resume=True,
             )
             if not out_path.is_file():
                 raise RuntimeError(f"resume finished but output missing: {out_path}")
@@ -2768,19 +2822,23 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
             extract_qa_frames(out_path, qa_dir)
 
             delivery_meta = _finalize_phase_a_lipsync_delivery(
-                out_path, method="idle_kling_lipsync_startend_still",
+                out_path, method=PHASE_A_BYTEDANCE_METHOD,
             )
 
             _m = int(os.path.getmtime(str(out_path)))
 
-            def _apply_done(st, _meta=delivery_meta):
+            def _apply_done(st, _meta=delivery_meta, _bid=base_clip_id):
                 st["phase_a_lipsync_file"] = pending_out
                 st["phase_a_lipsync_mtime"] = _m
                 st["phase_a_lipsync_status"] = "needs_manual_visual_review"
-                st["phase_a_lipsync_method"] = "idle_kling_lipsync_startend_still"
+                st["phase_a_lipsync_method"] = PHASE_A_BYTEDANCE_METHOD
                 st["phase_a_lipsync_requires_regen"] = False
+                st["phase_a_lipsync_qa_dir"] = str(qa_dir)
+                st["phase_a_lipsync_av_gap_s"] = round(av_gap_s, 3)
                 st["phase_a_lipsync_delivery_profile"] = _meta.get("delivery_profile")
                 st["phase_a_lipsync_delivery_recipe"] = _meta.get("delivery_recipe")
+                if _bid:
+                    st["phase_a_chipper_sitting_clip_id"] = _bid
                 st.pop("phase_a_lipsync_started_at", None)
                 st.pop("phase_a_lipsync_pending_output", None)
                 st.pop("phase_a_lipsync_pending_audio", None)
@@ -2789,10 +2847,14 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
                     nested["phase_a_lipsync_file"] = pending_out
                     nested["phase_a_lipsync_mtime"] = _m
                     nested["phase_a_lipsync_status"] = "needs_manual_visual_review"
-                    nested["phase_a_lipsync_method"] = "idle_kling_lipsync_startend_still"
+                    nested["phase_a_lipsync_method"] = PHASE_A_BYTEDANCE_METHOD
                     nested["phase_a_lipsync_requires_regen"] = False
+                    nested["phase_a_lipsync_qa_dir"] = str(qa_dir)
+                    nested["phase_a_lipsync_av_gap_s"] = round(av_gap_s, 3)
                     nested["phase_a_lipsync_delivery_profile"] = _meta.get("delivery_profile")
                     nested["phase_a_lipsync_delivery_recipe"] = _meta.get("delivery_recipe")
+                    if _bid:
+                        nested["phase_a_chipper_sitting_clip_id"] = _bid
                     nested.pop("phase_a_lipsync_started_at", None)
                     nested.pop("phase_a_lipsync_pending_output", None)
                     nested.pop("phase_a_lipsync_pending_audio", None)
@@ -2801,7 +2863,7 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
 
             state_mgr.mutate_state(_apply_done)
             print(
-                f"[phase_a_lipsync-resume] ✓ recovered → {pending_out} "
+                f"[phase_a_lipsync-resume] recovered → {pending_out} "
                 f"({out_path.stat().st_size} bytes)",
                 flush=True,
             )
@@ -2829,12 +2891,222 @@ def sweep_phase_a_lipsync_resume(state_mgr) -> None:
             flush=True,
         )
 
-def handle_phase_a_lipsync(h, body: dict) -> None:
-    """POST /api/phase_a/lipsync — Arlo Kling start+end still idle → Kling LipSync.
+def sweep_phase_a_lipsync_orphan(state_mgr) -> None:
+    """Clear Phase A ``running`` only when no durable job can be resumed."""
+    snap = state_mgr.read_state()
+    if snap.get("phase_a_lipsync_status") != "running":
+        return
 
-    Canonical for all events (Jul 2026): canonical Arlo still as start+end bookend,
-    Element binding, gaze-forward idle prompt, crossfade loop, Kling LipSync.
-    Phase B human lipsync stays on Kling Sync (handle_phase_b_lipsync).
+    job_id = snap.get("phase_a_lipsync_job_id")
+    if isinstance(job_id, str) and job_id.strip():
+        from layered_lipsync_jobs import job_path  # noqa: PLC0415
+
+        if job_path(state_mgr.event_dir, "a", job_id).is_file():
+            return
+
+    with _module_lipsync_worker_lock:
+        owner = _module_lipsync_worker_owner
+        worker_alive = (
+            _module_lipsync_worker is not None
+            and _module_lipsync_worker.is_alive()
+            and owner is not None
+            and getattr(owner, "phase", None) == "a"
+            and Path(getattr(owner, "event_dir", "")) == Path(state_mgr.event_dir)
+        )
+
+    started = snap.get("phase_a_lipsync_started_at")
+    age = (
+        time.time() - float(started)
+        if isinstance(started, (int, float)) else None
+    )
+
+    if worker_alive:
+        if age is None or age <= PHASE_A_LIPSYNC_STALE_SEC:
+            return
+        reason = f"stale_timeout: running > {PHASE_A_LIPSYNC_STALE_SEC}s"
+    else:
+        if age is not None and age <= PHASE_A_LIPSYNC_RESTART_ORPHAN_SEC:
+            return
+        reason = "orphan_restart: durable job missing after restart"
+
+    def _clear(st, _r=reason):
+        st["phase_a_lipsync_status"] = f"error: {_r}"
+        st.pop("phase_a_lipsync_started_at", None)
+        st.pop("phase_a_lipsync_pending_output", None)
+        st.pop("phase_a_lipsync_pending_audio", None)
+        st.pop("phase_a_lipsync_job_id", None)
+        nested = st.setdefault("phase_a", {})
+        if isinstance(nested, dict):
+            nested["phase_a_lipsync_status"] = st["phase_a_lipsync_status"]
+            for key in (
+                "phase_a_lipsync_started_at",
+                "phase_a_lipsync_pending_output",
+                "phase_a_lipsync_pending_audio",
+                "phase_a_lipsync_job_id",
+            ):
+                nested.pop(key, None)
+        st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+        return st["_module_version"]
+
+    state_mgr.mutate_state(_clear)
+    print(f"[phase_a_lipsync-orphan] cleared: {reason}", flush=True)
+
+
+def reconcile_phase_a_layered_lipsync(state_mgr, client) -> None:
+    """Resume a durable Phase A layered job from its provider task IDs."""
+    if client is None:
+        return
+    snap = state_mgr.read_state()
+    if snap.get("phase_a_lipsync_status") != "running":
+        return
+    job_id = snap.get("phase_a_lipsync_job_id")
+    if not isinstance(job_id, str) or not job_id.strip():
+        return
+
+    from layered_character_lipsync import ARLO_PROFILE  # noqa: PLC0415
+    from layered_lipsync_jobs import (  # noqa: PLC0415
+        execute_layered_job,
+        job_path,
+        load_layered_job,
+        verify_captured_event,
+    )
+
+    path = job_path(state_mgr.event_dir, "a", job_id)
+    if not path.is_file():
+        return
+    job = load_layered_job(path)
+    if job.get("status") in {"done", "error", "submission_unknown", "cancelled"}:
+        return
+
+    with _module_lipsync_worker_lock:
+        if (
+            _module_lipsync_worker is not None
+            and _module_lipsync_worker.is_alive()
+            and _module_lipsync_worker_owner is not None
+            and getattr(_module_lipsync_worker_owner, "job_id", None) == job_id
+        ):
+            return
+
+    def _delivery(source: Path, destination: Path, _job: dict) -> dict:
+        shutil.copy2(source, destination)
+        return _finalize_phase_a_lipsync_delivery(
+            destination,
+            method=ARLO_PROFILE.method_id,
+        )
+
+    def _commit_state(job: dict, manifest: dict, delivery_meta: dict) -> None:
+        verify_captured_event(job, state_mgr)
+        output = Path(job["context"]["event_dir"]) / job["delivery"]["output_file"]
+        from phase_a_av_post import av_duration_gap
+        from phase_a_middle_permanent import extract_qa_frames
+
+        video_s, audio_s, av_gap_s = av_duration_gap(output)
+        if av_gap_s > 0.10:
+            raise RuntimeError(
+                f"Phase A media gate failed: A/V gap {av_gap_s:.3f}s "
+                f"(video={video_s:.3f}s audio={audio_s:.3f}s)"
+            )
+        qa_dir = (
+            Path(job["context"]["event_dir"])
+            / f"phase_a_lipsync_qa_{Path(job['delivery']['output_file']).stem}"
+        )
+        extract_qa_frames(output, qa_dir)
+        mtime = int(os.path.getmtime(str(output)))
+        out_name_local = job["delivery"]["output_file"]
+        base_clip = job["delivery"].get("base_clip_id")
+        manifest_name = Path(out_name_local).with_suffix(".json").name
+
+        def _apply_done(st):
+            if st.get("phase_a_lipsync_job_id") != job["job_id"]:
+                raise RuntimeError(
+                    "active layered lipsync job changed before terminal write"
+                )
+            for key, val in (
+                ("phase_a_lipsync_file", out_name_local),
+                ("phase_a_lipsync_mtime", mtime),
+                ("phase_a_lipsync_status", "needs_manual_visual_review"),
+                ("phase_a_lipsync_method", job.get("method")),
+                ("phase_a_lipsync_route", job.get("route")),
+                ("phase_a_lipsync_qa_dir", str(qa_dir)),
+                ("phase_a_lipsync_av_gap_s", round(av_gap_s, 3)),
+                ("phase_a_lipsync_delivery_profile", delivery_meta.get("delivery_profile")),
+                ("phase_a_lipsync_delivery_recipe", delivery_meta.get("delivery_recipe")),
+                ("phase_a_lipsync_manifest_file", manifest_name),
+                ("phase_a_lipsync_chunk_count", len(job.get("chunks") or [])),
+                ("phase_a_lipsync_job_id", job["job_id"]),
+            ):
+                st[key] = val
+                nested = st.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested[key] = val
+            st["phase_a_lipsync_requires_regen"] = False
+            st.pop("phase_a_lipsync_reliability_note", None)
+            nested = st.setdefault("phase_a", {})
+            if isinstance(nested, dict):
+                nested["phase_a_lipsync_requires_regen"] = False
+                nested.pop("phase_a_lipsync_reliability_note", None)
+            if base_clip:
+                st["phase_a_chipper_sitting_clip_id"] = base_clip
+                if isinstance(nested, dict):
+                    nested["phase_a_chipper_sitting_clip_id"] = base_clip
+            for key in (
+                "phase_a_lipsync_task_id",
+                "phase_a_lipsync_started_at",
+                "phase_a_lipsync_pending_output",
+                "phase_a_lipsync_pending_audio",
+            ):
+                st.pop(key, None)
+                if isinstance(nested, dict):
+                    nested.pop(key, None)
+            st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+            return st["_module_version"]
+
+        state_mgr.mutate_state(_apply_done)
+        print(
+            f"[phase_a_lipsync-reconcile] media gate passed; visual review required → "
+            f"{out_name_local} av_gap={av_gap_s:.3f}s qa={qa_dir}",
+            flush=True,
+        )
+
+    try:
+        execute_layered_job(
+            path,
+            ARLO_PROFILE,
+            api_key=client.api_key,
+            delivery_callback=_delivery,
+            state_commit_callback=_commit_state,
+            client_factory=lambda _key: client,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[phase_a_lipsync-reconcile] failed: {exc}", flush=True)
+
+
+def handle_phase_a_lipsync(h, body: dict) -> None:
+    """POST /api/phase_a/lipsync — PHASE_A_ARLO_LAYERED_ROUTE_V1 (Send default).
+
+    Lipsync against the approved green full_loop_30s idle, then chroma-composite
+    onto the room plate. ByteDance/v7 remains available via MN_PHASE_A_BYTEDANCE=1
+    or body {"route": "bytedance"}.
+    """
+    import os as _os_phase_a_route
+
+    body = body or {}
+    route = str(body.get("route") or "").strip().lower()
+    bytedance_opt_in = (
+        route in {"bytedance", "base_clip_bytedance", "v7"}
+        or _os_phase_a_route.environ.get("MN_PHASE_A_BYTEDANCE", "").strip()
+        in {"1", "true", "TRUE", "yes", "YES"}
+    )
+    if bytedance_opt_in:
+        return _handle_phase_a_lipsync_bytedance(h, body)
+    return _handle_phase_a_lipsync_layered(h, body)
+
+
+def _handle_phase_a_lipsync_layered(h, body: dict) -> None:
+    """POST /api/phase_a/lipsync — PHASE_A_ARLO_LAYERED_ROUTE_V1.
+
+    Reuses the versioned full-body green Arlo idle through the shared layered
+    engine. Stops at needs_manual_visual_review after media gates pass.
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
@@ -2934,23 +3206,462 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             extra={"hint": "Adjust stem trim front/back seconds on the waveform row."},
         )
 
-    from phase_a_arlo_contract import resolve_phase_a_arlo_idle_still  # noqa: WPS433
+    from arlo_layered_lipsync import validate_arlo_layered_assets  # noqa: WPS433
+    from layered_character_lipsync import (  # noqa: PLC0415
+        ARLO_PROFILE,
+        plan_layered_lipsync,
+    )
+    from layered_lipsync_jobs import (  # noqa: PLC0415
+        ModuleLipsyncWorkerOwner,
+        capture_event_context,
+        create_layered_job,
+        execute_layered_job,
+        mutate_layered_job,
+        verify_captured_event,
+    )
+    from types import SimpleNamespace
 
     prod_root = h.app.event_dir.parent
     try:
-        still_path = resolve_phase_a_arlo_idle_still(h.app.event_dir, prod_root)
+        validate_arlo_layered_assets(production_root=prod_root)
+    except FileNotFoundError as exc:
+        return h._send_error_v59(
+            404,
+            error_code="ARLO_LAYERED_ASSETS_MISSING",
+            error_message=str(exc),
+            retry_safe=False,
+            extra={"hint": "Install versioned Arlo layered assets under NEW STYLE CHARACTERS/ARLO/."},
+        )
+
+    try:
+        layered_plan = plan_layered_lipsync(ARLO_PROFILE, audio_for_lipsync)
+    except Exception as exc:  # noqa: BLE001
+        traceback.print_exc()
+        return h._send_error_v59(
+            500,
+            error_code="LIPSYNC_PRE_CONDITIONING_FAILED",
+            error_message=f"chunk boundary detection failed: {exc}",
+            retry_safe=True,
+            extra={"stage": "arlo_layered_chunking", "detail": str(exc)[:400]},
+        )
+    chunk_jobs = layered_plan.chunk_count
+    spend = h.app.state.read_spend()
+    total_cost = COST_PER_LIPSYNC * chunk_jobs
+    if spend["budget_remaining"] < total_cost:
+        return h._send_error_v59(
+            402,
+            error_code="BUDGET_EXCEEDED_FOR_LIP_SYNC",
+            error_message="budget exceeded for chunked lip sync",
+            retry_safe=False,
+            extra={
+                "budget_remaining": spend["budget_remaining"],
+                "cost": total_cost,
+                "chunk_count": chunk_jobs,
+            },
+        )
+
+    ts = datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_name = f"phase_a_lipsync_{ts}.mp4"
+    captured = capture_event_context(
+        h.app,
+        video_role=(body or {}).get("scope_video_role", "intro"),
+    )
+    job_path, durable_job = create_layered_job(
+        captured,
+        ARLO_PROFILE,
+        audio_path,
+        audio_for_lipsync,
+        layered_plan,
+        phase="a",
+        output_name=out_name,
+        terminal_status="needs_manual_visual_review",
+        base_clip_id=base_clip_id,
+        cost_per_chunk=COST_PER_LIPSYNC,
+    )
+
+    def _apply_running(
+        st,
+        _bid=base_clip_id,
+        _out=out_name,
+        _audio=audio_name,
+        _job=durable_job,
+        _chunks=chunk_jobs,
+    ):
+        st["phase_a_lipsync_status"] = "running"
+        st["phase_a_lipsync_started_at"] = time.time()
+        st["phase_a_lipsync_pending_output"] = _out
+        st["phase_a_lipsync_pending_audio"] = _audio
+        st["phase_a_lipsync_job_id"] = _job["job_id"]
+        st["phase_a_lipsync_route"] = ARLO_PROFILE.route_id
+        st["phase_a_lipsync_method"] = ARLO_PROFILE.method_id
+        st["phase_a_lipsync_chunk_count"] = _chunks
+        st["phase_a_lipsync_estimated_cost_usd"] = COST_PER_LIPSYNC * _chunks
+        st.pop("phase_a_lipsync_task_id", None)
+        if _bid:
+            st["phase_a_chipper_sitting_clip_id"] = _bid
+        nested = st.setdefault("phase_a", {})
+        if isinstance(nested, dict):
+            for key in (
+                "phase_a_lipsync_status",
+                "phase_a_lipsync_started_at",
+                "phase_a_lipsync_pending_output",
+                "phase_a_lipsync_pending_audio",
+                "phase_a_lipsync_job_id",
+                "phase_a_lipsync_route",
+                "phase_a_lipsync_method",
+                "phase_a_lipsync_chunk_count",
+                "phase_a_lipsync_estimated_cost_usd",
+            ):
+                nested[key] = st[key]
+            if _bid:
+                nested["phase_a_chipper_sitting_clip_id"] = _bid
+        st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+        return st["_module_version"]
+
+    _app = h.app
+    _api_key = h.app.client.api_key
+    owner = ModuleLipsyncWorkerOwner(
+        phase="a",
+        event_instance_id=captured.event_instance_id,
+        event_dir=captured.event_dir,
+        event_generation=captured.event_generation,
+        job_id=durable_job["job_id"],
+        server_instance_id=str(
+            getattr(h.app, "server_instance_id", None)
+            or getattr(h.app, "event_generation", "server")
+        ),
+    )
+
+    def _bg(_job_path=job_path, _owner=owner):
+        try:
+            def _delivery(source: Path, destination: Path, _job: dict) -> dict:
+                shutil.copy2(source, destination)
+                return _finalize_phase_a_lipsync_delivery(
+                    destination,
+                    method=ARLO_PROFILE.method_id,
+                )
+
+            def _commit_state(job: dict, manifest: dict, delivery_meta: dict) -> None:
+                verify_captured_event(job, _app.state)
+                output = (
+                    Path(job["context"]["event_dir"])
+                    / job["delivery"]["output_file"]
+                )
+                from phase_a_av_post import av_duration_gap
+                from phase_a_middle_permanent import extract_qa_frames
+
+                video_s, audio_s, av_gap_s = av_duration_gap(output)
+                if av_gap_s > 0.10:
+                    raise RuntimeError(
+                        f"Phase A media gate failed: A/V gap {av_gap_s:.3f}s "
+                        f"(video={video_s:.3f}s audio={audio_s:.3f}s)"
+                    )
+                qa_dir = (
+                    Path(job["context"]["event_dir"])
+                    / f"phase_a_lipsync_qa_{Path(job['delivery']['output_file']).stem}"
+                )
+                extract_qa_frames(output, qa_dir)
+                mtime = int(os.path.getmtime(str(output)))
+                out_name_local = job["delivery"]["output_file"]
+                base_clip = job["delivery"].get("base_clip_id")
+                manifest_name = Path(out_name_local).with_suffix(".json").name
+
+                def _apply_done(st):
+                    if st.get("phase_a_lipsync_job_id") != job["job_id"]:
+                        raise RuntimeError(
+                            "active layered lipsync job changed before terminal write"
+                        )
+                    for key, val in (
+                        ("phase_a_lipsync_file", out_name_local),
+                        ("phase_a_lipsync_mtime", mtime),
+                        ("phase_a_lipsync_status", "needs_manual_visual_review"),
+                        ("phase_a_lipsync_method", job.get("method")),
+                        ("phase_a_lipsync_route", job.get("route")),
+                        ("phase_a_lipsync_qa_dir", str(qa_dir)),
+                        ("phase_a_lipsync_av_gap_s", round(av_gap_s, 3)),
+                        ("phase_a_lipsync_delivery_profile", delivery_meta.get("delivery_profile")),
+                        ("phase_a_lipsync_delivery_recipe", delivery_meta.get("delivery_recipe")),
+                        ("phase_a_lipsync_manifest_file", manifest_name),
+                        ("phase_a_lipsync_chunk_count", len(job.get("chunks") or [])),
+                        ("phase_a_lipsync_job_id", job["job_id"]),
+                    ):
+                        st[key] = val
+                        nested = st.setdefault("phase_a", {})
+                        if isinstance(nested, dict):
+                            nested[key] = val
+                    st["phase_a_lipsync_requires_regen"] = False
+                    st.pop("phase_a_lipsync_reliability_note", None)
+                    nested = st.setdefault("phase_a", {})
+                    if isinstance(nested, dict):
+                        nested["phase_a_lipsync_requires_regen"] = False
+                        nested.pop("phase_a_lipsync_reliability_note", None)
+                    if base_clip:
+                        st["phase_a_chipper_sitting_clip_id"] = base_clip
+                        if isinstance(nested, dict):
+                            nested["phase_a_chipper_sitting_clip_id"] = base_clip
+                    for key in (
+                        "phase_a_lipsync_task_id",
+                        "phase_a_lipsync_started_at",
+                        "phase_a_lipsync_pending_output",
+                        "phase_a_lipsync_pending_audio",
+                    ):
+                        st.pop(key, None)
+                        if isinstance(nested, dict):
+                            nested.pop(key, None)
+                    st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
+                    return st["_module_version"]
+
+                _app.state.mutate_state(_apply_done)
+                print(
+                    f"[phase_a_lipsync] media gate passed; visual review required → "
+                    f"{out_name_local} av_gap={av_gap_s:.3f}s qa={qa_dir}",
+                    flush=True,
+                )
+
+            execute_layered_job(
+                _job_path,
+                ARLO_PROFILE,
+                api_key=_api_key,
+                delivery_callback=_delivery,
+                state_commit_callback=_commit_state,
+                owner_id=f"{_owner.server_instance_id}:{_owner.job_id}",
+            )
+        except Exception as exc:  # noqa: BLE001
+            traceback.print_exc()
+
+            def _apply_err(st, _e=exc, _job_id=durable_job["job_id"]):
+                if st.get("phase_a_lipsync_job_id") != _job_id:
+                    return st.get("_module_version", 0)
+                status = f"error: {type(_e).__name__}: {str(_e)[:100]}"
+                if "PaidSubmissionUnknown" in type(_e).__name__:
+                    status = (
+                        "error: submission_unknown: paid task may exist; "
+                        "do not resubmit blindly"
+                    )
+                st["phase_a_lipsync_status"] = status
+                nested = st.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested["phase_a_lipsync_status"] = status
+                for key in (
+                    "phase_a_lipsync_task_id",
+                    "phase_a_lipsync_started_at",
+                    "phase_a_lipsync_pending_output",
+                    "phase_a_lipsync_pending_audio",
+                ):
+                    st.pop(key, None)
+                    if isinstance(nested, dict):
+                        nested.pop(key, None)
+                return st.get("_module_version", 0)
+
+            try:
+                mutate_layered_job(
+                    _job_path,
+                    lambda value: value.update(
+                        status=(
+                            "submission_unknown"
+                            if "PaidSubmissionUnknown" in type(exc).__name__
+                            else "error"
+                        ),
+                        error=f"{type(exc).__name__}: {exc}",
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                pass
+            try:
+                _app.state.mutate_state(_apply_err)
+            except Exception:  # noqa: BLE001
+                pass
+
+    h.app.state.mutate_state(_apply_running)
+    if not _spawn_module_lipsync_worker(owner, _bg):
+        def _apply_spawn_busy(st, _job_id=durable_job["job_id"]):
+            if st.get("phase_a_lipsync_job_id") == _job_id:
+                st["phase_a_lipsync_status"] = (
+                    "error: worker_busy: another phase lipsync job is running"
+                )
+                nested = st.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested["phase_a_lipsync_status"] = st["phase_a_lipsync_status"]
+                for key in (
+                    "phase_a_lipsync_started_at",
+                    "phase_a_lipsync_pending_output",
+                    "phase_a_lipsync_pending_audio",
+                    "phase_a_lipsync_job_id",
+                ):
+                    st.pop(key, None)
+                    if isinstance(nested, dict):
+                        nested.pop(key, None)
+            return st.get("_module_version", 0)
+
+        try:
+            mutate_layered_job(
+                job_path,
+                lambda value: value.update(
+                    status="error",
+                    error="worker_busy: another phase lipsync job is running",
+                ),
+            )
+            h.app.state.mutate_state(_apply_spawn_busy)
+        except Exception:  # noqa: BLE001
+            pass
+        return h._send_error_v59(
+            409,
+            error_code="LIPSYNC_WORKER_BUSY",
+            error_message="another phase lipsync worker is already running",
+            retry_safe=True,
+            extra={"hint": "Wait for the in-flight lipsync job to finish, then resend."},
+        )
+
+    return h._send_json(202, {
+        "ok": True,
+        "status": "running",
+        "phase": "a",
+        "job_id": durable_job["job_id"],
+        "vendor": ARLO_PROFILE.method_id,
+        "route": ARLO_PROFILE.route_id,
+        "chunk_count": chunk_jobs,
+        "base_clip_id": base_clip_id,
+        "base_clip_file": None,
+        "message": (
+            "Arlo layered Path A lipsync is processing "
+            f"({chunk_jobs} chunks, reusable full-body idle). "
+            "Phase A will stop for visual review after media gates pass."
+        ),
+    })
+
+
+def _handle_phase_a_lipsync_bytedance(h, body: dict) -> None:
+    """Opt-in ByteDance Phase A path (MN_PHASE_A_BYTEDANCE=1 or body route=bytedance).
+
+    Restored June/July recipe: base_clip_bytedance_tight_v1 on
+    arlo_idle_wizard_desk_v7 (face-only sync; body stays from base clip).
+    Phase B layered Path A remains unchanged. Layered Arlo code stays in-tree
+    but is not the Send default.
+    """
+    if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
+        return
+
+    _pin = {
+        "pinned_generation": h.app.event_generation,
+        "pinned_event_dir": h.app.event_dir,
+        "pinned_video_role": (body or {}).get("scope_video_role", "intro"),
+        "_handler": "_handle_phase_a_lipsync",
+    }
+
+    if h.app.client is None:
+        return h._send_error_v59(
+            500,
+            error_code="WAVESPEED_NOT_CONFIGURED",
+            error_message="WaveSpeed client not configured (missing API key)",
+            retry_safe=True,
+            extra={"hint": "Populate API_KEYS_MASTER.md wavespeed entry."},
+        )
+
+    state = h.app.state.read_state()
+
+    def _phase_a_lipsync_running_stale(st: dict) -> bool:
+        if st.get("phase_a_lipsync_status") != "running":
+            return False
+        started = st.get("phase_a_lipsync_started_at")
+        if not isinstance(started, (int, float)):
+            return True  # legacy running with no timestamp — treat as stale
+        return (time.time() - float(started)) > PHASE_A_LIPSYNC_STALE_SEC
+
+    if state.get("phase_a_lipsync_status") == "running":
+        if _phase_a_lipsync_running_stale(state):
+            def _clear_stale_running(st):
+                st["phase_a_lipsync_status"] = (
+                    f"error: stale_timeout: running > {PHASE_A_LIPSYNC_STALE_SEC}s"
+                )
+                st.pop("phase_a_lipsync_started_at", None)
+                nested = st.setdefault("phase_a", {})
+                if isinstance(nested, dict):
+                    nested["phase_a_lipsync_status"] = st["phase_a_lipsync_status"]
+                    nested.pop("phase_a_lipsync_started_at", None)
+                return st.get("_module_version", 0)
+            h.app.state.mutate_state(_clear_stale_running)
+            state = h.app.state.read_state()
+        else:
+            return h._send_error_v59(
+                409,
+                error_code="PHASE_A_LIPSYNC_RUNNING",
+                error_message="Phase A lipsync already running",
+                retry_safe=False,
+                extra={"hint": f"Wait up to {PHASE_A_LIPSYNC_STALE_SEC // 60} min or refresh after stale auto-clear."},
+            )
+
+    base_clip_id = (
+        (body or {}).get("base_clip_id")
+        or state.get("phase_a_chipper_sitting_clip_id")
+        or state.get("phase_a_empty_desk_bg_id")
+    )
+    from phase_a_arlo_contract import coerce_phase_a_arlo_base_clip_id  # noqa: WPS433
+    base_clip_id = coerce_phase_a_arlo_base_clip_id(base_clip_id)
+
+    preflight_err = _phase_preflight_voice_stem_for_lipsync(h, state, "a")
+    if preflight_err is not None:
+        return preflight_err
+    state = h.app.state.read_state()
+
+    audio_name = _phase_resolve_voice_stem_name(state, "a") or state.get("phase_a_mixed_audio_file")
+    if not audio_name:
+        return h._send_error_v59(
+            400,
+            error_code="GENERIC_ERROR",
+            error_message="phase_a_voice_stem_file unset",
+            retry_safe=False,
+            extra={"hint": "Run Regen Audio first."},
+        )
+    audio_path = h.app.event_dir / audio_name
+    if not audio_path.is_file():
+        return h._send_error_v59(
+            404,
+            error_code="GENERIC_ERROR",
+            error_message=f"audio file not found: {audio_name}",
+            retry_safe=False,
+        )
+
+    ts_pre = datetime.now().strftime("%Y%m%d-%H%M%S")
+    try:
+        audio_for_lipsync, _ = _apply_phase_audio_trim(
+            h, audio_path, "a", state, ts_pre,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            OSError, ValueError) as exc:
+        return h._send_error_v59(
+            400,
+            error_code="STEM_TRIM_FAILED",
+            error_message=f"stem trim failed: {exc}",
+            retry_safe=False,
+            extra={"hint": "Adjust stem trim front/back seconds on the waveform row."},
+        )
+
+    from phase_a_chipper_kling_lipsync import resolve_lipsync_base  # noqa: WPS433
+    from phase_a_middle_permanent import (  # noqa: WPS433
+        METHOD as PHASE_A_BYTEDANCE_METHOD,
+        run_phase_a_base_clip_bytedance_lipsync,
+    )
+
+    prod_root = h.app.event_dir.parent
+    bases_dir = prod_root / "assets" / "lipsync_bases"
+    try:
+        base_video = resolve_lipsync_base(bases_dir, base_clip_id)
     except FileNotFoundError as exc:
         return h._send_error_v59(
             404,
             error_code="GENERIC_ERROR",
             error_message=str(exc),
             retry_safe=False,
-            extra={"hint": "Add canonical Arlo still under Production/NEW STYLE CHARACTERS/ARLO/."},
+            extra={
+                "hint": (
+                    "Install arlo_idle_wizard_desk_v7.mp4 under "
+                    "Production/assets/lipsync_bases/."
+                ),
+            },
         )
 
-    # Kling idle + Kling LipSync (start+end same still bookend).
-    lipsync_jobs = 2
-    lipsync_method = "idle_kling_lipsync_startend_still"
+    lipsync_jobs = 1
+    lipsync_method = PHASE_A_BYTEDANCE_METHOD
     spend = h.app.state.read_spend()
     if spend["budget_remaining"] < COST_PER_LIPSYNC * lipsync_jobs:
         return h._send_error_v59(
@@ -2968,12 +3679,15 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
     out_name = f"phase_a_lipsync_{ts}.mp4"
     out_path = h.app.event_dir / out_name
 
-    def _apply_running(st, _bid=base_clip_id, _out=out_name, _audio=audio_name):
+    def _apply_running(st, _bid=base_clip_id, _out=out_name, _audio=audio_name, _meth=lipsync_method):
         st["phase_a_lipsync_status"] = "running"
         st["phase_a_lipsync_started_at"] = time.time()
         st["phase_a_lipsync_pending_output"] = _out
         st["phase_a_lipsync_pending_audio"] = _audio
+        st["phase_a_lipsync_method"] = _meth
         st.pop("phase_a_lipsync_task_id", None)
+        st.pop("phase_a_lipsync_job_id", None)
+        st.pop("phase_a_lipsync_route", None)
         if _bid:
             st["phase_a_chipper_sitting_clip_id"] = _bid
         nested = st.setdefault("phase_a", {})
@@ -2982,6 +3696,9 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
             nested["phase_a_lipsync_started_at"] = st["phase_a_lipsync_started_at"]
             nested["phase_a_lipsync_pending_output"] = _out
             nested["phase_a_lipsync_pending_audio"] = _audio
+            nested["phase_a_lipsync_method"] = _meth
+            nested.pop("phase_a_lipsync_job_id", None)
+            nested.pop("phase_a_lipsync_route", None)
             if _bid:
                 nested["phase_a_chipper_sitting_clip_id"] = _bid
         st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
@@ -2991,35 +3708,31 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
 
     _app = h.app
     _pin_captured = dict(_pin)
-    _stitch = h._auto_assemble_phase_a_stitched
-    _still_path = still_path
     _base_clip_id = base_clip_id
     _lipsync_jobs = lipsync_jobs
     _lipsync_method = lipsync_method
-    _prod_root = prod_root
+    _base_video = base_video
 
     def _bg(
         _out_path=out_path,
         _out_name=out_name,
         _audio_path=audio_for_lipsync,
-        _still=_still_path,
+        _base_video=_base_video,
         _base_clip_id=_base_clip_id,
         _jobs=_lipsync_jobs,
         _method=_lipsync_method,
-        _prod_root=_prod_root,
         _resume=False,
     ):
         try:
-            from phase_a_arlo_idle_lipsync import run_phase_a_arlo_idle_lipsync_startend_still
-
-            tmp_dir = _app.event_dir / "_tmp_phase_a_arlo_startend"
-            run_phase_a_arlo_idle_lipsync_startend_still(
+            tmp_dir = _app.event_dir / "_tmp_phase_a_permanent"
+            run_phase_a_base_clip_bytedance_lipsync(
+                _base_video,
                 _audio_path,
                 _out_path,
-                event_dir=_app.event_dir,
-                prod_root=_prod_root,
-                still=_still,
                 tmp_dir=tmp_dir,
+                chain_chunks=False,
+                single_pass=True,
+                resume=_resume,
             )
             if not _out_path.is_file():
                 raise RuntimeError(f"lipsync finished but output missing: {_out_path}")
@@ -3145,11 +3858,11 @@ def handle_phase_a_lipsync(h, body: dict) -> None:
         "status": "running",
         "phase": "a",
         "vendor": lipsync_method,
-        "still": still_path.name,
         "base_clip_id": base_clip_id,
-        "base_clip_file": None,
+        "base_clip_file": base_video.name,
         "message": (
-            "Kling Phase A lipsync is processing (still bookend idle + LipSync). "
+            "ByteDance Phase A lipsync is processing "
+            f"(base_clip_bytedance_tight_v1 on {base_video.name}). "
             "Phase A will stop for visual review after media gates pass."
         ),
     })
@@ -3254,9 +3967,19 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     # only — the Path A route renders from its own plate/cutout/idle-unit
     # assets, not a whole-frame base clip. Validate those assets up front.
     from phase_b_path_a_pipeline import (  # noqa: PLC0415
-        count_phase_b_path_a_chunks,
-        run_phase_b_path_a_lipsync,
         validate_path_a_assets,
+    )
+    from layered_character_lipsync import (  # noqa: PLC0415
+        CEDRIC_PROFILE,
+        plan_layered_lipsync,
+    )
+    from layered_lipsync_jobs import (  # noqa: PLC0415
+        ModuleLipsyncWorkerOwner,
+        capture_event_context,
+        create_layered_job,
+        execute_layered_job,
+        mutate_layered_job,
+        verify_captured_event,
     )
 
     try:
@@ -3290,7 +4013,7 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     _VIDEO_TAILROOM_S = 2.0  # Kim: "1.5–2s tail so cut-off after speaking isn't sudden"
     ts = datetime.now().strftime("%Y%m%d-%H%M%S")
     try:
-        audio_for_lipsync, audio_duration = _apply_phase_lipsync_audio_prep(
+        audio_for_lipsync, audio_duration = _apply_phase_audio_trim(
             h, audio_path, phase, state, ts,
         )
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
@@ -3311,7 +4034,11 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     out_path = h.app.event_dir / out_name
 
     try:
-        chunk_jobs = max(1, count_phase_b_path_a_chunks(audio_for_lipsync))
+        layered_plan = plan_layered_lipsync(
+            CEDRIC_PROFILE,
+            audio_for_lipsync,
+        )
+        chunk_jobs = layered_plan.chunk_count
     except Exception as exc:  # noqa: BLE001
         traceback.print_exc()
         return h._send_error_v59(
@@ -3339,18 +4066,47 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
             },
         )
 
-    def _apply_running(st, _bid=base_clip_id, _out=out_name, _audio=audio_name):
+    captured = capture_event_context(
+        h.app,
+        video_role=(body or {}).get("scope_video_role", "intro"),
+    )
+    job_path, durable_job = create_layered_job(
+        captured,
+        CEDRIC_PROFILE,
+        audio_path,
+        audio_for_lipsync,
+        layered_plan,
+        phase=phase,
+        output_name=out_name,
+        terminal_status="done",
+        base_clip_id=base_clip_id,
+        cost_per_chunk=COST_PER_LIPSYNC,
+    )
+
+    def _apply_running(
+        st,
+        _bid=base_clip_id,
+        _out=out_name,
+        _audio=audio_name,
+        _job=durable_job,
+        _chunks=chunk_jobs,
+    ):
         st[f"phase_{phase}_lipsync_status"] = "running"
         st[f"phase_{phase}_lipsync_started_at"] = time.time()
         st[f"phase_{phase}_lipsync_pending_output"] = _out
         st[f"phase_{phase}_lipsync_pending_audio"] = _audio
+        st[f"phase_{phase}_lipsync_job_id"] = _job["job_id"]
+        st[f"phase_{phase}_lipsync_route"] = CEDRIC_PROFILE.route_id
+        st[f"phase_{phase}_lipsync_method"] = CEDRIC_PROFILE.method_id
+        st[f"phase_{phase}_lipsync_chunk_count"] = _chunks
+        st[f"phase_{phase}_lipsync_estimated_cost_usd"] = (
+            COST_PER_LIPSYNC * _chunks
+        )
         st.pop(f"phase_{phase}_lipsync_task_id", None)
         if _bid:
             st["phase_b_cedric_base_clip_id"] = _bid
         for _stale_key in (
             f"phase_{phase}_avatar_still_file",
-            f"phase_{phase}_lipsync_route",
-            f"phase_{phase}_lipsync_estimated_cost_usd",
             f"phase_{phase}_lipsync_audio_duration_s",
             f"phase_{phase}_lipsync_raw_file",
         ):
@@ -3359,42 +4115,94 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
         return st["_module_version"]
 
     _app = h.app
-    _audio_path = audio_for_lipsync
-    _chunk_jobs = chunk_jobs
     _api_key = h.app.client.api_key
+    owner = ModuleLipsyncWorkerOwner(
+        phase=phase,
+        event_instance_id=captured.event_instance_id,
+        event_dir=captured.event_dir,
+        event_generation=captured.event_generation,
+        job_id=durable_job["job_id"],
+        server_instance_id=str(
+            getattr(h.app, "server_instance_id", None)
+            or getattr(h.app, "event_generation", "server")
+        ),
+    )
 
-    def _path_a_bg():
+    def _path_a_bg(_job_path=job_path, _owner=owner):
         try:
-            run_phase_b_path_a_lipsync(
-                _audio_path,
-                out_path,
-                api_key=_api_key,
-            )
+            def _delivery(source: Path, destination: Path, _job: dict) -> dict:
+                from phase_module_lipsync_delivery import (  # noqa: PLC0415
+                    PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+                    finalize_phase_module_lipsync_delivery,
+                )
 
-            class _AppShim:
-                pass
-            shim = _AppShim()
-            shim.state = _app.state
-            _write_phase_b_lipsync_complete(
-                shim,
-                phase=phase,
-                out_path=out_path,
-                out_name=out_name,
-                base_clip_id=base_clip_id,
-                spend_usd=COST_PER_LIPSYNC * _chunk_jobs,
+                shutil.copy2(source, destination)
+                return finalize_phase_module_lipsync_delivery(
+                    destination,
+                    sharpen=True,
+                    delivery_recipe=PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+                )
+
+            def _commit_state(job: dict, manifest: dict, delivery_meta: dict) -> None:
+                from types import SimpleNamespace
+
+                verify_captured_event(job, _app.state)
+                output = (
+                    Path(job["context"]["event_dir"])
+                    / job["delivery"]["output_file"]
+                )
+                _write_phase_b_lipsync_complete(
+                    SimpleNamespace(state=_app.state),
+                    phase=job["phase"],
+                    out_path=output,
+                    out_name=job["delivery"]["output_file"],
+                    base_clip_id=job["delivery"].get("base_clip_id"),
+                    spend_usd=None,
+                    job=job,
+                    manifest=manifest,
+                    delivery_meta=delivery_meta,
+                )
+
+            execute_layered_job(
+                _job_path,
+                CEDRIC_PROFILE,
+                api_key=_api_key,
+                delivery_callback=_delivery,
+                state_commit_callback=_commit_state,
+                owner_id=f"{_owner.server_instance_id}:{_owner.job_id}",
             )
         except Exception as exc:  # noqa: BLE001
             traceback.print_exc()
 
-            def _apply_err(st, _e=exc):
-                st[f"phase_{phase}_lipsync_status"] = (
-                    f"error: {type(_e).__name__}: {str(_e)[:100]}"
-                )
+            def _apply_err(st, _e=exc, _job_id=durable_job["job_id"]):
+                if st.get(f"phase_{phase}_lipsync_job_id") != _job_id:
+                    return st.get("_module_version", 0)
+                status = f"error: {type(_e).__name__}: {str(_e)[:100]}"
+                if "PaidSubmissionUnknown" in type(_e).__name__:
+                    status = (
+                        "error: submission_unknown: paid task may exist; "
+                        "do not resubmit blindly"
+                    )
+                st[f"phase_{phase}_lipsync_status"] = status
                 st.pop(f"phase_{phase}_lipsync_started_at", None)
                 st.pop(f"phase_{phase}_lipsync_pending_output", None)
                 st.pop(f"phase_{phase}_lipsync_pending_audio", None)
                 return st.get("_module_version", 0)
 
+            try:
+                mutate_layered_job(
+                    _job_path,
+                    lambda value: value.update(
+                        status=(
+                            "submission_unknown"
+                            if "PaidSubmissionUnknown" in type(exc).__name__
+                            else "error"
+                        ),
+                        error=f"{type(exc).__name__}: {exc}",
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                pass
             try:
                 _app.state.mutate_state(_apply_err)
             except Exception:  # noqa: BLE001
@@ -3402,19 +4210,26 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
 
     h.app.state.mutate_state(_apply_running)
 
-    if not _spawn_phase_a_lipsync_worker(_path_a_bg):
-        # Another phase lipsync worker is alive — revert so the busy state
-        # never points at a job nothing is running (wedge class).
-        def _apply_spawn_busy(st):
-            st[f"phase_{phase}_lipsync_status"] = (
-                "error: worker_busy: another phase lipsync job is running"
-            )
-            st.pop(f"phase_{phase}_lipsync_started_at", None)
-            st.pop(f"phase_{phase}_lipsync_pending_output", None)
-            st.pop(f"phase_{phase}_lipsync_pending_audio", None)
+    if not _spawn_module_lipsync_worker(owner, _path_a_bg):
+        def _apply_spawn_busy(st, _job_id=durable_job["job_id"]):
+            if st.get(f"phase_{phase}_lipsync_job_id") == _job_id:
+                st[f"phase_{phase}_lipsync_status"] = (
+                    "error: worker_busy: another phase lipsync job is running"
+                )
+                st.pop(f"phase_{phase}_lipsync_started_at", None)
+                st.pop(f"phase_{phase}_lipsync_pending_output", None)
+                st.pop(f"phase_{phase}_lipsync_pending_audio", None)
+                st.pop(f"phase_{phase}_lipsync_job_id", None)
             return st.get("_module_version", 0)
 
         try:
+            mutate_layered_job(
+                job_path,
+                lambda value: value.update(
+                    status="error",
+                    error="worker_busy: another phase lipsync job is running",
+                ),
+            )
             h.app.state.mutate_state(_apply_spawn_busy)
         except Exception:  # noqa: BLE001
             pass
@@ -3428,7 +4243,7 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
 
     print(
         f"[phase_b_lipsync] PHASE_B_PATH_A_ROUTE_V1 running: {chunk_jobs} chunks "
-        f"({audio_duration:.1f}s stem) → {out_name}",
+        f"({audio_duration:.1f}s stem) job={durable_job['job_id']} → {out_name}",
         flush=True,
     )
 
@@ -3436,6 +4251,7 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
         "ok": True,
         "status": "running",
         "phase": phase,
+        "job_id": durable_job["job_id"],
         "audio_duration_s": round(audio_duration, 3),
         "base_clip_id": base_clip_id,
         "chunk_count": chunk_jobs,
@@ -3478,6 +4294,9 @@ def _write_phase_b_lipsync_complete(
     out_name: str,
     base_clip_id: str | None,
     spend_usd: float | None = None,
+    job: dict | None = None,
+    manifest: dict | None = None,
+    delivery_meta: dict | None = None,
 ) -> None:
     """Terminal success write shared by bg thread + persistent poller."""
     from phase_module_lipsync_delivery import (  # noqa: PLC0415
@@ -3485,11 +4304,12 @@ def _write_phase_b_lipsync_complete(
         finalize_phase_module_lipsync_delivery,
     )
 
-    delivery_meta = finalize_phase_module_lipsync_delivery(
-        out_path,
-        sharpen=True,
-        delivery_recipe=PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
-    )
+    if delivery_meta is None:
+        delivery_meta = finalize_phase_module_lipsync_delivery(
+            out_path,
+            sharpen=True,
+            delivery_recipe=PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+        )
     print(
         f"[phase_{phase}_lipsync] delivery encode ✓ "
         f"{delivery_meta.get('raw_width')}x{delivery_meta.get('raw_height')} → "
@@ -3498,9 +4318,15 @@ def _write_phase_b_lipsync_complete(
         f"({delivery_meta.get('delivery_profile')})",
         flush=True,
     )
-    charge = spend_usd if spend_usd is not None else COST_PER_LIPSYNC
-    app.state.add_spend("lipsync", charge)
+    # Durable layered jobs charge per provider task ID before delivery.
+    if job is None and spend_usd is not None:
+        app.state.add_spend("lipsync", spend_usd)
+    elif job is None:
+        app.state.add_spend("lipsync", COST_PER_LIPSYNC)
     mtime = int(os.path.getmtime(str(out_path)))
+    manifest_name = None
+    if manifest is not None:
+        manifest_name = Path(out_name).with_suffix(".json").name
 
     def _apply(
         state,
@@ -3509,13 +4335,24 @@ def _write_phase_b_lipsync_complete(
         _m=mtime,
         _bid=base_clip_id,
         _meta=delivery_meta,
+        _job=job,
+        _manifest_name=manifest_name,
     ):
+        if _job is not None and state.get(f"phase_{_p}_lipsync_job_id") != _job["job_id"]:
+            raise RuntimeError("active layered lipsync job changed before terminal write")
         state[f"phase_{_p}_lipsync_file"] = _n
         state[f"phase_{_p}_lipsync_mtime"] = _m
         state[f"phase_{_p}_lipsync_status"] = "done"
         state[f"phase_{_p}_lipsync_requires_regen"] = False
         state[f"phase_{_p}_lipsync_delivery_profile"] = _meta.get("delivery_profile")
         state[f"phase_{_p}_lipsync_delivery_recipe"] = _meta.get("delivery_recipe")
+        if _job is not None:
+            state[f"phase_{_p}_lipsync_route"] = _job.get("route")
+            state[f"phase_{_p}_lipsync_method"] = _job.get("method")
+            state[f"phase_{_p}_lipsync_chunk_count"] = len(_job.get("chunks") or [])
+            state[f"phase_{_p}_lipsync_job_id"] = _job["job_id"]
+            if _manifest_name:
+                state[f"phase_{_p}_lipsync_manifest_file"] = _manifest_name
         state.pop(f"phase_{_p}_lipsync_task_id", None)
         state.pop(f"phase_{_p}_lipsync_pending_out", None)
         # Running-shape keys (Path A worker route) — must clear on terminal.
@@ -3524,8 +4361,6 @@ def _write_phase_b_lipsync_complete(
         state.pop(f"phase_{_p}_lipsync_pending_audio", None)
         for _avatar_key in (
             f"phase_{_p}_avatar_still_file",
-            f"phase_{_p}_lipsync_route",
-            f"phase_{_p}_lipsync_estimated_cost_usd",
             f"phase_{_p}_lipsync_audio_duration_s",
         ):
             state.pop(_avatar_key, None)
@@ -3538,21 +4373,26 @@ def _write_phase_b_lipsync_complete(
     app.state.mutate_state(_apply)
 
 def sweep_phase_b_lipsync_orphan(state_mgr) -> None:
-    """PHASE_B_PATH_A_ORPHAN_SWEEP_V1 — clear wedged Phase B ``running`` state.
-
-    The Path A route runs in a worker thread; on deploy/restart the thread
-    dies while status stays ``running``, wedging the busy UI forever (the old
-    segmented path had the same unpatched gap). Terminal-error the orphan so
-    Kim can resubmit. A stale guard also covers a hung-but-alive worker.
-    """
+    """Clear Phase B ``running`` only when no durable job can be resumed."""
     snap = state_mgr.read_state()
     if snap.get("phase_b_lipsync_status") != "running":
         return
 
-    with _phase_a_lipsync_worker_lock:
+    job_id = snap.get("phase_b_lipsync_job_id")
+    if isinstance(job_id, str) and job_id.strip():
+        from layered_lipsync_jobs import job_path  # noqa: PLC0415
+
+        if job_path(state_mgr.event_dir, "b", job_id).is_file():
+            return
+
+    with _module_lipsync_worker_lock:
+        owner = _module_lipsync_worker_owner
         worker_alive = (
-            _phase_a_lipsync_worker is not None
-            and _phase_a_lipsync_worker.is_alive()
+            _module_lipsync_worker is not None
+            and _module_lipsync_worker.is_alive()
+            and owner is not None
+            and getattr(owner, "phase", None) == "b"
+            and Path(getattr(owner, "event_dir", "")) == Path(state_mgr.event_dir)
         )
 
     started = snap.get("phase_b_lipsync_started_at")
@@ -3567,19 +4407,97 @@ def sweep_phase_b_lipsync_orphan(state_mgr) -> None:
         reason = f"stale_timeout: running > {PHASE_B_LIPSYNC_STALE_SEC}s"
     else:
         if age is not None and age <= PHASE_B_LIPSYNC_RESTART_ORPHAN_SEC:
-            return  # grace window: worker may be between spawn and first poll
-        reason = "orphan_restart: worker died before terminal write"
+            return
+        reason = "orphan_restart: durable job missing after restart"
 
     def _clear(st, _r=reason):
         st["phase_b_lipsync_status"] = f"error: {_r}"
         st.pop("phase_b_lipsync_started_at", None)
         st.pop("phase_b_lipsync_pending_output", None)
         st.pop("phase_b_lipsync_pending_audio", None)
+        st.pop("phase_b_lipsync_job_id", None)
         st["_module_version"] = int(st.get("_module_version", 0) or 0) + 1
         return st["_module_version"]
 
     state_mgr.mutate_state(_clear)
     print(f"[phase_b_lipsync-orphan] cleared: {reason}", flush=True)
+
+
+def reconcile_phase_b_layered_lipsync(state_mgr, client) -> None:
+    """Resume a durable Phase B job from its provider task IDs."""
+    if client is None:
+        return
+    snap = state_mgr.read_state()
+    if snap.get("phase_b_lipsync_status") != "running":
+        return
+    job_id = snap.get("phase_b_lipsync_job_id")
+    if not isinstance(job_id, str) or not job_id.strip():
+        return
+
+    from layered_character_lipsync import CEDRIC_PROFILE  # noqa: PLC0415
+    from layered_lipsync_jobs import (  # noqa: PLC0415
+        execute_layered_job,
+        job_path,
+        load_layered_job,
+        verify_captured_event,
+    )
+    from types import SimpleNamespace
+
+    path = job_path(state_mgr.event_dir, "b", job_id)
+    if not path.is_file():
+        return
+    job = load_layered_job(path)
+    if job.get("status") in {"done", "error", "submission_unknown", "cancelled"}:
+        return
+
+    with _module_lipsync_worker_lock:
+        if (
+            _module_lipsync_worker is not None
+            and _module_lipsync_worker.is_alive()
+            and _module_lipsync_worker_owner is not None
+            and getattr(_module_lipsync_worker_owner, "job_id", None) == job_id
+        ):
+            return
+
+    def _delivery(source: Path, destination: Path, _job: dict) -> dict:
+        from phase_module_lipsync_delivery import (  # noqa: PLC0415
+            PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+            finalize_phase_module_lipsync_delivery,
+        )
+
+        shutil.copy2(source, destination)
+        return finalize_phase_module_lipsync_delivery(
+            destination,
+            sharpen=True,
+            delivery_recipe=PHASE_MODULE_LIPSYNC_DELIVERY_RECIPE_V2,
+        )
+
+    def _commit_state(job: dict, manifest: dict, delivery_meta: dict) -> None:
+        verify_captured_event(job, state_mgr)
+        output = Path(job["context"]["event_dir"]) / job["delivery"]["output_file"]
+        _write_phase_b_lipsync_complete(
+            SimpleNamespace(state=state_mgr),
+            phase="b",
+            out_path=output,
+            out_name=job["delivery"]["output_file"],
+            base_clip_id=job["delivery"].get("base_clip_id"),
+            spend_usd=None,
+            job=job,
+            manifest=manifest,
+            delivery_meta=delivery_meta,
+        )
+
+    try:
+        execute_layered_job(
+            path,
+            CEDRIC_PROFILE,
+            api_key=client.api_key,
+            delivery_callback=_delivery,
+            state_commit_callback=_commit_state,
+            client_factory=lambda _key: client,
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"[phase_b_lipsync-reconcile] failed: {exc}", flush=True)
 
 
 def sweep_phase_module_lipsync_polls(state, client) -> None:
@@ -3780,7 +4698,6 @@ def _phase_ensure_overlay_mp4(
     final_path = preview_dir / f"phase_{phase}_preview_{cache_hash}.mp4"
     lock_path = preview_dir / ".lock"
 
-    import fcntl  # noqa: PLC0415
     lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         try:

@@ -1,12 +1,13 @@
 """Phase A Arlo base-clip contract — canonical preset for all events.
 
-Jul 5 2026: default Phase A lipsync route is Kling start+end same still
-(idle_kling_lipsync_startend_still) — gaze-forward idle from
-``arlo_still_medium_16x9_v1.png`` + Element binding, then Kling LipSync.
+Send for Lipsync default is PHASE_A_ARLO_LAYERED_ROUTE_V1 (green full_loop_30s
+idle + room plate chroma composite). Base-clip ID is compatibility metadata
+only on that route — it does not select the layered render asset.
 
-``arlo_idle_wizard_desk_v8`` remains the optional base-clip preset for
-Regen Base Clip only; Send for Lipsync no longer routes through ByteDance.
-Prior v1–v7 coerced on read/submit.
+``arlo_idle_wizard_desk_v8`` is the recorded compatibility preset. ByteDance
+on ``arlo_idle_wizard_desk_v7`` remains available via MN_PHASE_A_BYTEDANCE=1
+or body route=bytedance. Prior v1–v7 coerce to v8 on read/submit for the
+layered default path.
 
 Never use NEW STYLE CHARACTERS/BACKGROUND stills for Arlo idle — wrong asset class.
 """
@@ -16,7 +17,7 @@ from pathlib import Path
 
 PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v8"
 
-# Medium close-up 16:9 wizard-desk still — sealed-mouth idle base for ByteDance lipsync.
+# Medium close-up 16:9 wizard-desk still — optional still path (Regen / start+end helpers).
 PHASE_A_ARLO_CANONICAL_STILL_REL = (
     "NEW STYLE CHARACTERS/ARLO/arlo_still_medium_16x9_v1.png"
 )
