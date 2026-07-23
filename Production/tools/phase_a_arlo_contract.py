@@ -1,8 +1,13 @@
 """Phase A Arlo base-clip contract — canonical preset for all events.
 
-Restored June/July recipe: Send for Lipsync uses ByteDance LatentSync on
-pinned desk idle ``arlo_idle_wizard_desk_v7`` (base_clip_bytedance_tight_v1).
-Prior v1–v6 and layered-era v8 coerce to v7 on read/submit.
+Send for Lipsync default is PHASE_A_ARLO_LAYERED_ROUTE_V1 (green full_loop_30s
+idle + room plate chroma composite). Base-clip ID is compatibility metadata
+only on that route — it does not select the layered render asset.
+
+``arlo_idle_wizard_desk_v8`` is the recorded compatibility preset. ByteDance
+on ``arlo_idle_wizard_desk_v7`` remains available via MN_PHASE_A_BYTEDANCE=1
+or body route=bytedance. Prior v1–v7 coerce to v8 on read/submit for the
+layered default path.
 
 Never use NEW STYLE CHARACTERS/BACKGROUND stills for Arlo idle — wrong asset class.
 """
@@ -10,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v7"
+PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v8"
 
 # Medium close-up 16:9 wizard-desk still — optional still path (Regen / start+end helpers).
 PHASE_A_ARLO_CANONICAL_STILL_REL = (
@@ -25,7 +30,7 @@ _DEPRECATED_EXACT = frozenset({
     "arlo_idle_wizard_desk_v4",
     "arlo_idle_wizard_desk_v5",
     "arlo_idle_wizard_desk_v6",
-    "arlo_idle_wizard_desk_v8",
+    "arlo_idle_wizard_desk_v7",
     "chipper_idle_closeup_v1",
     "chipper_idle_closeup_v2",
 })

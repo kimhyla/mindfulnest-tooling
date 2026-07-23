@@ -2242,19 +2242,22 @@ class LipsyncPollingThread(threading.Thread):
         try:
             from server_handlers.phases import sweep_phase_module_lipsync_polls
             sweep_phase_module_lipsync_polls(self.state, self.client)
-            # Phase A ByteDance worker resume; Phase B layered resume + orphan.
+            # Phase A layered default (orphan + reconcile); ByteDance resume
+            # only when MN_PHASE_A_BYTEDANCE=1. Phase B layered resume + orphan.
             from server_handlers.phases import (
+                reconcile_phase_a_layered_lipsync,
                 reconcile_phase_b_layered_lipsync,
-                sweep_phase_a_lipsync_resume,
+                sweep_phase_a_lipsync_orphan,
                 sweep_phase_b_lipsync_orphan,
             )
             import os as _os_phase_a_flag
-            sweep_phase_a_lipsync_resume(self.state)
-            if _os_phase_a_flag.environ.get("MN_PHASE_A_LAYERED", "").strip() in {
+            reconcile_phase_a_layered_lipsync(self.state, self.client)
+            sweep_phase_a_lipsync_orphan(self.state)
+            if _os_phase_a_flag.environ.get("MN_PHASE_A_BYTEDANCE", "").strip() in {
                 "1", "true", "TRUE", "yes", "YES",
             }:
-                from server_handlers.phases import reconcile_phase_a_layered_lipsync
-                reconcile_phase_a_layered_lipsync(self.state, self.client)
+                from server_handlers.phases import sweep_phase_a_lipsync_resume
+                sweep_phase_a_lipsync_resume(self.state)
             reconcile_phase_b_layered_lipsync(self.state, self.client)
             sweep_phase_b_lipsync_orphan(self.state)
         except Exception as exc:  # noqa: BLE001

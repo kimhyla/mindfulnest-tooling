@@ -44,7 +44,7 @@ def main() -> int:
     assert (pixels == KEY_RGB).all()
     print("installed key canvas", key, key.stat().st_size)
 
-    plate = ARLO / "arlo_room_plate_1024x576_v1.png"
+    plate = ARLO / "arlo_room_plate_chair_study_1280x720_v2.png"
     if not plate.is_file():
         raise SystemExit(f"missing room plate: {plate}")
 
@@ -70,12 +70,15 @@ def main() -> int:
                 "duration_s": 15.041667,
             },
             "room_plate": {
-                "path": "NEW STYLE CHARACTERS/ARLO/arlo_room_plate_1024x576_v1.png",
-                "role": "static_room_plate",
+                "path": (
+                    "NEW STYLE CHARACTERS/ARLO/"
+                    "arlo_room_plate_chair_study_1280x720_v2.png"
+                ),
+                "role": "static_room_plate_chair_study",
                 "sha256": sha256_file(plate),
                 "bytes": plate.stat().st_size,
-                "width": 1024,
-                "height": 576,
+                "width": 1280,
+                "height": 720,
             },
             "key_canvas": {
                 "path": "NEW STYLE CHARACTERS/ARLO/arlo_key_canvas_1280x720_v1.png",

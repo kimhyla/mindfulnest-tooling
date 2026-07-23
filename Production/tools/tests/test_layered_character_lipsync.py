@@ -29,12 +29,16 @@ def test_profiles_are_immutable_relative_and_portable(
     paths = engine.profile_paths(engine.ARLO_PROFILE, resolved)
     assert resolved == root.resolve()
     assert paths["plate"] == (
-        root / "NEW STYLE CHARACTERS/ARLO/arlo_room_plate_1024x576_v1.png"
+        root
+        / "NEW STYLE CHARACTERS/ARLO/"
+        "arlo_room_plate_chair_study_1280x720_v2.png"
     )
     assert paths["idle_units"][0] == (
         root
-        / "NEW STYLE CHARACTERS/ARLO/arlo_fullbody_idle_green_1916x1080_v1.mp4"
+        / "NEW STYLE CHARACTERS/ARLO/"
+        "arlo_gesture_idle_full_loop_30s_green_1920x1080_v1.mp4"
     )
+    assert len(paths["idle_units"]) == 1
     assert not Path(engine.ARLO_PROFILE.plate_relative_path).is_absolute()
     with pytest.raises(Exception):
         engine.ARLO_PROFILE.profile_id = "changed"  # type: ignore[misc]
@@ -49,17 +53,25 @@ def test_event_parent_is_production_root(tmp_path: Path) -> None:
 def test_arlo_uses_cedric_whole_character_contract() -> None:
     profile = engine.ARLO_PROFILE
     assert profile.route_id == "PHASE_A_ARLO_LAYERED_ROUTE_V1"
-    assert profile.source_size == engine.Size(1916, 1080)
+    assert profile.source_size == engine.Size(1920, 1080)
     assert profile.canvas_size == engine.Size(1280, 720)
     assert profile.provider_content == "whole_character"
-    assert profile.provider_crop == engine.Crop(0, 0, 1916, 1080)
+    assert profile.provider_crop == engine.Crop(0, 0, 1920, 1080)
     assert profile.placement_mode == "full_canvas"
     assert profile.placement == engine.Crop(0, 0, 1280, 720)
     assert profile.cutout_mode == "key_canvas"
     assert profile.cutout_relative_path.endswith("arlo_key_canvas_1280x720_v1.png")
-    assert profile.idle_units[0].relative_path.endswith(
-        "arlo_fullbody_idle_green_1916x1080_v1.mp4"
+    assert profile.plate_relative_path.endswith(
+        "arlo_room_plate_chair_study_1280x720_v2.png"
     )
+    assert [u.name for u in profile.idle_units] == ["full_loop_30s"]
+    assert profile.idle_units[0].relative_path.endswith(
+        "arlo_gesture_idle_full_loop_30s_green_1920x1080_v1.mp4"
+    )
+    assert profile.idle_units[0].duration == 30.0
+    assert profile.idle_units[0].head_trim == 0.2
+    assert profile.idle_units[0].tail_trim == 0.2
+    assert profile.xfade_seconds == 0.30
     # Beat Gen voice-first face-return padding (not Cedric's short 0.5/0.5).
     assert profile.boundary_pad_start == 0.7
     assert profile.boundary_pad_end == 2.5
@@ -72,6 +84,40 @@ def test_arlo_uses_cedric_whole_character_contract() -> None:
     with pytest.raises(ValueError, match="complete output canvas"):
         engine.validate_profile(
             replace(profile, placement=engine.Crop(234, 29, 556, 310))
+        )
+
+
+def test_arlo_idle_is_canonical_full_loop_not_full_also() -> None:
+    """Wire-up must not silently accept the rejected two-clip red-hands idle."""
+    profile = engine.ARLO_PROFILE
+    rel = profile.idle_units[0].relative_path.replace("\\", "/")
+    assert rel == engine.ARLO_CANONICAL_IDLE_RELATIVE_PATH
+    assert rel.endswith("full_loop_30s_green_1920x1080_v1.mp4")
+    assert "full_also" not in rel
+    assert "also_27s" not in rel
+    assert len(profile.idle_units) == 1
+    engine.validate_arlo_idle_contract(profile)
+    engine.validate_profile(profile)
+
+    rejected = replace(
+        profile,
+        idle_units=(
+            engine.IdleUnit(
+                "full_also_27s",
+                "NEW STYLE CHARACTERS/ARLO/"
+                "arlo_gesture_idle_full_also_27s_green_1920x1080_v1.mp4",
+                27.791667,
+                0.2,
+                0.2,
+            ),
+        ),
+    )
+    with pytest.raises(ValueError, match="rejected Arlo idle|canonical"):
+        engine.validate_profile(rejected)
+    with pytest.raises(ValueError, match="rejected Arlo idle|full_also"):
+        engine.assert_idle_path_not_rejected(
+            "NEW STYLE CHARACTERS/ARLO/"
+            "arlo_gesture_idle_full_also_27s_green_1920x1080_v1.mp4"
         )
 
 

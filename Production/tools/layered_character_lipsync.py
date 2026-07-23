@@ -25,6 +25,21 @@ TOOLS_DIR = Path(__file__).resolve().parent
 DEFAULT_MAX_CHUNK_SECONDS = 50.0
 SILENCE_DETECT_ARGS = "silencedetect=noise=-35dB:d=0.45"
 
+# Arlo idle SSoT — single looped first-clip unit only. Rejected two-clip
+# stitch (red hands in second half) must never be selectable via profile,
+# trial CLI, or Phase A prepare/validate.
+ARLO_CANONICAL_IDLE_NAME = "full_loop_30s"
+ARLO_CANONICAL_IDLE_RELATIVE_PATH = (
+    "NEW STYLE CHARACTERS/ARLO/"
+    "arlo_gesture_idle_full_loop_30s_green_1920x1080_v1.mp4"
+)
+ARLO_REJECTED_IDLE_PATH_MARKERS = (
+    "full_also",
+    "also_27s",
+    "idle_also_green",
+    "_rejected_red_hands_",
+)
+
 
 @dataclass(frozen=True)
 class Crop:
@@ -203,34 +218,42 @@ ARLO_PROFILE = LayeredLipsyncProfile(
     placement_mode="full_canvas",
     cutout_mode="key_canvas",
     key_rgb=(6, 239, 10),
-    plate_relative_path="NEW STYLE CHARACTERS/ARLO/arlo_room_plate_1024x576_v1.png",
+    # Chair-study plate at canvas resolution (scaled from Kim still; chair
+    # kept centered/prominent). Engine scales plate to canvas_size anyway.
+    plate_relative_path=(
+        "NEW STYLE CHARACTERS/ARLO/"
+        "arlo_room_plate_chair_study_1280x720_v2.png"
+    ),
     cutout_relative_path=(
         "NEW STYLE CHARACTERS/ARLO/arlo_key_canvas_1280x720_v1.png"
     ),
+    # Single approved lead unit (use-in-full with 2s dead-open trim) looped
+    # ~30s with 0.30s neutral xfade at seams — no also-good second clip.
+    # Small head/tail trims + 0.30s xfade only matter when the engine loops.
     idle_units=(
         IdleUnit(
-            "arlo_idle",
-            "NEW STYLE CHARACTERS/ARLO/arlo_fullbody_idle_green_1916x1080_v1.mp4",
-            15.041667,
-            0.35,
-            0.45,
+            ARLO_CANONICAL_IDLE_NAME,
+            ARLO_CANONICAL_IDLE_RELATIVE_PATH,
+            30.0,
+            0.2,
+            0.2,
         ),
     ),
-    source_size=Size(1916, 1080),
+    source_size=Size(1920, 1080),
     canvas_size=Size(1280, 720),
     # Like Cedric Path A, the provider frame contains the complete character.
     # The green idle is already spatially aligned to the canonical 16:9 still.
-    provider_crop=Crop(0, 0, 1916, 1080),
+    provider_crop=Crop(0, 0, 1920, 1080),
     provider_input_size=Size(1920, 1080),
     provider_output_size=Size(832, 464),
     placement=Crop(0, 0, 1280, 720),
-    xfade_seconds=0.5,
+    xfade_seconds=0.30,
     # Measured from the installed idle's corner pixels (median RGB 6,239,10).
     # The tighter tolerance preserves Arlo's olive vest while removing the key.
     chroma_filter="chromakey=0x06EF0A:0.18:0.05",
     despill_filter="despill=type=green",
     post_filters="cas=0.4,eq=contrast=1.02:saturation=1.02",
-    # Eyes occupy this band after the complete 1916x1080 frame maps to 832x464.
+    # Eyes occupy this band after the complete 1920x1080 frame maps to 832x464.
     provider_eye_qc=QCRegion(Crop(350, 125, 150, 95), 6, 0.4, 0.33),
     idle_body_qc=QCRegion(Crop(650, 530, 600, 430), 12, 0.25, 0.5),
     # 1024x576 composition Crop(346,282,322,230) scaled by 1.25 to 1280x720.
@@ -338,6 +361,47 @@ def _validate_crop(name: str, crop: Crop, size: Size) -> None:
         raise ValueError(f"{name} {crop} exceeds {size}")
 
 
+def _posix_rel(path: str) -> str:
+    return str(path).replace("\\", "/").strip()
+
+
+def assert_idle_path_not_rejected(path: str) -> None:
+    """Fail closed if a path looks like a quarantined / red-hands idle."""
+    lowered = _posix_rel(path).lower()
+    for marker in ARLO_REJECTED_IDLE_PATH_MARKERS:
+        if marker in lowered:
+            raise ValueError(
+                f"rejected Arlo idle path marker {marker!r} in {path!r} "
+                f"(canonical={ARLO_CANONICAL_IDLE_RELATIVE_PATH!r})"
+            )
+
+
+def validate_arlo_idle_contract(profile: LayeredLipsyncProfile) -> None:
+    """Arlo must use exactly the single full_loop_30s idle — never full_also."""
+    if profile.profile_id != "arlo":
+        return
+    if len(profile.idle_units) != 1:
+        raise ValueError(
+            "Arlo idle_units must be exactly one full_loop_30s unit "
+            f"(got {len(profile.idle_units)})"
+        )
+    unit = profile.idle_units[0]
+    rel = _posix_rel(unit.relative_path)
+    assert_idle_path_not_rejected(rel)
+    if unit.name != ARLO_CANONICAL_IDLE_NAME:
+        raise ValueError(
+            f"Arlo idle unit name must be {ARLO_CANONICAL_IDLE_NAME!r}, "
+            f"got {unit.name!r}"
+        )
+    if rel != ARLO_CANONICAL_IDLE_RELATIVE_PATH:
+        raise ValueError(
+            "Arlo idle path must be canonical loop idle "
+            f"{ARLO_CANONICAL_IDLE_RELATIVE_PATH!r}, got {rel!r}"
+        )
+    if not rel.endswith("full_loop_30s_green_1920x1080_v1.mp4"):
+        raise ValueError(f"Arlo idle path must end with full_loop_30s: {rel!r}")
+
+
 def validate_profile(profile: LayeredLipsyncProfile) -> None:
     if profile.provider_content not in {"whole_character", "region"}:
         raise ValueError(
@@ -383,6 +447,7 @@ def validate_profile(profile: LayeredLipsyncProfile) -> None:
         raise ValueError("chunk duration must exceed boundary padding")
     if profile.max_parallel_submissions < 1:
         raise ValueError("max_parallel_submissions must be positive")
+    validate_arlo_idle_contract(profile)
 
 
 def validate_key_canvas(path: Path, key_rgb: tuple[int, int, int]) -> None:
@@ -403,6 +468,9 @@ def validate_key_canvas(path: Path, key_rgb: tuple[int, int, int]) -> None:
 def validate_assets(profile: LayeredLipsyncProfile, production_root: Path) -> None:
     validate_profile(profile)
     paths = profile_paths(profile, production_root)
+    for unit, path in zip(profile.idle_units, paths["idle_units"]):
+        assert_idle_path_not_rejected(str(path))
+        assert_idle_path_not_rejected(unit.relative_path)
     required = [paths["plate"], paths["cutout"], *paths["idle_units"]]
     missing = [str(path) for path in required if not path.is_file()]
     if missing:
