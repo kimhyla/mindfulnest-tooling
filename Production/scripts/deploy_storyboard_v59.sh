@@ -235,10 +235,27 @@ echo "[deploy] (a) snapshotting current dest subset..."
 for sub in Production/tools Production/lib Production/scripts; do
     if [[ -d "$DEST_DROPBOX/$sub" ]]; then
         mkdir -p "$SNAPSHOT_DIR/$sub"
-        rsync -a "$DEST_DROPBOX/$sub/" "$SNAPSHOT_DIR/$sub/"
-        echo "  snapshot ok: $sub"
+        # Build artifacts are regenerable and must stay out of the snapshot —
+        # copying node_modules per deploy is what grew .deploy_backups to ~132 GB.
+        rsync -a \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.venv' \
+            "$DEST_DROPBOX/$sub/" "$SNAPSHOT_DIR/$sub/"
+        echo "  snapshot ok: $sub (excluding build artifacts)"
     fi
 done
+
+# ----------------------------------------------------------------
+# (a.5) Snapshot retention — bound .deploy_backups growth.
+#     Excludes above stop per-snapshot bloat; this stops unbounded
+#     accumulation across deploys. Override with MN_DEPLOY_SNAPSHOT_KEEP.
+# ----------------------------------------------------------------
+echo "[deploy] (a.5) pruning old pre-deploy snapshots..."
+bash "$SCRIPT_DIR/prune_deploy_snapshots.sh" "$DEST_DROPBOX/.deploy_backups" \
+    || echo "  WARN: snapshot prune failed (non-fatal; deploy continues)"
 
 # ----------------------------------------------------------------
 # (b) Atomic mirror per directory — tooling repo → Dropbox
