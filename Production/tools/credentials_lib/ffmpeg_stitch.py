@@ -1270,10 +1270,27 @@ def module_slot_start_offsets_ms(
     *,
     visual_out_ms: int = DEFAULT_FADE_THROUGH_BLACK_VISUAL_OUT_MS,
     visual_in_ms: int = DEFAULT_FADE_THROUGH_BLACK_VISUAL_IN_MS,
+    visual_out_ms_by_pair: list[int] | None = None,
 ) -> list[int]:
-    """Start offset of each logical slot inside a module preview after black-pause inserts."""
+    """Start offset of each logical slot inside a module preview after black-pause inserts.
+
+    ``visual_out_ms_by_pair`` must be resolved exactly as
+    ``expand_clips_with_black_pause_boundaries`` does: the black hold is the
+    boundary budget minus the fades, so a per-boundary outgoing fade changes
+    how much black is inserted. Using the uniform ``visual_out_ms`` here while
+    the render used a per-pair value drifts every offset after that boundary.
+    """
     if not slot_durations_ms:
         return []
+
+    def _pair_visual_out(pair_idx: int) -> int:
+        if (
+            visual_out_ms_by_pair is not None
+            and 0 <= pair_idx < len(visual_out_ms_by_pair)
+        ):
+            return int(visual_out_ms_by_pair[pair_idx])
+        return visual_out_ms
+
     starts = [0]
     acc = 0
     for i in range(len(slot_durations_ms) - 1):
@@ -1282,7 +1299,7 @@ def module_slot_start_offsets_ms(
         if pair > 0:
             _, _, black_ms = allocate_pair_fade_budget(
                 pair,
-                visual_out_ms=visual_out_ms,
+                visual_out_ms=_pair_visual_out(i),
                 visual_in_ms=visual_in_ms,
             )
             acc += black_ms
