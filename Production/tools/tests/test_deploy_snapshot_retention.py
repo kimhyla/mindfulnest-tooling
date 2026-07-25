@@ -10,8 +10,11 @@ than grepping the deploy script, so the behaviour is what is locked, not the tex
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
+
+import pytest
 
 REPO = Path(__file__).resolve().parents[2]
 PRUNE = REPO / "scripts" / "prune_deploy_snapshots.sh"
@@ -120,6 +123,44 @@ def test_rejects_invalid_keep_count(tmp_path: Path) -> None:
 def test_missing_root_is_a_no_op(tmp_path: Path) -> None:
     res = _run(tmp_path / ".deploy_backups")
     assert res.returncode == 0, res.stderr
+
+
+def _xattr_supported() -> bool:
+    return shutil.which("xattr") is not None
+
+
+@pytest.mark.skipif(not _xattr_supported(), reason="xattr CLI is macOS-only")
+def test_marks_dropbox_tree_ignored_so_it_leaves_the_cloud(tmp_path: Path) -> None:
+    root = tmp_path / "Dropbox" / ".deploy_backups"
+    root.mkdir(parents=True)
+    _make_snapshot(root, "20260718T000000Z")
+
+    res = _run(root, "5")
+    assert res.returncode == 0, res.stderr
+
+    got = subprocess.run(
+        ["xattr", "-p", "com.dropbox.ignored", str(root)],
+        capture_output=True,
+        text=True,
+    )
+    assert got.returncode == 0 and got.stdout.strip() == "1", res.stdout
+
+
+@pytest.mark.skipif(not _xattr_supported(), reason="xattr CLI is macOS-only")
+def test_does_not_set_ignore_outside_a_dropbox_tree(tmp_path: Path) -> None:
+    root = tmp_path / "elsewhere" / ".deploy_backups"
+    root.mkdir(parents=True)
+    _make_snapshot(root, "20260718T000000Z")
+
+    res = _run(root, "5")
+    assert res.returncode == 0, res.stderr
+
+    got = subprocess.run(
+        ["xattr", "-p", "com.dropbox.ignored", str(root)],
+        capture_output=True,
+        text=True,
+    )
+    assert got.returncode != 0, "ignore flag must not be set outside Dropbox"
 
 
 def test_deploy_snapshot_excludes_build_artifacts() -> None:

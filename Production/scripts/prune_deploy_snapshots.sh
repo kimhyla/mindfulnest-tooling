@@ -8,6 +8,13 @@
 #
 #   1. retention  — delete all but the newest N snapshots (default 5)
 #   2. slimming   — strip regenerable build artifacts from the snapshots kept
+#   3. de-syncing — mark the tree com.dropbox.ignored so it stays on local disk
+#                   but is removed from dropbox.com entirely
+#
+# (3) is the one that actually reclaims cloud quota. Rollback snapshots are a
+# machine-local safety net for this Mac's Dropbox runtime tree — there is no
+# reason to upload them. Re-asserted on every deploy because the xattr is lost
+# whenever the directory is recreated.
 #
 # It runs from deploy_storyboard_v59.sh step (a.5) and is also safe to run by
 # hand for a one-off cleanup:
@@ -49,6 +56,21 @@ if [[ ! -d "$BACKUP_ROOT" ]]; then
 fi
 
 echo "[prune] root=$BACKUP_ROOT keep=$KEEP"
+
+# ---- Keep the snapshot tree out of the cloud entirely ----------------------
+# Dropbox honours the com.dropbox.ignored xattr: the folder stays on local disk
+# but is deleted server-side. Only meaningful inside a Dropbox tree.
+if [[ "${MN_DEPLOY_SNAPSHOT_NO_IGNORE:-}" != "1" ]] \
+   && [[ "$BACKUP_ROOT" == *"/Dropbox"* ]] \
+   && command -v xattr >/dev/null 2>&1; then
+    if [[ "$(xattr -p com.dropbox.ignored "$BACKUP_ROOT" 2>/dev/null || true)" == "1" ]]; then
+        echo "  dropbox-ignored: already set"
+    elif xattr -w com.dropbox.ignored 1 "$BACKUP_ROOT" 2>/dev/null; then
+        echo "  dropbox-ignored: set (tree stays local, removed from dropbox.com)"
+    else
+        echo "  WARN: could not set com.dropbox.ignored on $BACKUP_ROOT" >&2
+    fi
+fi
 
 seen=0
 pruned=0
