@@ -13778,6 +13778,18 @@ def run_server(
     from lib.event_pin import resolve_startup_event
     from lib.paths import normalize_event_dir
 
+    # HANG_DIAGNOSABILITY_V1 — `kill -USR2 <pid>` dumps every Python thread
+    # stack to the err log. Lock-order deadlocks in scope swaps presented as
+    # silent request hangs with healthy /api/event/current; without this the
+    # only stack source was crashing the process (SIGABRT + .ips report).
+    import faulthandler
+    import signal as _signal
+
+    try:
+        faulthandler.register(_signal.SIGUSR2, all_threads=True, chain=False)
+    except (AttributeError, ValueError, io.UnsupportedOperation):
+        pass  # non-POSIX or stderr not a real file — diagnostics only
+
     event_dir, storyboard_name, event_id, pin_source = resolve_startup_event(
         event_dir, storyboard_name, event_id, port=port,
     )
