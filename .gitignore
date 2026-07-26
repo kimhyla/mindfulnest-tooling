@@ -148,6 +148,15 @@ Production/tools/run_phase_b_avatar_insert_splice.py
 .state.lock
 *.L.json
 beat_generator_state.json
+# Per-file fcntl sidecars written next to runtime JSON (beat_generator_state.json.lock).
+*.json.lock
+# Snapshot bookkeeping rewritten on every state write, holding only timestamps,
+# byte counts and machine-local absolute paths. Tracking it left the tree
+# permanently dirty, so every deploy had to stash or set MN_ALLOW_DIRTY_DEPLOY=1
+# — the bypass that lets uncommitted code ship under a committed sha. The
+# snapshot *contents* under latest/global/ stay tracked.
+Production/.production_snapshots/archive_meta.json
+Production/.production_snapshots/latest/manifest.json
 
 # ============ Builder-script outputs with baked-in credentials (CodeQL #96/#97) ============
 # Per Phase 3.5e 2026-05-18.
