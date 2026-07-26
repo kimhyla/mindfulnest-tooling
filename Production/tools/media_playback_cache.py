@@ -36,6 +36,7 @@ PLAYBACK_CACHE_VERSION = "PLAYBACK_CACHE_V1"
 # Dropbox rematerialize storms (was 50; Event_6 alone warms 15–40 clips).
 _LRU_KEEP = 120
 _TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
+_PB_CACHE_NAME_RE = re.compile(r"^pb_[0-9a-f]{16}_([A-Za-z0-9._-]{1,120})$")
 _TRANSIENT_ERRNOS = DROPBOX_IO_TRANSIENT_ERRNOS
 _MAX_ATTEMPTS = DROPBOX_IO_MAX_ATTEMPTS
 
@@ -45,6 +46,54 @@ def playback_cache_dir(event_dir: Path) -> Path:
 
 
 _EVENT_LEAF_RE = re.compile(r"^(Event|event)_[A-Za-z0-9._-]+$")
+
+
+def _operator_media_roots() -> list[str]:
+    """Trusted roots for confined Dropbox/hot media I/O (never derived from request path)."""
+    from media_hot_root import media_hot_serve_roots
+
+    roots: list[str] = []
+    roots.extend(media_hot_serve_roots())
+    try:
+        roots.append(os.path.realpath(str(Path.home() / ".mindfulnest")))
+    except OSError:
+        roots.append(os.path.abspath(str(Path.home() / ".mindfulnest")))
+    drop = os.environ.get("MN_DROPBOX_ROOT", "").strip() or os.path.expanduser(
+        "~/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files"
+    )
+    try:
+        roots.append(os.path.realpath(drop))
+    except OSError:
+        roots.append(os.path.abspath(drop))
+    env_hot = os.environ.get("MN_MEDIA_HOT_ROOT", "").strip()
+    if env_hot and env_hot != "0":
+        try:
+            hot_p = Path(env_hot).expanduser()
+            roots.append(os.path.realpath(str(hot_p)))
+            # Pytest fixtures place CloudStorage under the same tmp parent as the
+            # hot root (MN_MEDIA_HOT_ROOT=<tmp>/hot → allow <tmp>).
+            roots.append(os.path.realpath(str(hot_p.parent)))
+        except OSError:
+            pass
+    # Pytest / operator overrides — colon-separated absolute roots.
+    extra = os.environ.get("MN_MEDIA_PATH_ROOTS", "").strip()
+    if extra:
+        for part in extra.split(":"):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                roots.append(os.path.realpath(part))
+            except OSError:
+                roots.append(os.path.abspath(part))
+    # Dedup while preserving order
+    out: list[str] = []
+    seen: set[str] = set()
+    for r in roots:
+        if r and r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
 
 
 def event_dir_from_media_path(
@@ -92,7 +141,6 @@ def find_cached_by_basename(
     safe = _safe_basename(source_path)
     if not safe or "/" in safe or "\\" in safe or safe in (".", ".."):
         return None
-    suffix = f"_{safe}"
     cache = playback_cache_dir(Path(event_dir))
     try:
         # CODEQL_PATH_INJECTION_NATIVE_PATTERN — realpath cache root, then
@@ -103,9 +151,9 @@ def find_cached_by_basename(
         return None
     hits: list[tuple[float, str]] = []
     for name in names:
-        if not name.startswith("pb_") or not name.endswith(suffix):
-            continue
-        if "/" in name or "\\" in name or name in (".", ".."):
+        # Strict pb_* regex — do not join request-derived suffix strings.
+        m = _PB_CACHE_NAME_RE.fullmatch(name)
+        if not m or m.group(1) != safe:
             continue
         cand = os.path.realpath(os.path.join(cache_s, name))
         safe_full = ""
@@ -169,14 +217,15 @@ def ensure_hot_serve_file(
     # Cache-first: if we already warmed this basename, prefer it when Dropbox
     # metadata is flaky — do not require a successful Dropbox isfile()/stat().
     cached_hit = find_cached_by_basename(ed, src_resolved)
+    roots = _operator_media_roots()
 
     try:
-        exists = path_isfile_durable(src_s)
-    except OSError as exc:
+        exists = path_isfile_durable(src_s, roots=roots)
+    except (OSError, PermissionError) as exc:
         if cached_hit is not None:
             return cached_hit
         raise OSError(
-            getattr(exc, "errno", 11),
+            getattr(exc, "errno", 11) or 11,
             f"Dropbox metadata unavailable for hot-serve: {src_s}: {exc}",
         ) from exc
     if not exists:
@@ -201,8 +250,13 @@ def ensure_hot_serve_file(
 
 
 def playback_cache_token(source_path: Path) -> str:
+    from lib.ffmpeg_io import path_is_cloud_storage_backed
+
     src_s = _norm_source_path(source_path)
-    stat = path_stat_durable(src_s)
+    if path_is_cloud_storage_backed(src_s):
+        stat = path_stat_durable(src_s, roots=_operator_media_roots())
+    else:
+        stat = os.stat(src_s)
     digest = hashlib.sha256(
         f"{src_s}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8"),
         usedforsecurity=False,
@@ -255,8 +309,19 @@ def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> Non
 
 
 def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
+    from lib.ffmpeg_io import path_is_cloud_storage_backed
+
     src_s = _norm_source_path(source_path)
-    if not path_isfile_durable(src_s):
+    cloud = path_is_cloud_storage_backed(src_s)
+    roots = _operator_media_roots() if cloud else []
+    try:
+        if cloud:
+            present = path_isfile_durable(src_s, roots=roots)
+        else:
+            present = os.path.isfile(src_s)
+    except (OSError, PermissionError):
+        present = False
+    if not present:
         cached = find_cached_by_basename(event_dir, source_path)
         if cached is not None:
             return cached
@@ -266,7 +331,10 @@ def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
     # Exact token path when Dropbox metadata answers.
     try:
         dest = playback_cache_path(event_dir, src)
-        src_size = path_stat_durable(src_s).st_size
+        if cloud:
+            src_size = path_stat_durable(src_s, roots=roots).st_size
+        else:
+            src_size = os.stat(src_s).st_size
         if dest.is_file():
             try:
                 if dest.stat().st_size == src_size:

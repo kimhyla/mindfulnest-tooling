@@ -21,6 +21,7 @@ def test_path_stat_and_read_bytes_retry_transient_errno(
 ):
     path = tmp_path / "peaks.json"
     path.write_bytes(b'{"ok":true}')
+    roots = [str(tmp_path)]
     calls = {"stat": 0, "open": 0}
     real_stat = os.stat
     real_open = open
@@ -43,9 +44,9 @@ def test_path_stat_and_read_bytes_retry_transient_errno(
     monkeypatch.setattr("builtins.open", flaky_open)
     monkeypatch.setattr(fio.time, "sleep", lambda _s: None)
 
-    st = fio.path_stat_durable(path)
+    st = fio.path_stat_durable(path, roots=roots)
     assert st.st_size == path.stat().st_size
-    assert fio.read_bytes_durable(path) == b'{"ok":true}'
+    assert fio.read_bytes_durable(path, roots=roots) == b'{"ok":true}'
     assert calls["stat"] >= 2
     assert calls["open"] == 2
 
@@ -53,6 +54,7 @@ def test_path_stat_and_read_bytes_retry_transient_errno(
 def test_path_isfile_durable_retries_errno11(tmp_path: Path, monkeypatch):
     path = tmp_path / "clip.mp4"
     path.write_bytes(b"x")
+    roots = [str(tmp_path)]
     calls = {"n": 0}
     real_isfile = os.path.isfile
 
@@ -65,8 +67,21 @@ def test_path_isfile_durable_retries_errno11(tmp_path: Path, monkeypatch):
 
     monkeypatch.setattr(fio.os.path, "isfile", flaky_isfile)
     monkeypatch.setattr(fio.time, "sleep", lambda _s: None)
-    assert fio.path_isfile_durable(path) is True
+    assert fio.path_isfile_durable(path, roots=roots) is True
     assert calls["n"] == 2
+
+
+def test_confined_path_rejects_outside_roots(tmp_path: Path):
+    inside = tmp_path / "ok.bin"
+    inside.write_bytes(b"x")
+    outside = tmp_path.parent / "outside.bin"
+    outside.write_bytes(b"y")
+    assert fio.confined_path_under_roots(inside, [str(tmp_path)]).endswith("ok.bin")
+    try:
+        fio.confined_path_under_roots(outside, [str(tmp_path)])
+        raise AssertionError("expected PermissionError")
+    except PermissionError:
+        pass
 
 
 def test_local_staging_temp_path_not_under_cloud(tmp_path: Path):

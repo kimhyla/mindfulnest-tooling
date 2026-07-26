@@ -88,6 +88,7 @@ def test_ensure_hot_serve_file_remaps_cloud_master(tmp_path: Path, monkeypatch: 
     """CATEGORY: Dropbox masters serve from local APFS cache, not File Provider."""
     hot = tmp_path / "hot-media"
     monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    monkeypatch.setenv("MN_MEDIA_PATH_ROOTS", str(tmp_path))
     event = tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x" / "Production" / "Event_6"
     src = event / "kling_o3_clips" / "master_delivery.mp4"
     src.parent.mkdir(parents=True)
@@ -118,6 +119,7 @@ def test_ensure_hot_serve_file_remaps_cloud_mp3_stem(
     """CATEGORY HOT_SERVE_ALL_FILES_V1: Phase B voice stems must not stream Dropbox."""
     hot = tmp_path / "hot-media"
     monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    monkeypatch.setenv("MN_MEDIA_PATH_ROOTS", str(tmp_path))
     event = (
         tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
         / "Production" / "Event_3"
@@ -147,6 +149,7 @@ def test_ensure_hot_serve_serves_basename_cache_when_dropbox_stat_deadlocks(
 
     hot = tmp_path / "hot-media"
     monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    monkeypatch.setenv("MN_MEDIA_PATH_ROOTS", str(tmp_path))
     event = (
         tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
         / "Production" / "Event_6"
@@ -162,7 +165,7 @@ def test_ensure_hot_serve_serves_basename_cache_when_dropbox_stat_deadlocks(
     assert warmed.read_bytes() == payload
     assert find_cached_by_basename(event, src) == warmed
 
-    def always_deadlock(_path):
+    def always_deadlock(*_a, **_k):
         raise OSError(11, "Resource deadlock avoided")
 
     monkeypatch.setattr(mpc, "path_isfile_durable", always_deadlock)
@@ -183,6 +186,7 @@ def test_materialize_falls_back_to_basename_cache_on_transient_copy(
 
     hot = tmp_path / "hot-media"
     monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    monkeypatch.setenv("MN_MEDIA_PATH_ROOTS", str(tmp_path))
     event = (
         tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
         / "Production" / "Event_6"

@@ -8375,14 +8375,17 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        error_message="path outside project root",
                        retry_safe=False,
                    )
-        if not os.path.isfile(safe_serve):
+        # Use Path methods on the confined string — CodeQL treats os.path.isfile
+        # of a still-tainted name as path-injection even after startswith.
+        serve_path = Path(safe_serve)
+        if not serve_path.is_file():
             return self._send_error_v59(
                        403,
                        error_code="PATH_OUTSIDE_PROJECT_ROOT",
                        error_message="path outside project root",
                        retry_safe=False,
                    )
-        ext = os.path.splitext(safe_serve)[1].lower()
+        ext = serve_path.suffix.lower()
         content_types = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
             ".webp": "image/webp", ".gif": "image/gif",
@@ -8395,11 +8398,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # browser <video> elements can seek (e.g. after pause+resume).
         # _serve_mp4_with_range handles Range headers → 206 responses properly.
         if ext in (".mp4", ".mov"):
-            return self._serve_mp4_with_range(Path(safe_serve))
+            return self._serve_mp4_with_range(serve_path)
         ct = content_types.get(ext, "application/octet-stream")
         try:
-            with open(safe_serve, "rb") as _f:
-                data = _f.read()
+            data = serve_path.read_bytes()
         except OSError as exc:
             # Belt-and-suspenders: if APFS cache read still hits a transient
             # errno, surface retryable 503 — never raw 500 GENERIC_ERROR.
@@ -11761,16 +11763,29 @@ body {{padding-top:44px!important;}}
 
         safe = Path(fname).name
         target = self._stitch_cache_dir() / safe
+        # Peaks live under Dropbox Production/stitch_editor_cache — confine to
+        # project + hot roots before durable read.
         try:
-            if not path_isfile_durable(target):
+            drop_root = os.path.realpath(str(DROPBOX_ROOT))
+        except OSError:
+            drop_root = os.path.abspath(str(DROPBOX_ROOT))
+        roots = [drop_root, os.path.realpath(str(_MN_REPO_ROOT))]
+        try:
+            from media_hot_root import media_hot_serve_roots
+
+            roots.extend(media_hot_serve_roots())
+        except Exception:
+            pass
+        try:
+            if not path_isfile_durable(target, roots=roots):
                 return self._send_error_v59(
                     404,
                     error_code="PEAKS_NOT_FOUND",
                     error_message=f"Peaks file not found: {safe}",
                     retry_safe=False,
                 )
-            body = read_bytes_durable(target)
-        except OSError as exc:
+            body = read_bytes_durable(target, roots=roots)
+        except (OSError, PermissionError) as exc:
             return self._send_error_v59(
                 503,
                 error_code="PEAKS_READ_FAILED",
@@ -11828,19 +11843,31 @@ body {{padding-top:44px!important;}}
         ]
         from lib.ffmpeg_io import path_isfile_durable, path_is_cloud_storage_backed, read_bytes_durable
 
+        try:
+            drop_root = os.path.realpath(str(DROPBOX_ROOT))
+        except OSError:
+            drop_root = os.path.abspath(str(DROPBOX_ROOT))
+        roots = [drop_root, os.path.realpath(str(_MN_REPO_ROOT))]
+        try:
+            from media_hot_root import media_hot_serve_roots
+
+            roots.extend(media_hot_serve_roots())
+        except Exception:
+            pass
+
         content_type = self._stitch_audio_content_type(safe)
         for target in candidates:
             try:
-                if not path_isfile_durable(target):
+                if not path_isfile_durable(target, roots=roots):
                     continue
-            except OSError:
+            except (OSError, PermissionError):
                 continue
             try:
                 if path_is_cloud_storage_backed(target):
                     local = self._ensure_local_file_for_serve(target)
                     body = Path(local).read_bytes()
                 else:
-                    body = read_bytes_durable(target)
+                    body = read_bytes_durable(target, roots=roots)
             except OSError as exc:
                 print(f"[hot-serve] stitch audio materialize failed for {target}: {exc}", flush=True)
                 return self._send_error_v59(

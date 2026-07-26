@@ -56,15 +56,16 @@ def handle_playback_resolve(h, body: dict) -> None:
             retry_safe=False,
         )
     from lib.ffmpeg_io import path_isfile_durable
-    from media_playback_cache import find_cached_by_basename
+    from media_playback_cache import _operator_media_roots, find_cached_by_basename
 
     src = Path(abs_path)
+    roots = _operator_media_roots()
 
     def _src_available(candidate: Path) -> bool:
         try:
-            if path_isfile_durable(candidate):
+            if path_isfile_durable(candidate, roots=roots):
                 return True
-        except OSError:
+        except (OSError, PermissionError):
             pass
         # HOT_SERVE_CACHE_FIRST_V1 — Dropbox may flake while APFS cache is warm.
         try:

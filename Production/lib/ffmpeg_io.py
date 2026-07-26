@@ -99,9 +99,35 @@ def dropbox_io_transient(exc: BaseException) -> bool:
     return sidecar_io_transient(exc)
 
 
-def path_stat_durable(path: str | Path) -> os.stat_result:
-    """stat() with errno 11/35 retry — used before any Dropbox-backed open/copy."""
-    path_s = os.path.abspath(os.path.expanduser(str(path)))
+def confined_path_under_roots(path: str | Path, roots: Sequence[str]) -> str:
+    """Return realpath only when it is exactly a root or under root+sep.
+
+    CODEQL_PATH_INJECTION_NATIVE_PATTERN — callers must use the returned string
+    (assigned inside the startswith branch) for subsequent open/stat/isfile.
+    """
+    try:
+        real = os.path.realpath(os.path.expanduser(str(path)))
+    except OSError:
+        real = os.path.abspath(os.path.expanduser(str(path)))
+    safe = ""
+    for root in roots:
+        if not root:
+            continue
+        try:
+            root_real = os.path.realpath(root)
+        except OSError:
+            root_real = os.path.abspath(root)
+        if real == root_real or real.startswith(root_real + os.sep):
+            safe = real
+            break
+    if not safe:
+        raise PermissionError(f"path outside allowed roots: {path}")
+    return safe
+
+
+def path_stat_durable(path: str | Path, *, roots: Sequence[str]) -> os.stat_result:
+    """stat() with errno 11/35 retry after root confinement."""
+    path_s = confined_path_under_roots(path, roots)
     last_err: OSError | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
@@ -115,9 +141,9 @@ def path_stat_durable(path: str | Path) -> os.stat_result:
     raise last_err
 
 
-def path_isfile_durable(path: str | Path) -> bool:
-    """isfile() that retries File Provider flakes instead of raising errno 11/35."""
-    path_s = os.path.abspath(os.path.expanduser(str(path)))
+def path_isfile_durable(path: str | Path, *, roots: Sequence[str]) -> bool:
+    """isfile() with errno 11/35 retry after root confinement."""
+    path_s = confined_path_under_roots(path, roots)
     last_err: OSError | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
@@ -131,9 +157,9 @@ def path_isfile_durable(path: str | Path) -> bool:
     raise last_err
 
 
-def read_bytes_durable(path: str | Path) -> bytes:
-    """Read whole file with errno 11/35 retry (peaks JSON, small audio, etc.)."""
-    path_s = os.path.abspath(os.path.expanduser(str(path)))
+def read_bytes_durable(path: str | Path, *, roots: Sequence[str]) -> bytes:
+    """Read whole file with errno 11/35 retry after root confinement."""
+    path_s = confined_path_under_roots(path, roots)
     last_err: OSError | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
