@@ -2403,8 +2403,54 @@ def _operator_job_busy_error(message: str) -> dict:
 
 
 def schedule_operator_workbench_migrate_at_startup(app) -> None:
-    """Persist one-time operator workbench heals (library→bg_ref backfill, etc.)."""
+    """Persist one-time operator workbench heals (library→bg_ref backfill, etc.).
+
+    Char-ref hashing heals are deferred: they walk Dropbox Element images and
+    must never run under sidecar_file_lock (startup migrate held the lock for
+    tens of minutes and hung every scope swap — 2026-07-26). Cheap structural
+    heals stay under the lock; speaker/@Image1 heals run per-beat afterward.
+    """
     import threading
+
+    def _deferred_char_ref_heals(bg) -> None:
+        try:
+            sidecar = bg.read_sidecar()
+            beat_ids = []
+            for arc in sidecar.get("arcs", {}).values():
+                for seg in arc.get("segments", {}).values():
+                    for beat in seg.get("beats", []) or []:
+                        bid = str((beat or {}).get("beat_id") or "").strip()
+                        if bid:
+                            beat_ids.append(bid)
+            healed = 0
+            for bid in beat_ids:
+                try:
+                    ok, _ = bg.update_beat_locked(
+                        bid,
+                        lambda b, _sc: bg.heal_speaker_char_ref_mismatch(b),
+                        skip_single_writer_gate=True,
+                        caller="startup_deferred_char_ref_heal",
+                    )
+                    if ok:
+                        healed += 1
+                except Exception as exc:
+                    print(
+                        f"[startup:operator-workbench-migrate] char-ref heal "
+                        f"skipped for {bid}: {exc}",
+                        flush=True,
+                    )
+            if healed:
+                print(
+                    f"[startup:operator-workbench-migrate] deferred char-ref "
+                    f"heals touched {healed} beat(s)",
+                    flush=True,
+                )
+        except Exception as exc:
+            print(
+                f"[startup:operator-workbench-migrate] deferred char-ref "
+                f"heals failed: {exc}",
+                flush=True,
+            )
 
     def _run() -> None:
         try:
@@ -2415,7 +2461,8 @@ def schedule_operator_workbench_migrate_at_startup(app) -> None:
 
             def _apply(sc: dict) -> bool:
                 nonlocal changed
-                if migrate_operator_workbench_sidecar(sc):
+                # heal_char_ref=False — Dropbox hashing stays off the lock.
+                if migrate_operator_workbench_sidecar(sc, heal_char_ref=False):
                     changed = True
                 return changed
 
@@ -2426,6 +2473,7 @@ def schedule_operator_workbench_migrate_at_startup(app) -> None:
                 return
             if changed:
                 print("[startup:operator-workbench-migrate] persisted operator workbench heals", flush=True)
+            _deferred_char_ref_heals(bg)
         except Exception as exc:
             print(f"[startup:operator-workbench-migrate] failed: {exc}", flush=True)
 

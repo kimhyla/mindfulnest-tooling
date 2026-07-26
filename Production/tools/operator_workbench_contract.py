@@ -158,8 +158,15 @@ def write_still_scene_source(
     beat["bg_ref_image"] = bg_ref
 
 
-def migrate_operator_workbench_beat(beat: dict) -> bool:
-    """Persist one-time operator workbench heals (not GET overlay)."""
+def migrate_operator_workbench_beat(beat: dict, *, heal_char_ref: bool = True) -> bool:
+    """Persist one-time operator workbench heals (not GET overlay).
+
+    ``heal_char_ref=False`` skips speaker/@Image1 hashing. That heal walks
+    Element images through Dropbox and must not run under sidecar_file_lock
+    (startup migrate held the lock for tens of minutes and hung every scope
+    swap — 2026-07-26). Callers that hold the lock use False and schedule a
+    deferred per-beat heal instead.
+    """
     changed = False
     if bg.normalize_still_insert_approval_status(beat):
         changed = True
@@ -188,17 +195,19 @@ def migrate_operator_workbench_beat(beat: dict) -> bool:
         mode = bg.resolve_beat_generation_mode(beat, {})
         beat["generation_mode"] = mode
         changed = True
-    if bg.heal_speaker_char_ref_mismatch(beat):
+    if heal_char_ref and bg.heal_speaker_char_ref_mismatch(beat):
         changed = True
     return changed
 
 
-def migrate_operator_workbench_sidecar(sidecar: dict) -> bool:
+def migrate_operator_workbench_sidecar(
+    sidecar: dict, *, heal_char_ref: bool = True,
+) -> bool:
     changed = False
     for arc in sidecar.get("arcs", {}).values():
         for seg in arc.get("segments", {}).values():
             for beat in seg.get("beats", []):
-                if migrate_operator_workbench_beat(beat):
+                if migrate_operator_workbench_beat(beat, heal_char_ref=heal_char_ref):
                     changed = True
     return changed
 

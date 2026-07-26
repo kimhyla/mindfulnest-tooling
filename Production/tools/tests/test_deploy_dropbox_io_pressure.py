@@ -376,6 +376,17 @@ def test_infer_char_ref_skips_pose_dir_under_heal_path() -> None:
     assert "allow_pose_dir_fallback=True" not in block
 
 
+def test_startup_migrate_skips_char_ref_heal_under_lock() -> None:
+    """Startup operator-workbench migrate must call migrate with heal_char_ref=False
+    so Dropbox hashing never holds sidecar_file_lock."""
+    src = (REPO / "tools" / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    start = src.index("def schedule_operator_workbench_migrate_at_startup")
+    end = src.index("\ndef schedule_o3_gallery_repair_at_startup", start)
+    block = src[start:end]
+    assert "heal_char_ref=False" in block
+    assert "deferred_char_ref" in block or "deferred char-ref" in block
+
+
 def test_library_panel_gate_uses_shared_fetch_helper() -> None:
     """The gate that failed the deploy must go through the hardened helper."""
     gate = (REPO / "scripts" / "verify_library_panel_contract_durability.sh").read_text(
