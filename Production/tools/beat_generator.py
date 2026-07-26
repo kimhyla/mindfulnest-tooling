@@ -1101,13 +1101,30 @@ def _cleanup_stale_dropbox_sidecar_lock_file() -> None:
         print(f"[beatgen_store] stale lock cleanup skipped: {exc}", flush=True)
 
 
+def _local_sidecar_lock_path(sidecar_path: str) -> str:
+    """Lock file for a JSON sidecar — under ~/.mindfulnest/locks, never Dropbox.
+
+    Same invariant as StateManager/StitchEditorState (b71ee43f): flock/open on
+    a File Provider path can wedge uninterruptibly in the kernel (observed
+    2026-07-26 — milestone load stuck 35+ min inside open() of the on-Dropbox
+    .lock, holding event_load_lock and bg_scope_lock for the whole fleet
+    restart). The lock only coordinates processes on this Mac, so a local file
+    keyed by the sidecar's absolute path preserves exactly that coordination;
+    cross-machine safety is the Directus lock's job, not flock's.
+    """
+    lock_dir = os.path.join(os.path.expanduser("~"), ".mindfulnest", "locks")
+    os.makedirs(lock_dir, exist_ok=True)
+    digest = hashlib.sha1(sidecar_path.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(lock_dir, f"bg_sidecar_{digest}.lock")
+
+
 @contextlib.contextmanager
 def _legacy_json_sidecar_file_lock(*, timeout_s: float):
-    """Dropbox flock — rollback path only (MN_SIDECAR_SQLITE_AUTHORITY=0)."""
+    """JSON-authority sidecar flock (milestone scope + SQLite rollback path)."""
     import errno
 
     path = os.path.abspath(BG_SIDECAR_PATH)
-    lock_path = path + ".lock"
+    lock_path = _local_sidecar_lock_path(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     acquired_at: float | None = None
     with open(lock_path, "a+", encoding="utf-8") as lock_fh:

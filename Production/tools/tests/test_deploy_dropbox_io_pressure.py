@@ -236,6 +236,35 @@ def test_event_load_pin_waits_on_shared_cold_boot_budget() -> None:
     )
 
 
+def test_json_sidecar_lock_lives_off_dropbox(tmp_path: Path, monkeypatch) -> None:
+    """Third missed site of the locks-off-Dropbox invariant: milestone scope
+    forces JSON sidecar authority, and its flock file sat next to the sidecar
+    on Dropbox. open() on that File Provider path wedged uninterruptibly in
+    the kernel (35+ min observed) while holding event_load_lock, hanging every
+    scope-touching request on the port. Exercises the real lock context."""
+    sys.path.insert(0, str(REPO / "tools"))
+    import beat_generator as bg
+
+    fake_sidecar = tmp_path / "Dropbox" / "Milestones" / "m1" / "beat_generator_sidecar.json"
+    fake_sidecar.parent.mkdir(parents=True)
+    fake_sidecar.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(fake_sidecar))
+
+    with bg._legacy_json_sidecar_file_lock(timeout_s=5.0):
+        dropbox_side = fake_sidecar.with_name(fake_sidecar.name + ".lock")
+        assert not dropbox_side.exists(), (
+            "sidecar lock file must never be created on the Dropbox side"
+        )
+
+    lock_path = Path(bg._local_sidecar_lock_path(str(fake_sidecar)))
+    assert lock_path.exists()
+    assert str(lock_path).startswith(str(Path.home() / ".mindfulnest" / "locks")), (
+        f"sidecar lock must live under ~/.mindfulnest/locks, got {lock_path}"
+    )
+    other = bg._local_sidecar_lock_path(str(fake_sidecar.with_name("other.json")))
+    assert other != str(lock_path), "each sidecar path needs its own lock file"
+
+
 def test_library_panel_gate_uses_shared_fetch_helper() -> None:
     """The gate that failed the deploy must go through the hardened helper."""
     gate = (REPO / "scripts" / "verify_library_panel_contract_durability.sh").read_text(
