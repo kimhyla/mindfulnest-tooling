@@ -741,8 +741,6 @@ def _read_json_file_durable(path: str) -> dict:
     so we never json.load() a partially-replaced sidecar.
     """
     path = os.path.abspath(path)
-    if not os.path.exists(path):
-        return _EMPTY_SIDECAR()
     last_err: OSError | None = None
     for attempt in range(_SIDECAR_IO_MAX_ATTEMPTS):
         tmp_path: str | None = None
@@ -753,6 +751,8 @@ def _read_json_file_durable(path: str) -> dict:
                 _copy_file_chunked(path, tmp_path)
                 with open(tmp_path, "r", encoding="utf-8") as f:
                     return json.load(f)
+        except FileNotFoundError:
+            return _EMPTY_SIDECAR()
         except OSError as exc:
             last_err = exc
             if exc.errno not in _SIDECAR_IO_TRANSIENT_ERRNOS or attempt >= _SIDECAR_IO_MAX_ATTEMPTS - 1:
@@ -12266,17 +12266,20 @@ def reconcile_sqlite_segment_beats_from_json_mirror(event_dir: str | Path) -> di
             snap_path = (
                 snapshot_root(_PROD_DIR) / LATEST_DIR_NAME / "global" / "beat_generator_state.json"
             )
-            if snap_path.is_file():
-                snap_report = merge_missing_segment_beats_from_json_mirror(
-                    sidecar, snap_path, evt,
+            # Optional snapshot reads own their metadata/read retry policy.
+            # A raw Path.is_file() here can itself raise transient Dropbox
+            # errno 11/35 and crash-loop the server before the durable reader
+            # gets a chance to retry or safely skip the snapshot.
+            snap_report = merge_missing_segment_beats_from_json_mirror(
+                sidecar, snap_path, evt,
+            )
+            if snap_report:
+                report = snap_report
+                print(
+                    f"[beatgen_store] snapshot union: +{sum(snap_report.values())} beats "
+                    f"segments={snap_report} snapshot={snap_path}",
+                    flush=True,
                 )
-                if snap_report:
-                    report = snap_report
-                    print(
-                        f"[beatgen_store] snapshot union: +{sum(snap_report.values())} beats "
-                        f"segments={snap_report} snapshot={snap_path}",
-                        flush=True,
-                    )
 
     mutate_sidecar_locked(_mutate)
     if report:
