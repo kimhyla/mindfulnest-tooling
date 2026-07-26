@@ -484,7 +484,11 @@ def _cr_thumb_url(abs_path: str) -> str:
 
 
 def _materialize_cr_thumb_jpeg(safe_path: str) -> bytes | None:
-    """200×150 JPEG for one library tile — used by GET /api/cr/thumb only."""
+    """200×150 JPEG for one library tile — used by GET /api/cr/thumb only.
+
+    Caller must pass an APFS-local path (CR_THUMB_HOT_SERVE_V1 via
+    ensure_hot_serve_file in handle_cr_thumb).
+    """
     try:
         from PIL import Image as _PILImage
         import io as _io2
@@ -560,7 +564,24 @@ def handle_cr_thumb(h) -> None:
             extra={"ok": False},
         )
     safe_path = os.path.realpath(real_path)
-    if not os.path.isfile(safe_path):
+    # CR_THUMB_HOT_SERVE_V1 — isfile/open on Dropbox masters can errno 11/35;
+    # materialize to APFS (or serve warmed cache) before decoding.
+    try:
+        from media_playback_cache import ensure_hot_serve_file
+
+        local = ensure_hot_serve_file(
+            safe_path,
+            event_dir=getattr(h.app, "event_dir", None),
+        )
+    except OSError:
+        return h._send_error_v59(
+            503,
+            error_code="THUMB_MATERIALIZE_FAILED",
+            error_message="Dropbox File Provider busy — local thumb cache not ready; retry",
+            retry_safe=True,
+            extra={"ok": False},
+        )
+    if not Path(local).is_file():
         return h._send_error_v59(
             404,
             error_code="FILE_NOT_FOUND",
@@ -568,7 +589,7 @@ def handle_cr_thumb(h) -> None:
             retry_safe=False,
             extra={"ok": False},
         )
-    body = _materialize_cr_thumb_jpeg(safe_path)
+    body = _materialize_cr_thumb_jpeg(str(local))
     if body is None:
         return h._send_error_v59(
             500,
