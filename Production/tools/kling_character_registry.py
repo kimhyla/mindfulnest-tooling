@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -370,20 +371,74 @@ def get_element_name(speaker: str) -> str | None:
 
 _CLOUD_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
 
+# FILE_SHA256_STAT_CACHE_V1 — hashing char-ref/pose images re-reads whole files
+# through the Dropbox File Provider, and callers invoke it per beat (speaker
+# heals hash the same Element/pose set 20+ times per sidecar migrate). On a
+# cold provider that held the sidecar lock for tens of minutes and hung every
+# scope swap queued behind it (2026-07-26 deploy h.6). Keyed by
+# (realpath, size, mtime_ns): a stat is cheap even on Dropbox, and any content
+# change (sync, re-register) changes mtime/size and forces a rehash. Persisted
+# under ~/.mindfulnest/cache so a file is hashed once ever, not once per boot.
+_SHA_CACHE_PATH = Path.home() / ".mindfulnest" / "cache" / "file_sha256_cache.json"
+_SHA_CACHE_LOCK = threading.Lock()
+_SHA_CACHE: dict[str, list] | None = None
+_SHA_CACHE_DIRTY = False
+
+
+def _sha_cache_load_unlocked() -> dict[str, list]:
+    global _SHA_CACHE
+    if _SHA_CACHE is None:
+        try:
+            with _SHA_CACHE_PATH.open(encoding="utf-8") as fh:
+                data = json.load(fh)
+            _SHA_CACHE = data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            _SHA_CACHE = {}
+    return _SHA_CACHE
+
+
+def _sha_cache_save_unlocked() -> None:
+    global _SHA_CACHE_DIRTY
+    if not _SHA_CACHE_DIRTY or _SHA_CACHE is None:
+        return
+    try:
+        _SHA_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SHA_CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_SHA_CACHE), encoding="utf-8")
+        tmp.replace(_SHA_CACHE_PATH)
+        _SHA_CACHE_DIRTY = False
+    except OSError:
+        pass  # cache is an optimization; never fail the caller
+
 
 def file_sha256(path: str | Path) -> str | None:
     """Content hash for cross-path Element vs @Image1 alignment checks."""
+    global _SHA_CACHE_DIRTY
     p = Path(path)
+    try:
+        st = p.stat()
+        if not p.is_file():
+            return None
+    except OSError:
+        return None
+    key = os.path.realpath(str(p))
+    with _SHA_CACHE_LOCK:
+        cached = _sha_cache_load_unlocked().get(key)
+        if cached and cached[0] == st.st_size and cached[1] == st.st_mtime_ns:
+            return cached[2]
     last: OSError | None = None
     for attempt in range(5):
         try:
-            if not p.is_file():
-                return None
             h = hashlib.sha256()
             with p.open("rb") as fh:
                 for chunk in iter(lambda: fh.read(1024 * 1024), b""):
                     h.update(chunk)
-            return h.hexdigest()
+            digest = h.hexdigest()
+            with _SHA_CACHE_LOCK:
+                _sha_cache_load_unlocked()[key] = [st.st_size, st.st_mtime_ns, digest]
+                _SHA_CACHE_DIRTY = True
+                _sha_cache_save_unlocked()
+            return digest
         except OSError as exc:
             last = exc
             if exc.errno not in _CLOUD_IO_TRANSIENT_ERRNOS or attempt >= 4:

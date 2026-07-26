@@ -265,6 +265,62 @@ def test_json_sidecar_lock_lives_off_dropbox(tmp_path: Path, monkeypatch) -> Non
     assert other != str(lock_path), "each sidecar path needs its own lock file"
 
 
+def test_file_sha256_hashes_each_file_once(tmp_path: Path, monkeypatch) -> None:
+    """Speaker heals hash the same Element/pose images once per beat; on a cold
+    Dropbox provider that held the sidecar lock for tens of minutes and hung
+    every scope swap behind it. A (size, mtime)-keyed cache must answer repeat
+    calls from a stat, and re-hash only when the content actually changes."""
+    sys.path.insert(0, str(REPO / "tools"))
+    import kling_character_registry as reg
+
+    monkeypatch.setattr(reg, "_SHA_CACHE_PATH", tmp_path / "cache" / "sha.json")
+    monkeypatch.setattr(reg, "_SHA_CACHE", None)
+
+    img = tmp_path / "tessa_neutral.png"
+    img.write_bytes(b"pose bytes v1")
+
+    opens = []
+    real_open = Path.open
+
+    def _counting_open(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self == img and "r" in mode:
+            opens.append(mode)
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _counting_open)
+
+    first = reg.file_sha256(img)
+    again = reg.file_sha256(img)
+    assert first == again == hashlib_sha256(b"pose bytes v1")
+    assert len(opens) == 1, f"repeat call must be served from cache, opens={len(opens)}"
+
+    # Fresh process (cold in-memory cache) must hit the persisted cache too.
+    monkeypatch.setattr(reg, "_SHA_CACHE", None)
+    assert reg.file_sha256(img) == first
+    assert len(opens) == 1, "persisted cache must survive process restarts"
+
+    img.write_bytes(b"pose bytes v2 re-registered")
+    os_utime_bump(img)
+    changed = reg.file_sha256(img)
+    assert changed == hashlib_sha256(b"pose bytes v2 re-registered")
+    assert len(opens) == 2, "content change must force exactly one re-hash"
+
+
+def hashlib_sha256(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def os_utime_bump(p: Path) -> None:
+    """Guarantee a distinct mtime_ns even on coarse filesystem clocks."""
+    import os
+
+    st = p.stat()
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+
 def test_library_panel_gate_uses_shared_fetch_helper() -> None:
     """The gate that failed the deploy must go through the hardened helper."""
     gate = (REPO / "scripts" / "verify_library_panel_contract_durability.sh").read_text(
