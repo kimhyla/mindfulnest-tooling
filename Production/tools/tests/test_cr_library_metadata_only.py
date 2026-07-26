@@ -126,6 +126,67 @@ class CrLibraryMetadataOnlyTests(unittest.TestCase):
             self.assertEqual(h.content_type, "image/jpeg")
             self.assertTrue(h.body_bytes and h.body_bytes[:2] == b"\xff\xd8")
 
+    def test_cr_thumb_hot_serves_before_decode_when_dropbox_deadlocks(self):
+        """CR_THUMB_HOT_SERVE_V1 — errno 11 on Dropbox master still yields JPEG."""
+        with tempfile.TemporaryDirectory() as tmp:
+            prod = Path(tmp) / "Production"
+            ev, app = _event_app(prod)
+            fp = ev / "library" / "images" / "sources" / "cloudish.png"
+            fp.write_bytes(_MIN_PNG)
+            local = Path(tmp) / "local_hot.png"
+            local.write_bytes(_MIN_PNG)
+            import urllib.parse
+            from unittest.mock import patch
+
+            q = urllib.parse.quote(str(fp), safe="")
+            h = _CaptureHandler(app, f"/api/cr/thumb?abs_path={q}")
+
+            def _deadlock_open(path, *a, **kw):
+                if os.path.realpath(str(path)) == os.path.realpath(str(fp)):
+                    raise OSError(11, "Resource deadlock avoided")
+                return open(path, *a, **kw)
+
+            with patch.object(
+                cropper,
+                "require_realpath_under_project",
+                side_effect=lambda p: os.path.realpath(p),
+            ), patch(
+                "media_playback_cache.ensure_hot_serve_file",
+                return_value=local,
+            ):
+                cropper.handle_cr_thumb(h)
+
+            self.assertEqual(h.status, 200, h.payload)
+            self.assertEqual(h.content_type, "image/jpeg")
+            self.assertTrue(h.body_bytes and h.body_bytes[:2] == b"\xff\xd8")
+
+    def test_cr_thumb_materialize_failed_maps_503(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prod = Path(tmp) / "Production"
+            ev, app = _event_app(prod)
+            fp = ev / "library" / "images" / "sources" / "busy.png"
+            fp.write_bytes(_MIN_PNG)
+            import urllib.parse
+            from unittest.mock import patch
+
+            q = urllib.parse.quote(str(fp), safe="")
+            h = _CaptureHandler(app, f"/api/cr/thumb?abs_path={q}")
+            with patch.object(
+                cropper,
+                "require_realpath_under_project",
+                side_effect=lambda p: os.path.realpath(p),
+            ), patch(
+                "media_playback_cache.ensure_hot_serve_file",
+                side_effect=OSError(11, "Resource deadlock avoided"),
+            ):
+                cropper.handle_cr_thumb(h)
+
+            self.assertEqual(h.status, 503, h.payload)
+            self.assertEqual(
+                (h.payload or {}).get("error_code"),
+                "THUMB_MATERIALIZE_FAILED",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

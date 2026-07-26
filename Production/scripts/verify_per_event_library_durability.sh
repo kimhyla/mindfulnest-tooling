@@ -32,6 +32,10 @@ grep -q 'panel_tabs' "$CROPPER" \
   || fail "cropper handle_cr_library must emit panel_tabs (LIBRARY_PANEL_CLASSIFICATION_V1)"
 grep -q 'def handle_cr_thumb' "$CROPPER" \
   || fail "cropper must expose on-demand GET /api/cr/thumb"
+grep -q 'CR_THUMB_HOT_SERVE_V1' "$CROPPER" \
+  || fail "cropper thumb must hot-serve before PIL decode (CR_THUMB_HOT_SERVE_V1)"
+grep -q 'ensure_hot_serve_file' "$CROPPER" \
+  || fail "cropper thumb must call ensure_hot_serve_file"
 grep -q 'Canonical registry images are intentionally excluded' "$CROPPER" \
   || fail "cropper must exclude canonical registry from library grid"
 grep -q 'apply_to_all_events' "${REPO_ROOT}/Production/canonical_image_registry.json" \
