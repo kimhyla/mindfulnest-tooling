@@ -364,6 +364,18 @@ def test_find_pose_rel_by_hash_indexes_dir_once(tmp_path: Path, monkeypatch) -> 
     )
 
 
+def test_infer_char_ref_skips_pose_dir_under_heal_path() -> None:
+    """infer_char_ref_registry_speaker must not enable pose-dir fallback — that
+    path runs under the sidecar lock during migrate and re-hashed every poses/
+    dir for every beat (deploy hang class, 2026-07-26)."""
+    src = (REPO / "tools" / "beat_generator.py").read_text(encoding="utf-8")
+    start = src.index("def infer_char_ref_registry_speaker")
+    end = src.index("\ndef ", start + 1)
+    block = src[start:end]
+    assert "allow_pose_dir_fallback=False" in block
+    assert "allow_pose_dir_fallback=True" not in block
+
+
 def test_library_panel_gate_uses_shared_fetch_helper() -> None:
     """The gate that failed the deploy must go through the hardened helper."""
     gate = (REPO / "scripts" / "verify_library_panel_contract_durability.sh").read_text(

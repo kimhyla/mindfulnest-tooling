@@ -10466,7 +10466,14 @@ def _pick_element_ref_path(beat: dict, element_paths: list[Path]) -> Path:
 
 
 def infer_char_ref_registry_speaker(char_path: str) -> str | None:
-    """Return registry character name when @Image1 bytes belong to their Element set."""
+    """Return registry character name when @Image1 bytes belong to their Element set.
+
+    Pose-dir fallback is intentionally off: heal/migrate runs under the sidecar
+    lock and used to hash every character's poses/ for every beat (N chars × M
+    beats through Dropbox), which hung scope swaps for tens of minutes. Element
+    frontal + refer_images are the ownership authority; pose-dir matching is for
+    explicit reconcile paths that are not lock-bound.
+    """
     if not char_path or not os.path.isfile(char_path):
         return None
     try:
@@ -10477,7 +10484,7 @@ def infer_char_ref_registry_speaker(char_path: str) -> str | None:
             if not reg.is_speaker_voice_ready(name):
                 continue
             if reg.char_ref_matches_element_images(
-                char_path, name, allow_pose_dir_fallback=True,
+                char_path, name, allow_pose_dir_fallback=False,
             )[0]:
                 return name
     except Exception:
