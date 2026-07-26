@@ -1,6 +1,7 @@
 """Cloud-aware ffmpeg I/O contract tests."""
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,60 @@ def test_path_is_cloud_storage_backed_detects_dropbox():
     p = "/Users/me/Library/CloudStorage/Dropbox/Production/Event_2/foo.mp4"
     assert fio.path_is_cloud_storage_backed(p) is True
     assert fio.path_is_cloud_storage_backed("/tmp/foo.mp4") is False
+
+
+@pytest.mark.parametrize("transient_errno", [11, 35])
+def test_path_stat_and_read_bytes_retry_transient_errno(
+    tmp_path: Path, monkeypatch, transient_errno: int,
+):
+    path = tmp_path / "peaks.json"
+    path.write_bytes(b'{"ok":true}')
+    calls = {"stat": 0, "open": 0}
+    real_stat = os.stat
+    real_open = open
+
+    def flaky_stat(p, *a, **k):
+        if os.path.abspath(str(p)) == os.path.abspath(str(path)):
+            calls["stat"] += 1
+            if calls["stat"] == 1:
+                raise OSError(transient_errno, "transient File Provider failure")
+        return real_stat(p, *a, **k)
+
+    def flaky_open(file, mode="r", *a, **k):
+        if os.path.abspath(str(file)) == os.path.abspath(str(path)) and "b" in str(mode):
+            calls["open"] += 1
+            if calls["open"] == 1:
+                raise OSError(transient_errno, "transient File Provider failure")
+        return real_open(file, mode, *a, **k)
+
+    monkeypatch.setattr(fio.os, "stat", flaky_stat)
+    monkeypatch.setattr("builtins.open", flaky_open)
+    monkeypatch.setattr(fio.time, "sleep", lambda _s: None)
+
+    st = fio.path_stat_durable(path)
+    assert st.st_size == path.stat().st_size
+    assert fio.read_bytes_durable(path) == b'{"ok":true}'
+    assert calls["stat"] >= 2
+    assert calls["open"] == 2
+
+
+def test_path_isfile_durable_retries_errno11(tmp_path: Path, monkeypatch):
+    path = tmp_path / "clip.mp4"
+    path.write_bytes(b"x")
+    calls = {"n": 0}
+    real_isfile = os.path.isfile
+
+    def flaky_isfile(p):
+        if os.path.abspath(str(p)) == os.path.abspath(str(path)):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(11, "Resource deadlock avoided")
+        return real_isfile(p)
+
+    monkeypatch.setattr(fio.os.path, "isfile", flaky_isfile)
+    monkeypatch.setattr(fio.time, "sleep", lambda _s: None)
+    assert fio.path_isfile_durable(path) is True
+    assert calls["n"] == 2
 
 
 def test_local_staging_temp_path_not_under_cloud(tmp_path: Path):

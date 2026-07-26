@@ -17,6 +17,7 @@ sys.path.insert(0, str(TOOLS))
 from media_playback_cache import (  # noqa: E402
     ensure_hot_serve_file,
     event_dir_from_media_path,
+    find_cached_by_basename,
     lookup_playback_cache_file,
     materialize_playback_cache,
     playback_cache_dir,
@@ -132,6 +133,81 @@ def test_ensure_hot_serve_file_remaps_cloud_mp3_stem(
     assert "CloudStorage" not in str(served)
     assert served.suffix == ".mp3"
     assert served.parent == playback_cache_dir(event)
+
+
+def test_ensure_hot_serve_serves_basename_cache_when_dropbox_stat_deadlocks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CATEGORY HOT_SERVE_CACHE_FIRST_V1: errno 11 must not black-out warmed media.
+
+    Event_6 repro: local APFS already had phase_b_lipsync / beat deliveries, but
+    Dropbox ``stat``/copy raised Resource deadlock avoided and /files returned 503.
+    """
+    import media_playback_cache as mpc
+
+    hot = tmp_path / "hot-media"
+    monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    event = (
+        tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
+        / "Production" / "Event_6"
+    )
+    src = event / "phase_b_lipsync_20260718-025314.mp4"
+    src.parent.mkdir(parents=True)
+    payload = b"\x00\x00\x00\x20ftypmp42" + b"phase-b-warm" * 80
+    src.write_bytes(payload)
+
+    # Warm cache once while Dropbox answers.
+    warmed = ensure_hot_serve_file(src, event_dir=event)
+    assert warmed.is_file()
+    assert warmed.read_bytes() == payload
+    assert find_cached_by_basename(event, src) == warmed
+
+    def always_deadlock(_path):
+        raise OSError(11, "Resource deadlock avoided")
+
+    monkeypatch.setattr(mpc, "path_isfile_durable", always_deadlock)
+    monkeypatch.setattr(mpc, "path_stat_durable", always_deadlock)
+    monkeypatch.setattr(mpc, "materialize_playback_cache", always_deadlock)
+
+    served = ensure_hot_serve_file(src, event_dir=event)
+    assert served == warmed
+    assert served.read_bytes() == payload
+    assert "CloudStorage" not in str(served)
+
+
+@pytest.mark.parametrize("transient_errno", [11, 35])
+def test_materialize_falls_back_to_basename_cache_on_transient_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transient_errno: int,
+) -> None:
+    import media_playback_cache as mpc
+
+    hot = tmp_path / "hot-media"
+    monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    event = (
+        tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
+        / "Production" / "Event_6"
+    )
+    src = event / "kling_o3_clips" / "bg_arc1_event6_pre_beat_01_g1_element_o3_master_delivery.mp4"
+    src.parent.mkdir(parents=True)
+    payload = b"\x00\x00\x00\x20ftypmp42" + b"beat01" * 40
+    src.write_bytes(payload)
+    warmed = materialize_playback_cache(event, src)
+
+    def boom(*_a, **_k):
+        raise OSError(transient_errno, "transient File Provider failure")
+
+    monkeypatch.setattr(mpc, "copy_file_durable", boom)
+    # Force rematerialize path by renaming the exact token file aside… keep basename hit.
+    # Delete exact token dest so materialize must copy — basename cache still present
+    # only if we re-create under a different token name.
+    alt = warmed.parent / f"pb_deadbeefcafef00d_{warmed.name.split('_', 2)[-1]}"
+    alt.write_bytes(payload)
+    warmed.unlink()
+
+    # Stat still works (source on "cloud" fixture). Copy fails → basename fallback.
+    served = materialize_playback_cache(event, src)
+    assert served == alt
+    assert served.read_bytes() == payload
 
 
 @pytest.mark.skipif(

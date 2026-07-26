@@ -85,6 +85,60 @@ def sidecar_io_transient(exc: BaseException) -> bool:
     return isinstance(exc, OSError) and getattr(exc, "errno", None) in _TRANSIENT_ERRNOS
 
 
+def dropbox_io_transient(exc: BaseException) -> bool:
+    """True for macOS File Provider errno 11 (EDEADLK) / 35 (EAGAIN)."""
+    return sidecar_io_transient(exc)
+
+
+def path_stat_durable(path: str | Path) -> os.stat_result:
+    """stat() with errno 11/35 retry — used before any Dropbox-backed open/copy."""
+    path_s = os.path.abspath(os.path.expanduser(str(path)))
+    last_err: OSError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return os.stat(path_s)
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_s(attempt))
+    assert last_err is not None
+    raise last_err
+
+
+def path_isfile_durable(path: str | Path) -> bool:
+    """isfile() that retries File Provider flakes instead of raising errno 11/35."""
+    path_s = os.path.abspath(os.path.expanduser(str(path)))
+    last_err: OSError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return os.path.isfile(path_s)
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_s(attempt))
+    assert last_err is not None
+    raise last_err
+
+
+def read_bytes_durable(path: str | Path) -> bytes:
+    """Read whole file with errno 11/35 retry (peaks JSON, small audio, etc.)."""
+    path_s = os.path.abspath(os.path.expanduser(str(path)))
+    last_err: OSError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            with open(path_s, "rb") as fh:
+                return fh.read()
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_s(attempt))
+    assert last_err is not None
+    raise last_err
+
+
 def ffmpeg_failure_transient(stderr: str | None) -> bool:
     text = str(stderr or "")
     return (

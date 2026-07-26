@@ -55,21 +55,42 @@ def handle_playback_resolve(h, body: dict) -> None:
             error_message="path outside project root",
             retry_safe=False,
         )
+    from lib.ffmpeg_io import path_isfile_durable
+    from media_playback_cache import find_cached_by_basename
+
     src = Path(abs_path)
-    if not src.is_file():
+
+    def _src_available(candidate: Path) -> bool:
+        try:
+            if path_isfile_durable(candidate):
+                return True
+        except OSError:
+            pass
+        # HOT_SERVE_CACHE_FIRST_V1 — Dropbox may flake while APFS cache is warm.
+        try:
+            ed = playback_event_dir_for_source(
+                candidate,
+                Path(h.app.event_dir),
+                getattr(h.app, "milestone_library_event_dir", None),
+            )
+        except Exception:
+            ed = Path(h.app.event_dir)
+        return find_cached_by_basename(ed, candidate) is not None
+
+    if not _src_available(src):
         lib = getattr(h.app, "milestone_library_event_dir", None)
         if lib is not None and not Path(abs_path).is_absolute():
             alt = Path(lib) / path
-            if alt.is_file():
+            if _src_available(alt):
                 abs_path = str(alt.resolve())
                 src = alt.resolve()
-        if not src.is_file() and re.search(r"Event_\d+", path):
+        if not _src_available(src) and re.search(r"Event_\d+", path):
             try:
                 abs_path = h._stitch_resolve_path(path)
                 src = Path(abs_path)
             except ValueError:
                 pass
-    if not src.is_file():
+    if not _src_available(src):
         return h._send_error_v59(
             404,
             error_code="FILE_NOT_FOUND",
@@ -100,7 +121,7 @@ def handle_playback_resolve(h, body: dict) -> None:
         )
     except OSError as exc:
         return h._send_error_v59(
-            500,
+            503,
             error_code="PLAYBACK_CACHE_FAILED",
             error_message=str(exc),
             retry_safe=True,

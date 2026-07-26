@@ -11748,20 +11748,22 @@ body {{padding-top:44px!important;}}
 
     def _serve_stitch_peaks_file(self, fname: str) -> None:
         """GET /api/stitch_editor/peaks_file/<fname> — waveform peaks JSON."""
+        from lib.ffmpeg_io import path_isfile_durable, read_bytes_durable
+
         safe = Path(fname).name
         target = self._stitch_cache_dir() / safe
-        if not target.is_file():
-            return self._send_error_v59(
-                404,
-                error_code="PEAKS_NOT_FOUND",
-                error_message=f"Peaks file not found: {safe}",
-                retry_safe=False,
-            )
         try:
-            body = target.read_bytes()
+            if not path_isfile_durable(target):
+                return self._send_error_v59(
+                    404,
+                    error_code="PEAKS_NOT_FOUND",
+                    error_message=f"Peaks file not found: {safe}",
+                    retry_safe=False,
+                )
+            body = read_bytes_durable(target)
         except OSError as exc:
             return self._send_error_v59(
-                500,
+                503,
                 error_code="PEAKS_READ_FAILED",
                 error_message=str(exc),
                 retry_safe=True,
@@ -11815,14 +11817,35 @@ body {{padding-top:44px!important;}}
             project_root / "Production" / "assets" / "ambient_library" / safe,
             project_root / safe,
         ]
+        from lib.ffmpeg_io import path_isfile_durable, path_is_cloud_storage_backed, read_bytes_durable
+
         content_type = self._stitch_audio_content_type(safe)
         for target in candidates:
-            if target.is_file():
-                body = target.read_bytes()
-                return self._send_bytes(200, body, content_type, extra_headers={
-                    "Cache-Control": "public, max-age=3600",
-                    "Accept-Ranges": "bytes",
-                })
+            try:
+                if not path_isfile_durable(target):
+                    continue
+            except OSError:
+                continue
+            try:
+                if path_is_cloud_storage_backed(target):
+                    local = self._ensure_local_file_for_serve(target)
+                    body = Path(local).read_bytes()
+                else:
+                    body = read_bytes_durable(target)
+            except OSError as exc:
+                print(f"[hot-serve] stitch audio materialize failed for {target}: {exc}", flush=True)
+                return self._send_error_v59(
+                    503,
+                    error_code="HOT_SERVE_MATERIALIZE_FAILED",
+                    error_message=(
+                        "Dropbox File Provider busy — local playback cache not ready; retry"
+                    ),
+                    retry_safe=True,
+                )
+            return self._send_bytes(200, body, content_type, extra_headers={
+                "Cache-Control": "public, max-age=3600",
+                "Accept-Ranges": "bytes",
+            })
         return self._send_error_v59(
                    404,
                    error_code="GENERIC_ERROR",
