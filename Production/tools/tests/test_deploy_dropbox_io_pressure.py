@@ -222,6 +222,20 @@ def test_dropbox_timeout_default_clears_observed_cold_walk() -> None:
     assert int(res.stdout.strip()) >= 120
 
 
+def test_event_load_pin_waits_on_shared_cold_boot_budget() -> None:
+    """g.5 gave up after ~3 min while a 4-5 min fleet cold boot was still
+    reconciling; the server answered 200 moments after the deploy died. The
+    pin must first wait on event_server_wait_http (EVENT_SERVER_COLD_BOOT_
+    ATTEMPTS budget) instead of its own short retry loop."""
+    text = DEPLOY.read_text(encoding="utf-8")
+    pin = text.index("(g.5) post-restart event/load pin")
+    load_call = text.index("/api/event/load", pin)
+    wait = text.find("event_server_wait_http", pin)
+    assert wait != -1 and wait < load_call, (
+        "g.5 must call event_server_wait_http before attempting event/load"
+    )
+
+
 def test_library_panel_gate_uses_shared_fetch_helper() -> None:
     """The gate that failed the deploy must go through the hardened helper."""
     gate = (REPO / "scripts" / "verify_library_panel_contract_durability.sh").read_text(
