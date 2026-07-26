@@ -68,6 +68,11 @@ for n in 1 2 3 4 5 6 7; do
     fail=1
     continue
   fi
+  if ! launchctl print "${DOMAIN}/${label}" >/dev/null 2>&1; then
+    echo "  FAIL ${label} was not registered after bootstrap/load" >&2
+    fail=1
+    continue
+  fi
   ok=0
   for _i in $(seq 1 40); do
     if out="$(curl -sf --max-time 2 "http://127.0.0.1:${port}/api/event/current" 2>/dev/null)"; then

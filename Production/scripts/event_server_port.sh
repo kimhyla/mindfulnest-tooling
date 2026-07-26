@@ -63,7 +63,8 @@ event_server_wait_http() {
 
 # EVENT_DROPBOX_JSON_FETCH_V1 — shared fetch for live endpoints whose first
 # read walks Dropbox File Provider (cr/library, stitch_editor/library, gallery).
-# A cold Event_4 library list was measured at ~70s, so any gate using a 30-60s
+# [CONFIRMED against 2026-07-26 Event_4 live smoke timing] a cold Event_4
+# library list was measured at ~70s, so any gate using a 30-60s
 # ceiling fails on timing, not on contract. Two failure modes this closes:
 #   1. too-short timeout → curl gives up mid-walk
 #   2. `curl -sf` returning "" on failure, piped straight into json.loads,

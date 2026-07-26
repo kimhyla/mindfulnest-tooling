@@ -8,7 +8,7 @@ import beat_generator as bg
 
 
 def test_migrate_preserves_locked_library_path_and_keeps_gate_false_until_frontal(
-    tmp_path, monkeypatch,
+    tmp_path,
 ):
     """Pose-dir byte match is not Element frontal match — gate must stay False.
 

@@ -311,11 +311,11 @@ def server_mutation_gate_reason(app) -> str | None:
 
 
 def serve_storyboard(h) -> None:
-    if not h.app.storyboard_path.is_file():
-        # Local cache may still serve after Dropbox metadata flakes.
-        pass
     # Dropbox File Provider can return errno 11 on hot HTML reads under load.
-    # Prefer live Dropbox file; fall back to ~/.mindfulnest/storyboard_cache.
+    # The durable reader owns both cases: prefer the live Dropbox file, then
+    # fall back to ~/.mindfulnest/storyboard_cache when metadata/read fails.
+    # Do not preflight with is_file(): that is another File Provider syscall
+    # and can disagree with the subsequent durable read.
     from production_server import read_storyboard_html_durable
 
     try:

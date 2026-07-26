@@ -1336,9 +1336,10 @@ class StateManager:
         self.clips_dir.mkdir(parents=True, exist_ok=True)
         # In-process lock (between server threads)
         self.lock = threading.Lock()
-        # Inter-process lock MUST stay off Dropbox. fcntl.lockf on a
-        # File-Provider path + concurrent Dropbox reads yields errno 11
-        # (Resource deadlock avoided) and KeepAlive crash-loops the fleet.
+        # Inter-process lock MUST stay off Dropbox. [CONFIRMED against
+        # /tmp/mindfulnest_server_event*.log on 2026-07-26] fcntl.lockf on a
+        # File-Provider path + concurrent Dropbox reads yielded errno 11
+        # (Resource deadlock avoided) and KeepAlive crash-looped the fleet.
         # Local lock still serializes server vs recovery CLI on this Mac.
         lock_dir = Path.home() / ".mindfulnest" / "locks"
         lock_dir.mkdir(parents=True, exist_ok=True)

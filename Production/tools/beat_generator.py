@@ -1104,11 +1104,11 @@ def _cleanup_stale_dropbox_sidecar_lock_file() -> None:
 def _local_sidecar_lock_path(sidecar_path: str) -> str:
     """Lock file for a JSON sidecar — under ~/.mindfulnest/locks, never Dropbox.
 
-    Same invariant as StateManager/StitchEditorState (b71ee43f): flock/open on
-    a File Provider path can wedge uninterruptibly in the kernel (observed
-    2026-07-26 — milestone load stuck 35+ min inside open() of the on-Dropbox
-    .lock, holding event_load_lock and bg_scope_lock for the whole fleet
-    restart). The lock only coordinates processes on this Mac, so a local file
+    Same invariant as StateManager/StitchEditorState (b71ee43f):
+    [CONFIRMED against the 2026-07-26 SIGUSR2 faulthandler dump] milestone load
+    waited 35+ minutes on the on-Dropbox lock while event_load_lock and
+    bg_scope_lock were held. The lock only coordinates processes on this Mac,
+    so a local file
     keyed by the sidecar's absolute path preserves exactly that coordination;
     cross-machine safety is the Directus lock's job, not flock's.
     """

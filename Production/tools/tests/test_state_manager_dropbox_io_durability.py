@@ -4,10 +4,15 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import production_server as ps
 
 
-def test_read_text_dropbox_durable_retries_errno11(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("transient_errno", [11, 35])
+def test_read_text_dropbox_durable_retries_transient_errno(
+    monkeypatch, tmp_path: Path, transient_errno: int,
+) -> None:
     path = tmp_path / "storyboard.html"
     path.write_text("<html>ok</html>", encoding="utf-8")
     calls = {"n": 0}
@@ -17,7 +22,7 @@ def test_read_text_dropbox_durable_retries_errno11(monkeypatch, tmp_path: Path) 
         if Path(file) == path and "b" in mode:
             calls["n"] += 1
             if calls["n"] == 1:
-                raise OSError(11, "Resource deadlock avoided")
+                raise OSError(transient_errno, "transient File Provider failure")
         return real_open(file, mode, *args, **kwargs)
 
     monkeypatch.setattr("builtins.open", flaky_open)
@@ -26,7 +31,10 @@ def test_read_text_dropbox_durable_retries_errno11(monkeypatch, tmp_path: Path) 
     assert calls["n"] == 2
 
 
-def test_read_json_file_dropbox_durable_retries_errno11(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("transient_errno", [11, 35])
+def test_read_json_file_dropbox_durable_retries_transient_errno(
+    monkeypatch, tmp_path: Path, transient_errno: int,
+) -> None:
     path = tmp_path / "production_state.json"
     path.write_text('{"event_id": "Event_1", "version": "v3"}', encoding="utf-8")
     calls = {"n": 0}
@@ -36,7 +44,7 @@ def test_read_json_file_dropbox_durable_retries_errno11(monkeypatch, tmp_path: P
         if Path(file) == path and "b" in mode:
             calls["n"] += 1
             if calls["n"] == 1:
-                raise OSError(11, "Resource deadlock avoided")
+                raise OSError(transient_errno, "transient File Provider failure")
         return real_open(file, mode, *args, **kwargs)
 
     monkeypatch.setattr(ps, "open", flaky_open, raising=False)
@@ -101,6 +109,26 @@ def test_read_storyboard_html_falls_back_to_local_cache(monkeypatch, tmp_path: P
     monkeypatch.setattr(ps, "_read_text_dropbox_durable", always_deadlock)
     html = ps.read_storyboard_html_durable(dropbox_html, event_id="Event_4")
     assert "cached-fallback" in html
+
+
+def test_read_storyboard_html_prefers_live_file_and_refreshes_cache(
+    monkeypatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    live = tmp_path / "storyboard_v59_prod.html"
+    live.write_text("<html>" + ("live-body-" * 120) + "</html>", encoding="utf-8")
+
+    html = ps.read_storyboard_html_durable(live, event_id="Event_4")
+
+    assert "live-body" in html
+    cached = (
+        tmp_path
+        / "home"
+        / ".mindfulnest"
+        / "storyboard_cache"
+        / "Event_4_storyboard_v59_prod.html"
+    )
+    assert cached.read_text(encoding="utf-8") == html
 
 
 def test_merge_missing_skips_invalid_json_mirror(tmp_path: Path) -> None:

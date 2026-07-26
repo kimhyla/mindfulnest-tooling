@@ -270,7 +270,8 @@ for sub in Production/tools Production/lib Production/scripts; do
         continue
     fi
     log_safe="$(echo "$sub" | tr '/' '_')"
-    # DEPLOY_MIRROR_NO_BUILD_INPUTS_V1 — node_modules is ~3.9k tiny files that
+    # DEPLOY_MIRROR_NO_BUILD_INPUTS_V1 — [CONFIRMED against 2026-07-26 deploy
+    # /tmp/deploy_e4.log + lsof sampling] node_modules is ~3.9k tiny files that
     # every deploy re-stat'd through the Dropbox File Provider (~45 min observed,
     # with 3 files actually changed). That traffic is also what pressures the
     # File Provider into the errno 11 "resource deadlock avoided" failures that

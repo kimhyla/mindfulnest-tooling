@@ -19,6 +19,8 @@ local HTTP servers -- so behaviour is locked rather than script wording.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -31,6 +33,19 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 DEPLOY = REPO / "scripts" / "deploy_storyboard_v59.sh"
 PORT_LIB = REPO / "scripts" / "event_server_port.sh"
+TOOLS = REPO / "tools"
+if str(TOOLS) not in sys.path:
+    sys.path.insert(0, str(TOOLS))
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _bump_mtime(p: Path) -> None:
+    """Guarantee a distinct mtime_ns even on coarse filesystem clocks."""
+    st = p.stat()
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
 
 # Regenerable build inputs the Dropbox runtime never reads. dist/index.html is
 # copied explicitly by deploy step (c) and is deliberately not in this set.
@@ -242,7 +257,6 @@ def test_json_sidecar_lock_lives_off_dropbox(tmp_path: Path, monkeypatch) -> Non
     on Dropbox. open() on that File Provider path wedged uninterruptibly in
     the kernel (35+ min observed) while holding event_load_lock, hanging every
     scope-touching request on the port. Exercises the real lock context."""
-    sys.path.insert(0, str(REPO / "tools"))
     import beat_generator as bg
 
     fake_sidecar = tmp_path / "Dropbox" / "Milestones" / "m1" / "beat_generator_sidecar.json"
@@ -270,7 +284,6 @@ def test_file_sha256_hashes_each_file_once(tmp_path: Path, monkeypatch) -> None:
     Dropbox provider that held the sidecar lock for tens of minutes and hung
     every scope swap behind it. A (size, mtime)-keyed cache must answer repeat
     calls from a stat, and re-hash only when the content actually changes."""
-    sys.path.insert(0, str(REPO / "tools"))
     import kling_character_registry as reg
 
     monkeypatch.setattr(reg, "_SHA_CACHE_PATH", tmp_path / "cache" / "sha.json")
@@ -294,7 +307,7 @@ def test_file_sha256_hashes_each_file_once(tmp_path: Path, monkeypatch) -> None:
 
     first = reg.file_sha256(img)
     again = reg.file_sha256(img)
-    assert first == again == hashlib_sha256(b"pose bytes v1")
+    assert first == again == _sha256(b"pose bytes v1")
     assert len(opens) == 1, f"repeat call must be served from cache, opens={len(opens)}"
 
     # Fresh process (cold in-memory cache) must hit the persisted cache too.
@@ -303,30 +316,15 @@ def test_file_sha256_hashes_each_file_once(tmp_path: Path, monkeypatch) -> None:
     assert len(opens) == 1, "persisted cache must survive process restarts"
 
     img.write_bytes(b"pose bytes v2 re-registered")
-    os_utime_bump(img)
+    _bump_mtime(img)
     changed = reg.file_sha256(img)
-    assert changed == hashlib_sha256(b"pose bytes v2 re-registered")
+    assert changed == _sha256(b"pose bytes v2 re-registered")
     assert len(opens) == 2, "content change must force exactly one re-hash"
-
-
-def hashlib_sha256(data: bytes) -> str:
-    import hashlib
-
-    return hashlib.sha256(data).hexdigest()
-
-
-def os_utime_bump(p: Path) -> None:
-    """Guarantee a distinct mtime_ns even on coarse filesystem clocks."""
-    import os
-
-    st = p.stat()
-    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
 
 
 def test_find_pose_rel_by_hash_indexes_dir_once(tmp_path: Path, monkeypatch) -> None:
     """Sidecar migrate heals every beat; each heal used to re-hash every pose file.
     A fingerprint-keyed index must rebuild once per poses-dir change, not per call."""
-    sys.path.insert(0, str(REPO / "tools"))
     import kling_character_registry as reg
 
     monkeypatch.setattr(reg, "_SHA_CACHE_PATH", tmp_path / "cache" / "sha.json")

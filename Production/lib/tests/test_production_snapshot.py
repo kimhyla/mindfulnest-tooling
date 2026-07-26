@@ -203,7 +203,7 @@ def test_create_snapshot_skips_empty_live_sidecar(tmp_path: Path) -> None:
 
     result = snap.create_snapshot(prod, source="test")
     staged = result.snapshot_dir / "global" / "beat_generator_state.json"
-    assert not staged.exists() or staged.stat().st_size == 0
+    assert not staged.exists()
     # production_state still copied
     assert (result.snapshot_dir / "events" / "Event_1" / "production_state.json").is_file()
 

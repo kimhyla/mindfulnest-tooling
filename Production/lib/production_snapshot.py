@@ -85,7 +85,10 @@ def _rel_event_path(event_dir: Path, prod_root: Path) -> str:
     return f"events/{event_dir.name}"
 
 
-_DROPBOX_IO_TRANSIENT_ERRNOS = frozenset({11, 35})  # EDEADLK / EAGAIN on macOS FP
+# [CONFIRMED against Python 3.12 errno constants on Darwin]
+# errno 11 = EDEADLK; errno 35 = EAGAIN. Both were observed as transient
+# File Provider failures and are retried here.
+_DROPBOX_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
 
 
 def _copy_file(src: Path, dest: Path) -> dict[str, Any]:
