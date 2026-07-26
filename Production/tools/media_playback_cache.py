@@ -267,6 +267,12 @@ def playback_cache_token(source_path: Path) -> str:
     return digest.hexdigest()[:16]
 
 
+def token_from_playback_cache_name(name: str) -> str | None:
+    """Extract the 16-hex token from a ``pb_<token>_<basename>`` cache leaf."""
+    m = re.match(r"^pb_([0-9a-f]{16})_", str(name or ""))
+    return m.group(1) if m else None
+
+
 def playback_cache_path(event_dir: Path, source_path: Path) -> Path:
     token = playback_cache_token(source_path)
     return playback_cache_dir(event_dir) / f"pb_{token}_{_safe_basename(source_path)}"
@@ -385,15 +391,20 @@ def resolve_playback_url(
         cached = materialize_playback_cache(event_dir, src)
     except OSError:
         cached = ensure_hot_serve_file(src, event_dir=event_dir)
-    # Token for the URL: prefer live Dropbox identity; fall back to cache name.
-    try:
-        token = playback_cache_token(src)
-    except OSError:
-        name = cached.name
-        if name.startswith("pb_") and len(name) >= 19:
-            token = name[3:19]
-        else:
-            token = hashlib.sha256(str(src).encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+    # PLAYBACK_TOKEN_MATCHES_CACHE_FILE_V1 — GET /api/media/playback/{token}
+    # looks up pb_{token}_*. The URL token MUST be the token embedded in the
+    # materialized leaf. Recomputing playback_cache_token(src) after a basename
+    # cache hit (mtime drift / Dropbox flake) produced Event_6 intro_tail 404s:
+    # resolve returned e277… while disk had pb_18f93…. UI swapped off working
+    # /files onto that 404 → black spinner forever.
+    token = token_from_playback_cache_name(cached.name)
+    if not token:
+        try:
+            token = playback_cache_token(src)
+        except OSError:
+            token = hashlib.sha256(
+                str(src).encode("utf-8"), usedforsecurity=False,
+            ).hexdigest()[:16]
     base = (server_base or "").rstrip("/")
     playback_url = f"{base}/api/media/playback/{event_id}/{token}"
     try:
