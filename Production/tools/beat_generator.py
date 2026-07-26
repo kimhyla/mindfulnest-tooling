@@ -12142,11 +12142,17 @@ def merge_missing_segment_beats_from_json_mirror(
     only (draft extract rows with no O3 clip yet). Never removes live beats.
     """
     path = Path(mirror_path)
-    if not path.is_file():
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return {}
+    except OSError:
         return {}
     try:
         mirror = _read_json_file_durable(str(path))
-    except OSError:
+    except (OSError, json.JSONDecodeError):
+        # Empty / mid-sync Dropbox snapshot must not kill cold boot (vacation return).
+        return {}
+    if not isinstance(mirror, dict) or not mirror:
         return {}
     evt = normalize_bg_event_id(event_id)
     merged: dict[str, int] = {}

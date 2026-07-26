@@ -10,6 +10,9 @@
 # EVENT_SERVER_COLD_BOOT_WAIT_V1 — soft kickstart + 180s wait before hard -k kickstart.
 # Hard -k during a slow cold boot caused restart storms (Event_3 :5113).
 #
+# EVENT_SERVER_BOOT_STAGGER_V1 — RunAtLoad sleeps (N-1)*3s via
+# run_launchd_event_server.sh so Event_1..N do not thundering-herd Dropbox.
+#
 # LD-505_TOOLING_CODE_ROOT_V1 — ProgramArguments use mindfulnest-tooling
 # production_server.py; --event-dir points at Dropbox Production/Event_N (data only).
 #
@@ -65,9 +68,15 @@ PLIST_NEW="${PLIST}.new"
 LEGACY_PLIST="${HOME}/Library/LaunchAgents/${LEGACY_LABEL}.plist"
 UID_NUM="$(id -u)"
 DOMAIN="gui/${UID_NUM}"
+# EVENT_SERVER_BOOT_STAGGER_V1 — Event_1=0s, Event_2=3s, … Event_7=18s
+EVENT_NUM="$(python3 -c "import re,sys; m=re.match(r'Event_(\d+)$', sys.argv[1]); print(int(m.group(1)) if m else 1)" "$EVENT_ID")"
+BOOT_STAGGER_S=$(( (EVENT_NUM - 1) * 3 ))
+STAGGER_WRAPPER="${SCRIPT_DIR}/run_launchd_event_server.sh"
 
 [[ -f "$SERVER" ]] || { echo "FATAL: missing tooling server at $SERVER" >&2; exit 1; }
 [[ -d "$EVENT_DIR_ABS" ]] || { echo "FATAL: missing Dropbox event dir $EVENT_DIR_ABS" >&2; exit 1; }
+[[ -f "$STAGGER_WRAPPER" ]] || { echo "FATAL: missing stagger wrapper $STAGGER_WRAPPER" >&2; exit 1; }
+chmod +x "$STAGGER_WRAPPER"
 
 kickstart_agent_soft() {
   launchctl kickstart "${DOMAIN}/${LABEL}" 2>/dev/null \
@@ -186,6 +195,9 @@ cat > "$PLIST_NEW" <<PLIST
 	<string>${LABEL}</string>
 	<key>ProgramArguments</key>
 	<array>
+		<string>/bin/bash</string>
+		<string>${STAGGER_WRAPPER}</string>
+		<string>${BOOT_STAGGER_S}</string>
 		<string>${PYTHON}</string>
 		<string>${SERVER}</string>
 		<string>--event-dir</string>

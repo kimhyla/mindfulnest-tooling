@@ -1232,6 +1232,97 @@ def auto_upscale_image(data_uri: str, target_min: int = MIN_ANIMATION_SIZE) -> t
 # State manager — thread-safe JSON state + spend on disk
 # ---------------------------------------------------------------------------
 
+# Dropbox File Provider on macOS returns errno 11 (EDEADLK) / 35 (EAGAIN) under
+# concurrent cold-boot. KeepAlive LaunchAgents must retry — bare read_text()
+# turns a transient sync glitch into a fleet crash-loop.
+_DROPBOX_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
+_DROPBOX_IO_MAX_ATTEMPTS = 12
+
+
+def _dropbox_io_backoff_s(attempt: int) -> float:
+    return min(4.0, 0.15 * (2 ** attempt))
+
+
+def _read_bytes_dropbox_durable(path: Path) -> bytes:
+    """Read bytes from Dropbox-backed paths with retry on transient errno 11/35."""
+    last_err: OSError | None = None
+    for attempt in range(_DROPBOX_IO_MAX_ATTEMPTS):
+        try:
+            with open(path, "rb") as f:
+                return f.read()
+        except OSError as exc:
+            last_err = exc
+            if (
+                exc.errno not in _DROPBOX_IO_TRANSIENT_ERRNOS
+                or attempt >= _DROPBOX_IO_MAX_ATTEMPTS - 1
+            ):
+                raise
+            time.sleep(_dropbox_io_backoff_s(attempt))
+    assert last_err is not None
+    raise last_err
+
+
+def _read_text_dropbox_durable(path: Path, *, encoding: str = "utf-8") -> str:
+    return _read_bytes_dropbox_durable(path).decode(encoding)
+
+
+def _read_json_file_dropbox_durable(path: Path) -> dict:
+    """Read JSON from Dropbox-backed paths with retry on transient errno 11/35."""
+    text = _read_text_dropbox_durable(path)
+    if not text.strip():
+        raise json.JSONDecodeError("Expecting value", text, 0)
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise json.JSONDecodeError("Expected object", text, 0)
+    return data
+
+
+def _storyboard_local_cache_path(event_id: str, storyboard_name: str) -> Path:
+    safe_event = re.sub(r"[^A-Za-z0-9_.-]+", "_", (event_id or "unknown").strip()) or "unknown"
+    safe_name = Path(storyboard_name).name or "storyboard.html"
+    cache_dir = Path.home() / ".mindfulnest" / "storyboard_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir / f"{safe_event}_{safe_name}"
+
+
+def refresh_storyboard_local_cache(storyboard_path: Path, *, event_id: str) -> Path | None:
+    """Best-effort copy of Dropbox storyboard HTML into local cache for serve fallback."""
+    if not storyboard_path:
+        return None
+    cache_path = _storyboard_local_cache_path(event_id, storyboard_path.name)
+    try:
+        data = _read_bytes_dropbox_durable(storyboard_path)
+        if len(data) < 1000:
+            return cache_path if cache_path.is_file() else None
+        tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        tmp.write_bytes(data)
+        tmp.replace(cache_path)
+        return cache_path
+    except OSError:
+        return cache_path if cache_path.is_file() else None
+
+
+def read_storyboard_html_durable(storyboard_path: Path, *, event_id: str) -> str:
+    """Serve storyboard HTML with Dropbox retry + local cache fallback."""
+    cache_path = _storyboard_local_cache_path(event_id, storyboard_path.name)
+    try:
+        html = _read_text_dropbox_durable(storyboard_path)
+        if len(html) >= 1000:
+            try:
+                tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
+                tmp.write_text(html, encoding="utf-8")
+                tmp.replace(cache_path)
+            except OSError:
+                pass
+            return html
+    except OSError:
+        pass
+    if cache_path.is_file() and cache_path.stat().st_size >= 1000:
+        return cache_path.read_text(encoding="utf-8")
+    # Last attempt: raise original-class failure from Dropbox path.
+    return _read_text_dropbox_durable(storyboard_path)
+
+
 class StateManager:
     def __init__(self, event_dir: Path, event_id: str):
         self.event_dir = event_dir
@@ -1245,10 +1336,13 @@ class StateManager:
         self.clips_dir.mkdir(parents=True, exist_ok=True)
         # In-process lock (between server threads)
         self.lock = threading.Lock()
-        # Inter-process lock path — used by fcntl.lockf so the recovery CLI
-        # tool and the running server can safely mutate state.json concurrently.
-        # Tier 3 C2 CRITICAL fix (April 16 2026).
-        self.file_lock_path = event_dir / ".state.lock"
+        # Inter-process lock MUST stay off Dropbox. fcntl.lockf on a
+        # File-Provider path + concurrent Dropbox reads yields errno 11
+        # (Resource deadlock avoided) and KeepAlive crash-loops the fleet.
+        # Local lock still serializes server vs recovery CLI on this Mac.
+        lock_dir = Path.home() / ".mindfulnest" / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        self.file_lock_path = lock_dir / f"{event_id}.state.lock"
         # BS1: Directus-backed cross-machine semaphore scope.
         # Resource key is per-event so different events don't block each other.
         self.directus_lock_key = f"{event_id}/state"
@@ -1367,7 +1461,7 @@ class StateManager:
         with self.lock:
             fd = self._acquire_file_lock()
             try:
-                return json.loads(self.state_path.read_text())
+                return _read_json_file_dropbox_durable(self.state_path)
             finally:
                 self._release_file_lock(fd)
 
@@ -1400,7 +1494,7 @@ class StateManager:
                 )
             fd = self._acquire_file_lock()
             try:
-                state = json.loads(self.state_path.read_text())
+                state = _read_json_file_dropbox_durable(self.state_path)
                 result = fn(state)
                 # DISPLAY_ORDER_STRICT_V2 (C-10 K4 fix): defense-in-depth
                 # prune. The mutate_video_state path at line 1264-1296 has a
@@ -1448,7 +1542,7 @@ class StateManager:
         with self.lock:
             fd = self._acquire_file_lock()
             try:
-                return json.loads(self.spend_path.read_text())
+                return _read_json_file_dropbox_durable(self.spend_path)
             finally:
                 self._release_file_lock(fd)
 
@@ -1804,7 +1898,11 @@ class StitchEditorState:
     def __init__(self, state_path: Path):
         self.state_path = state_path
         self.lock = threading.Lock()
-        self.file_lock_path = state_path.with_suffix(".lock")
+        # Keep fcntl lock off Dropbox (same class as StateManager).
+        lock_dir = Path.home() / ".mindfulnest" / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        digest = hashlib.sha1(str(state_path).encode("utf-8")).hexdigest()[:16]
+        self.file_lock_path = lock_dir / f"stitch_editor_{digest}.lock"
         self._init_file()
 
     def _init_file(self) -> None:
@@ -13688,6 +13786,15 @@ def run_server(
     if not storyboard_path.is_file():
         print(f"ERROR: storyboard not found: {storyboard_path}", file=sys.stderr)
         return 2
+    cached = refresh_storyboard_local_cache(storyboard_path, event_id=event_id)
+    if cached is not None:
+        print(f"[startup] storyboard local cache ready: {cached}", flush=True)
+    else:
+        print(
+            "[startup] WARN: storyboard local cache unavailable — "
+            "HTML serve will retry Dropbox only",
+            flush=True,
+        )
 
     print(
         f"[startup] event scope event_id={event_id} pin_source={pin_source} "
@@ -13978,10 +14085,14 @@ def run_server(
         )
 
         if is_numbered_event_id(event_id):
+            # hydrate_from_disk=False: Dropbox File Provider can stall a full
+            # disk walk for minutes and KeepAlive kills the process before
+            # the port binds. Registration alone is enough to listen; first
+            # Stitcher open hydrates (same pattern as event_video.py).
             boot = ensure_event_stitch_job_registered(
                 stitch_bootstrap_shim_for_app(app),
                 event_id,
-                hydrate_from_disk=True,
+                hydrate_from_disk=False,
             )
             if boot.get("changed"):
                 print(

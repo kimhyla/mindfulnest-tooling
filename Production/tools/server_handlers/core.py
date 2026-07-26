@@ -312,13 +312,24 @@ def server_mutation_gate_reason(app) -> str | None:
 
 def serve_storyboard(h) -> None:
     if not h.app.storyboard_path.is_file():
+        # Local cache may still serve after Dropbox metadata flakes.
+        pass
+    # Dropbox File Provider can return errno 11 on hot HTML reads under load.
+    # Prefer live Dropbox file; fall back to ~/.mindfulnest/storyboard_cache.
+    from production_server import read_storyboard_html_durable
+
+    try:
+        html = read_storyboard_html_durable(
+            h.app.storyboard_path,
+            event_id=getattr(h.app, "event_id", "") or "",
+        )
+    except OSError as exc:
         return h._send_error_v59(
-                   500,
-                   error_code="GENERIC_ERROR",
-                   error_message=f"storyboard not found: {h.app.storyboard_path}",
-                   retry_safe=True,
-               )
-    html = h.app.storyboard_path.read_text(encoding="utf-8")
+            500,
+            error_code="GENERIC_ERROR",
+            error_message=f"storyboard unreadable: {exc}",
+            retry_safe=True,
+        )
     nav = h._build_storyboard_nav_html()
     if "</body>" in html:
         html = html.replace("</body>", nav + "\n</body>", 1)
