@@ -15,7 +15,8 @@ grep -q "HOT_SERVE_ALL_FILES_V1" "$PS" \
 grep -q "_ensure_local_file_for_serve" "$PS" \
   || fail "_ensure_local_file_for_serve missing"
 
-# Non-video /files path must call hot-serve before open().read().
+# Non-video /files path must call hot-serve before any byte read.
+# Accept open(...) or Path.read_bytes() — CodeQL prefers Path after startswith.
 python3 - "$PS" <<'PY' || fail "source contract: /files must hot-serve before open"
 import sys
 from pathlib import Path
@@ -25,14 +26,22 @@ end = ps.find("\n    def _handle_cr_save_crop", start)
 body = ps[start:end]
 if "_ensure_local_file_for_serve" not in body:
     raise SystemExit("hot-serve not called inside _handle_files_serve")
-open_idx = -1
-for needle in ('open(safe_serve, "rb")', 'open(serve_path, "rb")', 'open(file_path, "rb")'):
-    open_idx = body.find(needle)
-    if open_idx >= 0:
+read_idx = -1
+for needle in (
+    'open(safe_serve, "rb")',
+    'open(serve_path, "rb")',
+    'open(file_path, "rb")',
+    "serve_path.read_bytes()",
+    "Path(safe_serve).read_bytes()",
+):
+    read_idx = body.find(needle)
+    if read_idx >= 0:
         break
 hot_idx = body.find("_ensure_local_file_for_serve")
-if open_idx < 0 or hot_idx < 0 or hot_idx > open_idx:
-    raise SystemExit("ensure_local must precede open(...) in _handle_files_serve")
+if read_idx < 0 or hot_idx < 0 or hot_idx > read_idx:
+    raise SystemExit(
+        "ensure_local must precede open(...)/read_bytes() in _handle_files_serve"
+    )
 if "HOT_SERVE_MATERIALIZE_FAILED" not in body:
     raise SystemExit("materialize failure must map to HOT_SERVE_MATERIALIZE_FAILED")
 # Native CodeQL sanitizer: assign safe_serve inside startswith branch.
