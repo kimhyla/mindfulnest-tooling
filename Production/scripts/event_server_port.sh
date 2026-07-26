@@ -61,6 +61,42 @@ event_server_wait_http() {
   return 1
 }
 
+# EVENT_DROPBOX_JSON_FETCH_V1 — shared fetch for live endpoints whose first
+# read walks Dropbox File Provider (cr/library, stitch_editor/library, gallery).
+# A cold Event_4 library list was measured at ~70s, so any gate using a 30-60s
+# ceiling fails on timing, not on contract. Two failure modes this closes:
+#   1. too-short timeout → curl gives up mid-walk
+#   2. `curl -sf` returning "" on failure, piped straight into json.loads,
+#      surfacing as an opaque JSONDecodeError with no URL in the message
+# Callers get valid JSON on stdout or a non-zero exit with a readable reason.
+: "${EVENT_DROPBOX_CURL_MAX_SECONDS:=180}"
+: "${EVENT_DROPBOX_CURL_ATTEMPTS:=2}"
+
+event_curl_json() {
+  local url="${1:?url required}"
+  local max_time="${2:-${EVENT_DROPBOX_CURL_MAX_SECONDS}}"
+  local attempts="${3:-${EVENT_DROPBOX_CURL_ATTEMPTS}}"
+  local body http_code tmp i
+  tmp="$(mktemp "${TMPDIR:-/tmp}/event_curl_json.XXXXXX")"
+  for (( i = 1; i <= attempts; i++ )); do
+    http_code="$(curl -s -o "$tmp" -w '%{http_code}' --max-time "$max_time" "$url" || echo 000)"
+    if [[ "$http_code" == "200" ]] && python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$tmp" 2>/dev/null; then
+      cat "$tmp"
+      rm -f "$tmp"
+      return 0
+    fi
+    if (( i < attempts )); then
+      echo "[event-curl-json] retry ${i}/${attempts} http=${http_code} ${url}" >&2
+      sleep 3
+    fi
+  done
+  body="$(head -c 200 "$tmp" 2>/dev/null || true)"
+  rm -f "$tmp"
+  echo "[event-curl-json] FAIL http=${http_code} after ${attempts} attempt(s) (max-time=${max_time}s): ${url}" >&2
+  [[ -n "$body" ]] && echo "[event-curl-json] body[0:200]=${body}" >&2
+  return 1
+}
+
 event_server_http_serves_event() {
   local port="${1:?port required}"
   local event_id="${2:?event_id required}"

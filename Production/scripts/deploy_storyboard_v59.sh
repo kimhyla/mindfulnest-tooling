@@ -270,8 +270,23 @@ for sub in Production/tools Production/lib Production/scripts; do
         continue
     fi
     log_safe="$(echo "$sub" | tr '/' '_')"
+    # DEPLOY_MIRROR_NO_BUILD_INPUTS_V1 — node_modules is ~3.9k tiny files that
+    # every deploy re-stat'd through the Dropbox File Provider (~45 min observed,
+    # with 3 files actually changed). That traffic is also what pressures the
+    # File Provider into the errno 11 "resource deadlock avoided" failures that
+    # crash-looped the Event fleet on cold boot. Nothing on the Dropbox side
+    # needs it: the client is shipped as the self-contained dist/index.html
+    # copied in step (c), the build runs from the tooling repo, and the parity
+    # gate compares an explicit list of .py/.sh files only.
+    # Excluded paths are also protected from --delete, so an already-mirrored
+    # copy is left untouched rather than being torn down over Dropbox.
     rsync -a --delete \
         --exclude 'stitch_editor_state.json' \
+        --exclude 'node_modules' \
+        --exclude '.vite' \
+        --exclude '__pycache__' \
+        --exclude '*.pyc' \
+        --exclude '.venv' \
         "$SRC_TOOLING/$sub/" \
         "$DEST_DROPBOX/$sub/" \
         2>&1 | tee "$LOG_DIR/rsync_${log_safe}.log"

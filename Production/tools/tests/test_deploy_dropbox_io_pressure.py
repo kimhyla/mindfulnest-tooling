@@ -1,0 +1,231 @@
+"""Deploy must not grind the Dropbox File Provider, and gates must fail readably.
+
+Two regressions from the 2026-07-26 cold-boot incident are locked here:
+
+1. The tooling -> Dropbox mirror re-stat'd ~3.9k node_modules files on every
+   deploy (~45 min observed for 3 changed files). That traffic is the same
+   File Provider pressure that produced the errno 11 crash-loop across the
+   Event fleet, so the mirror must exclude regenerable build inputs.
+
+2. Gate scripts fetched Dropbox-backed JSON endpoints with `curl -sf` and piped
+   the result straight into json.loads. A slow cold library walk yielded an
+   empty body and an opaque JSONDecodeError with no URL, which is what killed
+   the deploy at the library panel gate.
+
+Both are exercised for real -- the rsync flags are read out of the deploy
+script and run against a fixture tree, and event_curl_json is run against live
+local HTTP servers -- so behaviour is locked rather than script wording.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+DEPLOY = REPO / "scripts" / "deploy_storyboard_v59.sh"
+PORT_LIB = REPO / "scripts" / "event_server_port.sh"
+
+# Regenerable build inputs the Dropbox runtime never reads. dist/index.html is
+# copied explicitly by deploy step (c) and is deliberately not in this set.
+BUILD_INPUTS = ("node_modules", ".vite", "__pycache__", ".venv")
+
+
+def _mirror_rsync_excludes() -> list[str]:
+    """Pull the exclude flags off the real mirror rsync in the deploy script."""
+    text = DEPLOY.read_text(encoding="utf-8")
+    marker = 'rsync -a --delete \\'
+    start = text.index(marker)
+    block = text[start : text.index('"$SRC_TOOLING/$sub/"', start)]
+    return re.findall(r"--exclude '([^']+)'", block)
+
+
+def test_mirror_excludes_regenerable_build_inputs() -> None:
+    excludes = _mirror_rsync_excludes()
+    for name in BUILD_INPUTS:
+        assert name in excludes, (
+            f"deploy mirror must exclude {name!r}; mirroring it re-stats "
+            f"thousands of files through Dropbox every deploy. got={excludes}"
+        )
+
+
+def test_mirror_still_excludes_runtime_stitch_state() -> None:
+    """The pre-existing runtime-data exclusion must survive the new ones."""
+    assert "stitch_editor_state.json" in _mirror_rsync_excludes()
+
+
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="rsync required")
+def test_mirror_flags_skip_and_preserve_node_modules(tmp_path: Path) -> None:
+    """Run the deploy script's own exclude set against a fixture tree.
+
+    Covers both halves of the fix: node_modules is not pushed, and an existing
+    Dropbox-side copy is left alone rather than torn down by --delete (an
+    excluded path is protected from deletion).
+    """
+    src = tmp_path / "src"
+    dest = tmp_path / "dest"
+    (src / "storyboard-v2" / "node_modules" / "left-pad").mkdir(parents=True)
+    (src / "storyboard-v2" / "node_modules" / "left-pad" / "index.js").write_text(
+        "module.exports = 1;\n", encoding="utf-8"
+    )
+    (src / "production_server.py").write_text("print('real code')\n", encoding="utf-8")
+
+    (dest / "storyboard-v2" / "node_modules" / "stale-pkg").mkdir(parents=True)
+    (dest / "storyboard-v2" / "node_modules" / "stale-pkg" / "index.js").write_text(
+        "module.exports = 0;\n", encoding="utf-8"
+    )
+
+    cmd = ["rsync", "-a", "--delete"]
+    for name in _mirror_rsync_excludes():
+        cmd += ["--exclude", name]
+    cmd += [f"{src}/", f"{dest}/"]
+    res = subprocess.run(cmd, capture_output=True, text=True)
+    assert res.returncode == 0, res.stderr
+
+    assert (dest / "production_server.py").is_file(), "real code must still mirror"
+    assert not (dest / "storyboard-v2" / "node_modules" / "left-pad").exists(), (
+        "node_modules must not be pushed into Dropbox"
+    )
+    assert (dest / "storyboard-v2" / "node_modules" / "stale-pkg" / "index.js").is_file(), (
+        "--delete must not tear down an excluded Dropbox-side node_modules"
+    )
+
+
+def _run_event_curl_json(url: str, *, max_time: str = "10", attempts: str = "1") -> subprocess.CompletedProcess:
+    script = textwrap.dedent(
+        f"""
+        set -euo pipefail
+        source {PORT_LIB!s}
+        event_curl_json "$1" "{max_time}" "{attempts}"
+        """
+    )
+    return subprocess.run(["bash", "-c", script, "bash", url], capture_output=True, text=True)
+
+
+class _Server:
+    """Tiny local HTTP server so the helper is tested against real sockets."""
+
+    def __init__(self, handler_body: str) -> None:
+        self._body = handler_body
+        self._proc: subprocess.Popen | None = None
+        self.port = 0
+
+    def __enter__(self) -> "_Server":
+        code = (
+            "from http.server import BaseHTTPRequestHandler, HTTPServer\n"
+            "class H(BaseHTTPRequestHandler):\n"
+            "    def do_GET(self):\n"
+            + textwrap.indent(self._body, " " * 8)
+            + "\n"
+            "    def log_message(self, *a):\n"
+            "        pass\n"
+            'srv = HTTPServer(("127.0.0.1", 0), H)\n'
+            "print(srv.server_port, flush=True)\n"
+            "srv.serve_forever()\n"
+        )
+        self._proc = subprocess.Popen(
+            [sys.executable, "-c", code], stdout=subprocess.PIPE, text=True
+        )
+        assert self._proc.stdout is not None
+        self.port = int(self._proc.stdout.readline().strip())
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._proc is not None:
+            self._proc.terminate()
+            self._proc.wait(timeout=10)
+
+
+def test_event_curl_json_returns_body_on_success() -> None:
+    body = textwrap.dedent(
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"images": [1, 2, 3]}')
+        """
+    ).strip()
+    with _Server(body) as srv:
+        res = _run_event_curl_json(f"http://127.0.0.1:{srv.port}/api/cr/library")
+    assert res.returncode == 0, res.stderr
+    assert '"images"' in res.stdout
+
+
+def test_event_curl_json_fails_readably_on_empty_body() -> None:
+    """The exact deploy-killing shape: 200-with-nothing must not reach json.loads."""
+    body = textwrap.dedent(
+        """
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"")
+        """
+    ).strip()
+    with _Server(body) as srv:
+        url = f"http://127.0.0.1:{srv.port}/api/cr/library"
+        res = _run_event_curl_json(url)
+    assert res.returncode != 0
+    assert "JSONDecodeError" not in res.stderr, "must not surface a raw traceback"
+    assert "[event-curl-json] FAIL" in res.stderr
+    assert url in res.stderr, "failure must name the URL that failed"
+
+
+def test_event_curl_json_fails_readably_on_http_error() -> None:
+    body = textwrap.dedent(
+        """
+        self.send_response(500)
+        self.end_headers()
+        self.wfile.write(b"THUMB_GENERATION_FAILED")
+        """
+    ).strip()
+    with _Server(body) as srv:
+        res = _run_event_curl_json(f"http://127.0.0.1:{srv.port}/api/cr/library")
+    assert res.returncode != 0
+    assert "http=500" in res.stderr
+
+
+def test_event_curl_json_retries_before_giving_up() -> None:
+    """A cold Dropbox walk can fail once and succeed on the warm retry."""
+    body = textwrap.dedent(
+        """
+        H.hits = getattr(H, "hits", 0) + 1
+        if H.hits == 1:
+            self.send_response(503)
+            self.end_headers()
+            return
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b'{"images": []}')
+        """
+    ).strip()
+    with _Server(body) as srv:
+        res = _run_event_curl_json(
+            f"http://127.0.0.1:{srv.port}/api/cr/library", attempts="2"
+        )
+    assert res.returncode == 0, res.stderr
+    assert '"images"' in res.stdout
+
+
+def test_dropbox_timeout_default_clears_observed_cold_walk() -> None:
+    """Cold Event_4 library list measured ~70s; gates must not sit at 30-60s."""
+    res = subprocess.run(
+        ["bash", "-c", f'source {PORT_LIB!s}; echo "$EVENT_DROPBOX_CURL_MAX_SECONDS"'],
+        capture_output=True,
+        text=True,
+    )
+    assert res.returncode == 0, res.stderr
+    assert int(res.stdout.strip()) >= 120
+
+
+def test_library_panel_gate_uses_shared_fetch_helper() -> None:
+    """The gate that failed the deploy must go through the hardened helper."""
+    gate = (REPO / "scripts" / "verify_library_panel_contract_durability.sh").read_text(
+        encoding="utf-8"
+    )
+    assert "event_curl_json" in gate
+    assert "curl -sf --max-time 60" not in gate, "short raw curl reintroduced"
