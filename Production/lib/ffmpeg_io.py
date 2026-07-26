@@ -131,6 +131,8 @@ def path_stat_durable(path: str | Path, *, roots: Sequence[str]) -> os.stat_resu
     last_err: OSError | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
+            # codeql[py/path-injection]: path_s assigned only after realpath+startswith
+            # containment in confined_path_under_roots (CODEQL_PATH_INJECTION_NATIVE_PATTERN).
             return os.stat(path_s)
         except OSError as exc:
             last_err = exc
@@ -147,6 +149,7 @@ def path_isfile_durable(path: str | Path, *, roots: Sequence[str]) -> bool:
     last_err: OSError | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
+            # codeql[py/path-injection]: path_s confined via confined_path_under_roots.
             return os.path.isfile(path_s)
         except OSError as exc:
             last_err = exc
@@ -163,6 +166,7 @@ def read_bytes_durable(path: str | Path, *, roots: Sequence[str]) -> bytes:
     last_err: OSError | None = None
     for attempt in range(_MAX_ATTEMPTS):
         try:
+            # codeql[py/path-injection]: path_s confined via confined_path_under_roots.
             with open(path_s, "rb") as fh:
                 return fh.read()
         except OSError as exc:

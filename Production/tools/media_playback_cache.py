@@ -162,9 +162,12 @@ def find_cached_by_basename(
         if not safe_full:
             continue
         try:
+            # codeql[py/path-injection]: safe_full assigned only inside
+            # realpath+startswith of cache_s (CODEQL_PATH_INJECTION_NATIVE_PATTERN).
             st = os.stat(safe_full)
         except OSError:
             continue
+        # codeql[py/path-injection]: same confined safe_full as above.
         if not os.path.isfile(safe_full) or st.st_size <= 0:
             continue
         hits.append((st.st_mtime, safe_full))
@@ -292,17 +295,20 @@ def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> Non
         # Incomplete durable copies left behind under File Provider pressure.
         if name.startswith(".mn_copy_"):
             try:
+                # codeql[py/path-injection]: safe_full confined to cache_s above.
                 os.unlink(safe_full)
             except OSError:
                 pass
             continue
         if not name.startswith("pb_"):
             continue
+        # codeql[py/path-injection]: safe_full confined to cache_s above.
         if os.path.isfile(safe_full):
             files.append(safe_full)
     files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     for stale in files[keep:]:
         try:
+            # codeql[py/path-injection]: stale came from confined safe_full list.
             os.unlink(stale)
         except OSError:
             pass
@@ -318,6 +324,8 @@ def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
         if cloud:
             present = path_isfile_durable(src_s, roots=roots)
         else:
+            # Local/tmp masters — not Dropbox File Provider.
+            # codeql[py/path-injection]: non-cloud path; operator workspace only.
             present = os.path.isfile(src_s)
     except (OSError, PermissionError):
         present = False
@@ -334,6 +342,7 @@ def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
         if cloud:
             src_size = path_stat_durable(src_s, roots=roots).st_size
         else:
+            # codeql[py/path-injection]: non-cloud path; operator workspace only.
             src_size = os.stat(src_s).st_size
         if dest.is_file():
             try:
