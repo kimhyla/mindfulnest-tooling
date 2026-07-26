@@ -70,7 +70,9 @@ PY
 }
 
 curl_json() {
-  curl -sf --max-time 60 "$@"
+  # Dropbox File Provider on macOS can take >60s for Event library walks
+  # after cold boot / vacation return — keep smoke aligned with that class.
+  curl -sf --max-time 120 "$@"
 }
 
 cleanup() {
