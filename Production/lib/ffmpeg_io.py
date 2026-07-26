@@ -10,12 +10,21 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 # Dropbox/FUSE transient errno on macOS CloudStorage
+# [CONFIRMED against Python 3.12 errno constants on Darwin]
+# errno 11 = EDEADLK; errno 35 = EAGAIN.
 _TRANSIENT_ERRNOS = frozenset({11, 35})
 _MAX_ATTEMPTS = 12
+# Public aliases for callers that must share the same retry policy.
+DROPBOX_IO_TRANSIENT_ERRNOS = _TRANSIENT_ERRNOS
+DROPBOX_IO_MAX_ATTEMPTS = _MAX_ATTEMPTS
 
 
 def _backoff_s(attempt: int) -> float:
     return min(4.0, 0.15 * (2 ** attempt))
+
+
+def dropbox_io_backoff_s(attempt: int) -> float:
+    return _backoff_s(attempt)
 
 
 def path_is_cloud_storage_backed(path: str | Path) -> bool:
@@ -83,6 +92,90 @@ def commit_local_file_to_dest(local_path: str | Path, dest: str | Path) -> None:
 
 def sidecar_io_transient(exc: BaseException) -> bool:
     return isinstance(exc, OSError) and getattr(exc, "errno", None) in _TRANSIENT_ERRNOS
+
+
+def dropbox_io_transient(exc: BaseException) -> bool:
+    """True for macOS File Provider errno 11 (EDEADLK) / 35 (EAGAIN)."""
+    return sidecar_io_transient(exc)
+
+
+def confined_path_under_roots(path: str | Path, roots: Sequence[str]) -> str:
+    """Return realpath only when it is exactly a root or under root+sep.
+
+    CODEQL_PATH_INJECTION_NATIVE_PATTERN — callers must use the returned string
+    (assigned inside the startswith branch) for subsequent open/stat/isfile.
+    """
+    try:
+        real = os.path.realpath(os.path.expanduser(str(path)))
+    except OSError:
+        real = os.path.abspath(os.path.expanduser(str(path)))
+    safe = ""
+    for root in roots:
+        if not root:
+            continue
+        try:
+            root_real = os.path.realpath(root)
+        except OSError:
+            root_real = os.path.abspath(root)
+        if real == root_real or real.startswith(root_real + os.sep):
+            safe = real
+            break
+    if not safe:
+        raise PermissionError(f"path outside allowed roots: {path}")
+    return safe
+
+
+def path_stat_durable(path: str | Path, *, roots: Sequence[str]) -> os.stat_result:
+    """stat() with errno 11/35 retry after root confinement."""
+    path_s = confined_path_under_roots(path, roots)
+    last_err: OSError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            # codeql[py/path-injection]: path_s assigned only after realpath+startswith
+            # containment in confined_path_under_roots (CODEQL_PATH_INJECTION_NATIVE_PATTERN).
+            return os.stat(path_s)
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_s(attempt))
+    assert last_err is not None
+    raise last_err
+
+
+def path_isfile_durable(path: str | Path, *, roots: Sequence[str]) -> bool:
+    """isfile() with errno 11/35 retry after root confinement."""
+    path_s = confined_path_under_roots(path, roots)
+    last_err: OSError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            # codeql[py/path-injection]: path_s confined via confined_path_under_roots.
+            return os.path.isfile(path_s)
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_s(attempt))
+    assert last_err is not None
+    raise last_err
+
+
+def read_bytes_durable(path: str | Path, *, roots: Sequence[str]) -> bytes:
+    """Read whole file with errno 11/35 retry after root confinement."""
+    path_s = confined_path_under_roots(path, roots)
+    last_err: OSError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            # codeql[py/path-injection]: path_s confined via confined_path_under_roots.
+            with open(path_s, "rb") as fh:
+                return fh.read()
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_s(attempt))
+    assert last_err is not None
+    raise last_err
 
 
 def ffmpeg_failure_transient(stderr: str | None) -> bool:

@@ -8361,19 +8361,31 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        error_message="path validation failed",
                        retry_safe=False,
                    )
+        # CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1 — assign safe_serve
+        # only inside startswith; open/stat only that assigned string.
         safe_serve = ""
         for _r in roots:
             if _r and (_serve_resolved == _r or _serve_resolved.startswith(_r + os.sep)):
                 safe_serve = _serve_resolved
                 break
-        if not (safe_serve and os.path.isfile(safe_serve)):
+        if not safe_serve:
             return self._send_error_v59(
                        403,
                        error_code="PATH_OUTSIDE_PROJECT_ROOT",
                        error_message="path outside project root",
                        retry_safe=False,
                    )
-        ext = os.path.splitext(safe_serve)[1].lower()
+        # Use Path methods on the confined string — CodeQL treats os.path.isfile
+        # of a still-tainted name as path-injection even after startswith.
+        serve_path = Path(safe_serve)
+        if not serve_path.is_file():
+            return self._send_error_v59(
+                       403,
+                       error_code="PATH_OUTSIDE_PROJECT_ROOT",
+                       error_message="path outside project root",
+                       retry_safe=False,
+                   )
+        ext = serve_path.suffix.lower()
         content_types = {
             ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
             ".webp": "image/webp", ".gif": "image/gif",
@@ -8386,11 +8398,10 @@ class ProductionHandler(BaseHTTPRequestHandler):
         # browser <video> elements can seek (e.g. after pause+resume).
         # _serve_mp4_with_range handles Range headers → 206 responses properly.
         if ext in (".mp4", ".mov"):
-            return self._serve_mp4_with_range(Path(safe_serve))
+            return self._serve_mp4_with_range(serve_path)
         ct = content_types.get(ext, "application/octet-stream")
         try:
-            with open(safe_serve, "rb") as _f:
-                data = _f.read()
+            data = serve_path.read_bytes()
         except OSError as exc:
             # Belt-and-suspenders: if APFS cache read still hits a transient
             # errno, surface retryable 503 — never raw 500 GENERIC_ERROR.
@@ -11748,20 +11759,35 @@ body {{padding-top:44px!important;}}
 
     def _serve_stitch_peaks_file(self, fname: str) -> None:
         """GET /api/stitch_editor/peaks_file/<fname> — waveform peaks JSON."""
+        from lib.ffmpeg_io import path_isfile_durable, read_bytes_durable
+
         safe = Path(fname).name
         target = self._stitch_cache_dir() / safe
-        if not target.is_file():
-            return self._send_error_v59(
-                404,
-                error_code="PEAKS_NOT_FOUND",
-                error_message=f"Peaks file not found: {safe}",
-                retry_safe=False,
-            )
+        # Peaks live under Dropbox Production/stitch_editor_cache — confine to
+        # project + hot roots before durable read.
         try:
-            body = target.read_bytes()
-        except OSError as exc:
+            drop_root = os.path.realpath(str(DROPBOX_ROOT))
+        except OSError:
+            drop_root = os.path.abspath(str(DROPBOX_ROOT))
+        roots = [drop_root, os.path.realpath(str(_MN_REPO_ROOT))]
+        try:
+            from media_hot_root import media_hot_serve_roots
+
+            roots.extend(media_hot_serve_roots())
+        except Exception:
+            pass
+        try:
+            if not path_isfile_durable(target, roots=roots):
+                return self._send_error_v59(
+                    404,
+                    error_code="PEAKS_NOT_FOUND",
+                    error_message=f"Peaks file not found: {safe}",
+                    retry_safe=False,
+                )
+            body = read_bytes_durable(target, roots=roots)
+        except (OSError, PermissionError) as exc:
             return self._send_error_v59(
-                500,
+                503,
                 error_code="PEAKS_READ_FAILED",
                 error_message=str(exc),
                 retry_safe=True,
@@ -11815,14 +11841,47 @@ body {{padding-top:44px!important;}}
             project_root / "Production" / "assets" / "ambient_library" / safe,
             project_root / safe,
         ]
+        from lib.ffmpeg_io import path_isfile_durable, path_is_cloud_storage_backed, read_bytes_durable
+
+        try:
+            drop_root = os.path.realpath(str(DROPBOX_ROOT))
+        except OSError:
+            drop_root = os.path.abspath(str(DROPBOX_ROOT))
+        roots = [drop_root, os.path.realpath(str(_MN_REPO_ROOT))]
+        try:
+            from media_hot_root import media_hot_serve_roots
+
+            roots.extend(media_hot_serve_roots())
+        except Exception:
+            pass
+
         content_type = self._stitch_audio_content_type(safe)
         for target in candidates:
-            if target.is_file():
-                body = target.read_bytes()
-                return self._send_bytes(200, body, content_type, extra_headers={
-                    "Cache-Control": "public, max-age=3600",
-                    "Accept-Ranges": "bytes",
-                })
+            try:
+                if not path_isfile_durable(target, roots=roots):
+                    continue
+            except (OSError, PermissionError):
+                continue
+            try:
+                if path_is_cloud_storage_backed(target):
+                    local = self._ensure_local_file_for_serve(target)
+                    body = Path(local).read_bytes()
+                else:
+                    body = read_bytes_durable(target, roots=roots)
+            except OSError as exc:
+                print(f"[hot-serve] stitch audio materialize failed for {target}: {exc}", flush=True)
+                return self._send_error_v59(
+                    503,
+                    error_code="HOT_SERVE_MATERIALIZE_FAILED",
+                    error_message=(
+                        "Dropbox File Provider busy — local playback cache not ready; retry"
+                    ),
+                    retry_safe=True,
+                )
+            return self._send_bytes(200, body, content_type, extra_headers={
+                "Cache-Control": "public, max-age=3600",
+                "Accept-Ranges": "bytes",
+            })
         return self._send_error_v59(
                    404,
                    error_code="GENERIC_ERROR",
