@@ -3440,12 +3440,42 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
                    retry_safe=False,
                )
 
+    # STITCH_AUDIO_EXTRACT_HOT_SERVE_V1 — ffprobe/ffmpeg must not touch Dropbox
+    # File Provider bytes. Event_6: deleting an SFX cue re-ran extract; probe of
+    # intro_kling_o3_*.mp4 raised errno 11 → STITCH_SLOT_VIDEO_UNREADABLE and the
+    # whole waveform vanished even though slot video still played via /files.
+    from media_playback_cache import ensure_hot_serve_file  # noqa: PLC0415
+
+    try:
+        abs_path = str(
+            ensure_hot_serve_file(abs_path, event_dir=Path(h.app.event_dir)),
+        )
+    except OSError as exc:
+        return h._send_error_v59(
+            503,
+            error_code="STITCH_SLOT_VIDEO_UNREADABLE",
+            error_message=(
+                f"cannot materialize slot video for waveform: {video_path_str} ({exc})"
+            ),
+            retry_safe=True,
+            extra={"code": "STITCH_AUDIO_EXTRACT_HOT_SERVE_V1"},
+        )
+
     # Cache key: md5(path) + mtime — Producer/Consumer drift rule (source identity)
     try:
         peaks_abs_path = h._stitch_resolve_path(peaks_video_path_str)
     except ValueError:
         peaks_abs_path = abs_path
-    peaks_mtime_ms = int(os.path.getmtime(peaks_abs_path) * 1000)
+    try:
+        peaks_abs_path = str(
+            ensure_hot_serve_file(peaks_abs_path, event_dir=Path(h.app.event_dir)),
+        )
+    except OSError:
+        peaks_abs_path = abs_path
+    try:
+        peaks_mtime_ms = int(os.path.getmtime(peaks_abs_path) * 1000)
+    except OSError:
+        peaks_mtime_ms = 0
     cache_key = _hl.md5(
         f"{STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1}:{peaks_abs_path}:{peaks_mtime_ms}".encode(),
         usedforsecurity=False,
@@ -3458,10 +3488,10 @@ def handle_stitch_audio_extract(h, body: dict)-> None:
     video_dur_ms = h._ffprobe_duration_ms(Path(abs_path))
     if video_dur_ms <= 0:
         return h._send_error_v59(
-            400,
+            503,
             error_code="STITCH_SLOT_VIDEO_UNREADABLE",
             error_message=f"cannot probe video duration: {video_path_str}",
-            retry_safe=False,
+            retry_safe=True,
             extra={"code": STITCH_SLOT_MEDIA_LINEAGE_DURABILITY_V1},
         )
     from credentials_lib.ffmpeg_stitch import (  # noqa: PLC0415

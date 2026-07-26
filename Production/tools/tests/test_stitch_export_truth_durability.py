@@ -58,6 +58,8 @@ def test_audio_extract_uses_dry_for_four_files_peaks() -> None:
     block = src.split("def handle_stitch_audio_extract", 1)[1].split("\ndef ", 1)[0]
     assert "STITCH_EXPORT_TRUTH_WAVEFORM_SPEECH_V1" in block
     assert "resolve_four_files_waveform_video_path" in block
+    assert "STITCH_AUDIO_EXTRACT_HOT_SERVE_V1" in block
+    assert "ensure_hot_serve_file" in block
 
 
 def test_mix_slot_audio_faststart() -> None:

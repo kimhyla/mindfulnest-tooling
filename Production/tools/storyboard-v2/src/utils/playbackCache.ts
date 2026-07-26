@@ -16,13 +16,16 @@ export async function resolveClipPlaybackTruth(
   const key = videoPath.trim();
   if (!key) return null;
 
+  // PLAYBACK_RESOLVE_NO_SNAPSHOT_V1 — resolve is cache-warm/read, not a write.
+  // Snapshotting state.json through Dropbox before every Beat Gen tile load
+  // was File Provider pressure that raced /files and left option videos spinning.
   const res = await pathappPatch<{
     ok?: boolean;
     playback_url?: string;
     duration_s?: number;
     raw_duration_s?: number;
     cache_token?: string;
-  }>(activeScope.value, 'media_playback_resolve', { path: key });
+  }>(activeScope.value, 'media_playback_resolve', { path: key }, { skipSnapshot: true });
 
   if (!res.ok || !res.data?.playback_url) return null;
   const url = resolveServerMediaUrl(res.data.playback_url);
