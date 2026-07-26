@@ -144,9 +144,9 @@ export function StitcherSlotWaveform({
     let cancelled = false;
     const requestId = ++mixRequestRef.current;
     setMixExtracting(true);
-    setAudioSrc(null);
-    setDisplayPeaks(null);
-    setDisplayDurationS(null);
+    // STITCH_WAVEFORM_KEEP_PRIOR_ON_EXTRACT_V1 — do not blank the strip before
+    // the new extract lands. SFX delete re-fired extract; Dropbox errno 11 then
+    // left "Waveform unavailable" on an empty strip even though video played.
     setExtractError(null);
     (async () => {
       if (artifactPeaksUrl) {
@@ -250,10 +250,7 @@ export function StitcherSlotWaveform({
         setTimelineDurMs(videoDurMs > 0 ? videoDurMs : dur);
         setMixExtracting(false);
       } else {
-        setAudioSrc(null);
-        setDisplayPeaks(null);
-        setDisplayDurationS(null);
-        setExtractDurMs(null);
+        // Prior waveform (if any) stays visible; surface the error as a banner.
         setExtractError(res.error ?? `audio extract HTTP ${res.status}`);
         setMixExtracting(false);
       }

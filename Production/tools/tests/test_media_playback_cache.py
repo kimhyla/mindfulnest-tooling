@@ -69,6 +69,43 @@ def test_resolve_playback_url_returns_cache_endpoint(tmp_path: Path) -> None:
     assert cached is not None and cached.is_file()
 
 
+def test_resolve_playback_url_token_matches_basename_cache_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PLAYBACK_TOKEN_MATCHES_CACHE_FILE_V1 — Event_6 intro_tail spinner class.
+
+    When materialize returns an older pb_* leaf (basename hit), the URL token
+    must be that leaf's token — not a freshly hashed source token that 404s.
+    """
+    import media_playback_cache as mpc
+
+    event_dir = tmp_path / "Event_6"
+    event_dir.mkdir()
+    src = event_dir / "intro_tail.mp4"
+    payload = b"\x00\x00\x00\x20ftypmp42" + b"intro-tail" * 40
+    src.write_bytes(payload)
+
+    stale = playback_cache_dir(event_dir) / "pb_18f93af27cd36e60_intro_tail.mp4"
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.write_bytes(payload)
+
+    monkeypatch.setattr(mpc, "materialize_playback_cache", lambda *_a, **_k: stale)
+
+    result = resolve_playback_url(
+        src,
+        event_dir=event_dir,
+        event_id="Event_6",
+        server_base="http://localhost:5116",
+    )
+    assert result["cache_token"] == "18f93af27cd36e60"
+    assert result["playback_url"].endswith("/api/media/playback/Event_6/18f93af27cd36e60")
+    # Fresh source token would differ after mtime touch — must NOT be used.
+    src.write_bytes(payload + b"x")
+    fresh = playback_cache_token(src)
+    assert fresh != "18f93af27cd36e60"
+    assert lookup_playback_cache_file(event_dir, result["cache_token"]) == stale
+
+
 def test_lookup_playback_cache_miss_returns_none(tmp_path: Path) -> None:
     event_dir = tmp_path / "Event_2"
     event_dir.mkdir()

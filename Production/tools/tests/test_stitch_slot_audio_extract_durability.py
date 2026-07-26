@@ -74,6 +74,8 @@ class StitchSlotAudioExtractDurabilityTests(unittest.TestCase):
         self.assertIn("expected_video_dur_ms", editor)
         self.assertIn("apad=whole_dur", editor)
         self.assertIn("mono_v3", editor)
+        self.assertIn("STITCH_AUDIO_EXTRACT_HOT_SERVE_V1", editor)
+        self.assertIn("ensure_hot_serve_file", editor)
 
     def test_stitcher_slot_waveform_tight_drift_guard(self):
         ui = (
@@ -81,6 +83,14 @@ class StitchSlotAudioExtractDurabilityTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn("> 2000", ui)
         self.assertIn("videoDur * 0.015", ui)
+        self.assertIn("STITCH_WAVEFORM_KEEP_PRIOR_ON_EXTRACT_V1", ui)
+
+    def test_playback_resolve_skips_state_snapshot(self):
+        src = (
+            TOOLS / "storyboard-v2" / "src" / "utils" / "playbackCache.ts"
+        ).read_text(encoding="utf-8")
+        self.assertIn("skipSnapshot: true", src)
+        self.assertIn("PLAYBACK_RESOLVE_NO_SNAPSHOT_V1", src)
 
 
 if __name__ == "__main__":
