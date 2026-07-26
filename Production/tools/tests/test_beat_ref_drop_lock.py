@@ -91,7 +91,9 @@ def test_migrate_sidecar_preserves_locked_library_char_ref(tmp_path: Path, monke
     }
     bg._migrate_sidecar(sidecar)
     beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
-    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
+    # Locked library drops must survive migrate — do not rewrite to Element frontal.
+    assert beat["reference_image"]["abs_path"] == str(library.resolve())
+    assert beat.get("reference_image_locked") is True
     assert library.read_bytes() == b"library"
 
 

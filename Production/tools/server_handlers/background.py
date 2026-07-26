@@ -2406,9 +2406,10 @@ def schedule_operator_workbench_migrate_at_startup(app) -> None:
     """Persist one-time operator workbench heals (library→bg_ref backfill, etc.).
 
     Char-ref hashing heals are deferred: they walk Dropbox Element images and
-    must never run under sidecar_file_lock (startup migrate held the lock for
-    tens of minutes and hung every scope swap — 2026-07-26). Cheap structural
-    heals stay under the lock; speaker/@Image1 heals run per-beat afterward.
+    must never run under the cross-process sidecar flock (startup migrate held
+    that flock for tens of minutes and hung every scope swap — 2026-07-26).
+    Cheap structural heals stay under the flock; speaker/@Image1 heals run
+    per-beat afterward.
     """
     import threading
 
