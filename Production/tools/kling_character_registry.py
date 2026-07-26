@@ -383,6 +383,12 @@ _SHA_CACHE_PATH = Path.home() / ".mindfulnest" / "cache" / "file_sha256_cache.js
 _SHA_CACHE_LOCK = threading.Lock()
 _SHA_CACHE: dict[str, list] | None = None
 _SHA_CACHE_DIRTY = False
+_SHA_CACHE_UNSAVED = 0
+_SHA_CACHE_FLUSH_EVERY = 32
+# Per-poses-dir reverse index: dir_path -> (fingerprint, {sha256: relative_path}).
+# find_pose_rel_by_hash used to re-hash every pose file on every beat heal; with
+# N poses × M beats that held the sidecar lock for the entire Dropbox cold walk.
+_POSE_HASH_INDEX: dict[str, tuple[tuple, dict[str, str]]] = {}
 
 
 def _sha_cache_load_unlocked() -> dict[str, list]:
@@ -398,7 +404,7 @@ def _sha_cache_load_unlocked() -> dict[str, list]:
 
 
 def _sha_cache_save_unlocked() -> None:
-    global _SHA_CACHE_DIRTY
+    global _SHA_CACHE_DIRTY, _SHA_CACHE_UNSAVED
     if not _SHA_CACHE_DIRTY or _SHA_CACHE is None:
         return
     try:
@@ -407,13 +413,25 @@ def _sha_cache_save_unlocked() -> None:
         tmp.write_text(json.dumps(_SHA_CACHE), encoding="utf-8")
         tmp.replace(_SHA_CACHE_PATH)
         _SHA_CACHE_DIRTY = False
+        _SHA_CACHE_UNSAVED = 0
     except OSError:
         pass  # cache is an optimization; never fail the caller
 
 
-def file_sha256(path: str | Path) -> str | None:
-    """Content hash for cross-path Element vs @Image1 alignment checks."""
-    global _SHA_CACHE_DIRTY
+def flush_file_sha256_cache() -> None:
+    """Force any dirty sha256 cache entries to disk (call after bulk hashing)."""
+    with _SHA_CACHE_LOCK:
+        _sha_cache_save_unlocked()
+
+
+def file_sha256(path: str | Path, *, persist: bool = True) -> str | None:
+    """Content hash for cross-path Element vs @Image1 alignment checks.
+
+    ``persist=False`` records the hash in memory but defers the disk write —
+    use during bulk walks (pose-dir indexing) and call flush_file_sha256_cache
+    once at the end so N files cost one JSON write, not N.
+    """
+    global _SHA_CACHE_DIRTY, _SHA_CACHE_UNSAVED
     p = Path(path)
     try:
         st = p.stat()
@@ -437,7 +455,9 @@ def file_sha256(path: str | Path) -> str | None:
             with _SHA_CACHE_LOCK:
                 _sha_cache_load_unlocked()[key] = [st.st_size, st.st_mtime_ns, digest]
                 _SHA_CACHE_DIRTY = True
-                _sha_cache_save_unlocked()
+                _SHA_CACHE_UNSAVED += 1
+                if persist and _SHA_CACHE_UNSAVED >= _SHA_CACHE_FLUSH_EVERY:
+                    _sha_cache_save_unlocked()
             return digest
         except OSError as exc:
             last = exc
@@ -445,6 +465,56 @@ def file_sha256(path: str | Path) -> str | None:
                 return None
             time.sleep(0.12 * (attempt + 1))
     return None
+
+
+def _poses_dir_fingerprint(poses_dir: Path) -> tuple:
+    """Cheap directory fingerprint — names + size + mtime, no content reads."""
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for pose in poses_dir.iterdir():
+            try:
+                if not pose.is_file():
+                    continue
+                st = pose.stat()
+                entries.append((pose.name, st.st_size, st.st_mtime_ns))
+            except OSError:
+                continue
+    except OSError:
+        return ()
+    return tuple(sorted(entries))
+
+
+def _pose_hash_index_for(poses_dir: Path, root: Path) -> dict[str, str]:
+    """Return {sha256: relative_path} for a poses dir, rebuilding only on change."""
+    dir_key = os.path.realpath(str(poses_dir))
+    fingerprint = _poses_dir_fingerprint(poses_dir)
+    cached = _POSE_HASH_INDEX.get(dir_key)
+    if cached and cached[0] == fingerprint:
+        return cached[1]
+    index: dict[str, str] = {}
+    try:
+        poses = list(poses_dir.iterdir())
+    except OSError:
+        poses = []
+    for pose in poses:
+        try:
+            if not pose.is_file():
+                continue
+        except OSError:
+            continue
+        digest = file_sha256(pose, persist=False)
+        if not digest:
+            continue
+        try:
+            rel = str(pose.relative_to(root))
+        except ValueError:
+            rel = str(pose)
+        prev = index.get(digest)
+        if prev is None or (len(rel), rel) < (len(prev), prev):
+            index[digest] = rel
+    flush_file_sha256_cache()
+    _POSE_HASH_INDEX[dir_key] = (fingerprint, index)
+    return index
 
 
 def element_image_paths(speaker: str) -> list[Path]:
@@ -577,7 +647,11 @@ def char_ref_matches_element_images(
 
 
 def find_pose_rel_by_hash(char_key: str, char_path: str) -> str | None:
-    """Return Production-relative pose path when char ref bytes already exist on disk."""
+    """Return Production-relative pose path when char ref bytes already exist on disk.
+
+    Uses a fingerprint-keyed reverse index of the poses dir so a sidecar migrate
+    that heals N beats pays for hashing each pose file once, not N times.
+    """
     root = prod_root()
     char_hash = file_sha256(char_path)
     if not char_hash:
@@ -585,16 +659,7 @@ def find_pose_rel_by_hash(char_key: str, char_path: str) -> str | None:
     poses_dir = root / char_key / "poses"
     if not poses_dir.is_dir():
         return None
-    matches: list[str] = []
-    for pose in poses_dir.iterdir():
-        if not pose.is_file():
-            continue
-        if file_sha256(pose) == char_hash:
-            matches.append(str(pose.relative_to(root)))
-    if not matches:
-        return None
-    matches.sort(key=lambda rel: (len(rel), rel))
-    return matches[0]
+    return _pose_hash_index_for(poses_dir, root).get(char_hash)
 
 
 def reconcile_char_ref_with_element(

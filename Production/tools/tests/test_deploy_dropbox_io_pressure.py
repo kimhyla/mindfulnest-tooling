@@ -275,6 +275,8 @@ def test_file_sha256_hashes_each_file_once(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(reg, "_SHA_CACHE_PATH", tmp_path / "cache" / "sha.json")
     monkeypatch.setattr(reg, "_SHA_CACHE", None)
+    monkeypatch.setattr(reg, "_SHA_CACHE_UNSAVED", 0)
+    monkeypatch.setattr(reg, "_SHA_CACHE_FLUSH_EVERY", 1)
 
     img = tmp_path / "tessa_neutral.png"
     img.write_bytes(b"pose bytes v1")
@@ -319,6 +321,47 @@ def os_utime_bump(p: Path) -> None:
 
     st = p.stat()
     os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+
+
+def test_find_pose_rel_by_hash_indexes_dir_once(tmp_path: Path, monkeypatch) -> None:
+    """Sidecar migrate heals every beat; each heal used to re-hash every pose file.
+    A fingerprint-keyed index must rebuild once per poses-dir change, not per call."""
+    sys.path.insert(0, str(REPO / "tools"))
+    import kling_character_registry as reg
+
+    monkeypatch.setattr(reg, "_SHA_CACHE_PATH", tmp_path / "cache" / "sha.json")
+    monkeypatch.setattr(reg, "_SHA_CACHE", None)
+    monkeypatch.setattr(reg, "_POSE_HASH_INDEX", {})
+    monkeypatch.setattr(reg, "prod_root", lambda: tmp_path)
+
+    poses = tmp_path / "Tessa" / "poses"
+    poses.mkdir(parents=True)
+    (poses / "a.png").write_bytes(b"pose-a")
+    (poses / "b.png").write_bytes(b"pose-b")
+    probe = tmp_path / "library_copy.png"
+    probe.write_bytes(b"pose-b")
+
+    opens: list[str] = []
+    real_open = Path.open
+
+    def _counting_open(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self.parent == poses and "r" in mode:
+            opens.append(self.name)
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", _counting_open)
+
+    first = reg.find_pose_rel_by_hash("Tessa", str(probe))
+    assert first == "Tessa/poses/b.png"
+    first_opens = len(opens)
+    assert first_opens >= 2, "first call must hash the poses dir"
+
+    again = reg.find_pose_rel_by_hash("Tessa", str(probe))
+    assert again == first
+    assert len(opens) == first_opens, (
+        f"repeat call must use the index (opens {first_opens} -> {len(opens)})"
+    )
 
 
 def test_library_panel_gate_uses_shared_fetch_helper() -> None:
