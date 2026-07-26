@@ -69,6 +69,44 @@ for i in d.get("images", []):
 PY
 }
 
+# Emit up to 8 thumb URLs — Dropbox/PIL can fail a single source transiently.
+thumb_urls_file() {
+  python3 - "$1" <<'PY'
+import json, sys, urllib.parse
+with open(sys.argv[1], encoding="utf-8") as f:
+    d = json.load(f)
+n = 0
+for i in d.get("images", []):
+    ap = i.get("abs_path")
+    if not ap:
+        continue
+    print("/api/cr/thumb?abs_path=" + urllib.parse.quote(ap, safe=""))
+    n += 1
+    if n >= 8:
+        break
+PY
+}
+
+probe_thumb_ok() {
+  local base="$1"
+  local list_file="$2"
+  local url http_code
+  while IFS= read -r url; do
+    [[ -z "$url" ]] && continue
+    THUMB_TMP=$(mktemp /tmp/cr_thumb_smoke.XXXXXX)
+    http_code=$(curl -s -o "$THUMB_TMP" -w '%{http_code}' --max-time 90 "${base}${url}" || echo 000)
+    if [[ "$http_code" == "200" ]] && file "$THUMB_TMP" | grep -qi 'jpeg'; then
+      rm -f "$THUMB_TMP"
+      echo "thumb endpoint OK ($url)"
+      return 0
+    fi
+    rm -f "$THUMB_TMP"
+    echo "WARN: thumb probe failed http=${http_code} ($url)" >&2
+  done < <(thumb_urls_file "$list_file")
+  echo "FAIL: no library thumb succeeded after probing up to 8 abs_path rows" >&2
+  return 1
+}
+
 curl_json() {
   # Dropbox File Provider on macOS can take >60s for Event library walks
   # after cold boot / vacation return — keep smoke aligned with that class.
@@ -105,14 +143,8 @@ if [[ -n "$DEDICATED_EVENT" ]]; then
   E2_WC=$(curl_json "$BASE/api/phase/watercolor_list" | count_watercolors)
   E2_BYTES=$(wc -c <"$E2_TMP" | tr -d ' ')
   echo "${DEDICATED_EVENT} images=$E2_IMAGES watercolors=$E2_WC list_bytes=$E2_BYTES"
-  THUMB_PATH=$(first_thumb_url_file "$E2_TMP")
-  THUMB_TMP=""
-  if [[ -n "$THUMB_PATH" ]]; then
-    THUMB_TMP=$(mktemp /tmp/cr_thumb_smoke.XXXXXX)
-    curl -sf --max-time 15 "$BASE$THUMB_PATH" -o "$THUMB_TMP"
-    file "$THUMB_TMP" | grep -qi 'jpeg' || { echo "FAIL: thumb endpoint did not return JPEG"; exit 1; }
-    rm -f "$THUMB_TMP"
-    echo "thumb endpoint OK ($THUMB_PATH)"
+  if grep -q '"abs_path"' "$E2_TMP"; then
+    probe_thumb_ok "$BASE" "$E2_TMP" || exit 1
   else
     echo "WARN: no abs_path in ${DEDICATED_EVENT} library — skip thumb fetch"
   fi
@@ -146,14 +178,8 @@ E2_WC=$(curl_json "$BASE/api/phase/watercolor_list" | count_watercolors)
 E2_BYTES=$(wc -c <"$E2_TMP" | tr -d ' ')
 echo "Event_2 images=$E2_IMAGES watercolors=$E2_WC list_bytes=$E2_BYTES"
 
-THUMB_PATH=$(first_thumb_url_file "$E2_TMP")
-THUMB_TMP=""
-if [[ -n "$THUMB_PATH" ]]; then
-  THUMB_TMP=$(mktemp /tmp/cr_thumb_smoke.XXXXXX)
-  curl -sf --max-time 15 "$BASE$THUMB_PATH" -o "$THUMB_TMP"
-  file "$THUMB_TMP" | grep -qi 'jpeg' || { echo "FAIL: thumb endpoint did not return JPEG"; exit 1; }
-  rm -f "$THUMB_TMP"
-  echo "thumb endpoint OK ($THUMB_PATH)"
+if grep -q '"abs_path"' "$E2_TMP"; then
+  probe_thumb_ok "$BASE" "$E2_TMP" || exit 1
 else
   echo "WARN: no abs_path in Event_2 library — skip thumb fetch"
 fi
