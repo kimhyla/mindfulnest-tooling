@@ -53,8 +53,10 @@ def test_build_generation_intent_allows_submit_when_terminal_failed(tmp_path: Pa
         "operator_workbench_contract.materialize_o3_submit_refs",
         lambda body, b, **_: (b["reference_image"], b["bg_ref_image"]),
     )
+    # Submit authority is char_ref_aligned_for_intent_commit (frontal sha), not the
+    # older char_ref_matches_element_images helper.
     monkeypatch.setattr(
-        "tools.kling_character_registry.char_ref_matches_element_images",
+        "tools.kling_character_registry.char_ref_aligned_for_intent_commit",
         lambda *_a, **_k: (True, ""),
     )
     monkeypatch.setattr("o3_job_status_contract.beat_job_busy", lambda *_a, **_k: False)

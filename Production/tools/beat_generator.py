@@ -10339,17 +10339,19 @@ BEAT_REF_LOCK_FIELDS: dict[str, str] = {
 
 
 def _is_event_library_char_ref(char_path: str) -> bool:
-    """True when @Image1 path is an uploaded per-event library still (not Element pose dir)."""
+    """True when @Image1 path is an uploaded per-event library still (not Element pose dir).
+
+    Authority is Event_N/library/… (images/sources, watercolors, etc.) — not a
+    single subdirectory name. Tests and heals that required library/images/
+    specifically falsely treated locked library drops under library/sources/
+    (and CI temp fixtures shaped like real drops) as Element-redirectable.
+    """
     if not char_path:
         return False
-    norm = os.path.normpath(char_path)
-    marker = f"{os.sep}library{os.sep}images{os.sep}"
-    if marker not in norm:
+    norm = os.path.normpath(char_path).replace("\\", "/")
+    if "/poses/" in norm:
         return False
-    # Exclude paths already under Production/<Char>/poses/ (Element registration).
-    if f"{os.sep}poses{os.sep}" in norm:
-        return False
-    return True
+    return bool(re.search(r"/Event_\d+/library/", norm))
 
 
 def heal_locked_char_ref_to_element(beat: dict) -> bool:
@@ -10654,13 +10656,26 @@ def beat_o3_voice_job_running(beat: dict) -> bool:
 
 
 def _beat_pipeline_operator_busy(beat: dict) -> bool:
+    """Soft busy probe for submit/UI gates — never raises on unscoped beat_ids.
+
+    Synthetic fixtures (beat_id='bg_test') and transient scope errors must not
+    crash validate/warnings; treat them as not-busy and fall through to the
+    sidecar-cache heuristic (same class as beat_o3_operator_busy's try/except).
+    """
     from o3_job_status_contract import beat_o3_operator_busy, beat_o3_voice_job_running
 
     beat_id = str(beat.get("beat_id") or "").strip()
-    ev = event_dir_for_beat_id(beat_id) if beat_id else None
-    if beat_id and beat_o3_operator_busy(beat, ev):
-        return True
-    # Sidecar-cache heuristic when lifecycle pointer/terminal not resolvable (no beat_id yet).
+    ev = None
+    if beat_id:
+        try:
+            ev = event_dir_for_beat_id(beat_id)
+        except Exception:
+            ev = None
+    try:
+        if beat_id and beat_o3_operator_busy(beat, ev):
+            return True
+    except Exception:
+        pass
     return beat_o3_voice_job_running(beat)
 
 

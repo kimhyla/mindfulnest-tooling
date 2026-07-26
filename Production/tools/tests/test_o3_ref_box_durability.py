@@ -391,10 +391,31 @@ def test_orphan_recovery_reasserts_intent_visual_refs():
 
 
 def test_refresh_state_preserves_locked_ref_boxes_on_session_merge():
-    bg_tab = Path(__file__).resolve().parents[1] / "storyboard-v2" / "src" / "components" / "BgTab.tsx"
-    text = bg_tab.read_text(encoding="utf-8")
-    refresh_block = text.split("const refreshState = async () => {", 1)[1].split("};", 1)[0]
-    assert "preserveRefBoxesOnServerBeatMerge" in refresh_block
+    """Ref-box merge authority is bgSessionBeatMerge → promptEditRegistry, not BgTab text."""
+    merge = (
+        Path(__file__).resolve().parents[1]
+        / "storyboard-v2"
+        / "src"
+        / "utils"
+        / "bgSessionBeatMerge.ts"
+    ).read_text(encoding="utf-8")
+    registry = (
+        Path(__file__).resolve().parents[1]
+        / "storyboard-v2"
+        / "src"
+        / "state"
+        / "promptEditRegistry.ts"
+    ).read_text(encoding="utf-8")
+    store = (
+        Path(__file__).resolve().parents[1]
+        / "storyboard-v2"
+        / "src"
+        / "state"
+        / "bgSessionStore.ts"
+    ).read_text(encoding="utf-8")
+    assert "preserveRefBoxesOnServerBeatMerge" in merge
+    assert "export function preserveRefBoxesOnServerBeatMerge" in registry
+    assert "mergeBeatsOnSessionHydrate" in store
 
 
 def test_optimistic_ref_drop_sets_local_lock_flag():

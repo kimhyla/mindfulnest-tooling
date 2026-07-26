@@ -6,6 +6,8 @@ from pathlib import Path
 
 import beat_generator as bg
 
+SB_SRC = Path(__file__).resolve().parent.parent / "storyboard-v2" / "src"
+
 
 def test_read_sidecar_for_poll_snapshot_falls_back_on_lock_timeout(monkeypatch, tmp_path) -> None:
     sidecar = tmp_path / "beat_generator_state.json"
@@ -34,6 +36,7 @@ def test_enriched_poll_snapshot_uses_poll_read_helper() -> None:
 
 
 def test_poll_payload_survives_snapshot_read_failure(monkeypatch, tmp_path) -> None:
+    """Enriched snapshot failure must not drop status; minimal beat fallback is OK."""
     import importlib
 
     bg_mod = importlib.import_module("server_handlers.background")
@@ -44,6 +47,30 @@ def test_poll_payload_survives_snapshot_read_failure(monkeypatch, tmp_path) -> N
         raise TimeoutError("sidecar lock timeout after 5s")
 
     monkeypatch.setattr(bg_mod, "_enriched_beat_snapshot_for_o3_poll", _boom)
+    monkeypatch.setattr(
+        bg_mod,
+        "_minimal_sidecar_beat_for_o3_poll",
+        lambda beat_id, _ed: {"beat_id": beat_id, "speaker": "Tessa"},
+    )
+    payload = {"status": "running", "beat_id": "bg_arc1_event2_pre_beat_06", "job_id": "abc12345"}
+    out = bg_mod._o3_poll_payload_with_beat_snapshot(payload, event_dir)
+    assert out["status"] == "running"
+    assert out["beat"]["beat_id"] == "bg_arc1_event2_pre_beat_06"
+
+
+def test_poll_payload_omits_beat_only_when_both_snapshots_fail(monkeypatch, tmp_path) -> None:
+    import importlib
+
+    bg_mod = importlib.import_module("server_handlers.background")
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+
+    monkeypatch.setattr(
+        bg_mod,
+        "_enriched_beat_snapshot_for_o3_poll",
+        lambda *_a, **_k: (_ for _ in ()).throw(TimeoutError("lock")),
+    )
+    monkeypatch.setattr(bg_mod, "_minimal_sidecar_beat_for_o3_poll", lambda *_a, **_k: None)
     payload = {"status": "running", "beat_id": "bg_arc1_event2_pre_beat_06", "job_id": "abc12345"}
     out = bg_mod._o3_poll_payload_with_beat_snapshot(payload, event_dir)
     assert out["status"] == "running"
@@ -51,12 +78,12 @@ def test_poll_payload_survives_snapshot_read_failure(monkeypatch, tmp_path) -> N
 
 
 def test_ui_treats_sidecar_lock_timeout_as_transient_poll_blip() -> None:
-    src = (Path(__file__).resolve().parent.parent / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(
-        encoding="utf-8",
-    )
-    assert "isSidecarLockPollBlip" in src
-    poll_block = src.split("useEffect(() => {", 1)[1].split("// After server restart", 1)[0]
-    assert "isSidecarLockPollBlip(res)" in poll_block
+    """Authority lives in bgPollHelpers + BgPollCoordinator (not BgTab.tsx text)."""
+    helpers = (SB_SRC / "utils" / "bgPollHelpers.ts").read_text(encoding="utf-8")
+    coord = (SB_SRC / "components" / "BgPollCoordinator.tsx").read_text(encoding="utf-8")
+    assert "export function isSidecarLockPollBlip" in helpers
+    assert "isSidecarLockPollBlip" in coord
+    assert "isSidecarLockPollBlip(res)" in coord
 
 
 def test_poll_handler_never_raises_on_snapshot_lock_timeout() -> None:
