@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import threading
 from datetime import datetime, timezone
+from pathlib import Path
 
 from lib.atomic_json_write import atomic_json_write
 from lib.event_server_provision import (
@@ -347,6 +348,41 @@ def handle_event_load(h, body: dict) -> None:
                    retry_safe=False,
                    extra={"code": "EVENT_LOAD_GENERATION_LOCK_V1", "expected": str(new_storyboard_path)},
                )
+
+    # EVENT_LOAD_IDEMPOTENT_REPIN_V1 — if this port already serves exactly the
+    # requested event scope, answer without the swap. The full path below runs
+    # a sidecar reconcile that walks kling_o3_clips on Dropbox under
+    # event_load_lock; after a fleet restart that walk takes minutes, and every
+    # client retry (deploy g.5 pin, UI reload) queued another full walk behind
+    # the lock — the queue grew faster than it drained, so event/load appeared
+    # hung forever while /api/event/current answered fine. A no-op re-pin must
+    # not pay for a scope change it isn't making, and must not take the lock
+    # (taking it would queue behind the very pileup this exists to avoid; the
+    # attribute reads are benign — a racing real swap just means the caller
+    # re-pins against the post-swap scope on retry). Generation is unchanged:
+    # nothing swapped, so async jobs pinned to it stay valid (LD-460).
+    def _same_path(a, b) -> bool:
+        try:
+            return Path(a).resolve() == Path(b).resolve()
+        except OSError:
+            return False
+
+    if (
+        _same_path(h.app.event_dir, new_event_dir)
+        and _same_path(h.app.storyboard_path, new_storyboard_path)
+        and getattr(h.app, "scope_type", "event") == "event"
+        and getattr(h.app, "active_milestone_id", None) is None
+    ):
+        return h._send_json(200, {
+            "ok": True,
+            "event_id": new_event_id,
+            "event_dir": str(new_event_dir),
+            "storyboard": new_storyboard_path.name,
+            "event_generation": h.app.event_generation,
+            "previous_generation": h.app.event_generation,
+            "previous_event_id": new_event_id,
+            "already_loaded": True,
+        })
 
     # ATOMIC SWAP under lock.
     with h.app.event_load_lock:

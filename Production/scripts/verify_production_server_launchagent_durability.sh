@@ -42,6 +42,14 @@ grep -q 'MN_LAUNCHD_MANAGED' "$INSTALL" \
   || fail "install script must set MN_LAUNCHD_MANAGED=1 on launchd agent"
 grep -q 'EVENT_SERVER_COLD_BOOT_WAIT_V1' "$INSTALL" \
   || fail "install script must document EVENT_SERVER_COLD_BOOT_WAIT_V1"
+grep -q 'EVENT_SERVER_BOOT_STAGGER_V1' "$INSTALL" \
+  || fail "install script must document EVENT_SERVER_BOOT_STAGGER_V1"
+grep -q 'run_launchd_event_server.sh' "$INSTALL" \
+  || fail "install script must wrap ProgramArguments with run_launchd_event_server.sh"
+WRAPPER="${REPO_ROOT}/Production/scripts/run_launchd_event_server.sh"
+[[ -f "$WRAPPER" ]] || fail "missing run_launchd_event_server.sh"
+grep -q 'EVENT_SERVER_BOOT_STAGGER_V1' "$WRAPPER" \
+  || fail "stagger wrapper must document EVENT_SERVER_BOOT_STAGGER_V1"
 grep -q 'kickstart_agent_soft' "$INSTALL" \
   || fail "install script must soft-kickstart before hard -k on cold boot"
 grep -q 'EVENT_SERVER_COLD_BOOT_WAIT_V1' "${REPO_ROOT}/Production/scripts/event_server_port.sh" \

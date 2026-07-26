@@ -270,8 +270,24 @@ for sub in Production/tools Production/lib Production/scripts; do
         continue
     fi
     log_safe="$(echo "$sub" | tr '/' '_')"
+    # DEPLOY_MIRROR_NO_BUILD_INPUTS_V1 — [CONFIRMED against 2026-07-26 deploy
+    # /tmp/deploy_e4.log + lsof sampling] node_modules is ~3.9k tiny files that
+    # every deploy re-stat'd through the Dropbox File Provider (~45 min observed,
+    # with 3 files actually changed). That traffic is also what pressures the
+    # File Provider into the errno 11 "resource deadlock avoided" failures that
+    # crash-looped the Event fleet on cold boot. Nothing on the Dropbox side
+    # needs it: the client is shipped as the self-contained dist/index.html
+    # copied in step (c), the build runs from the tooling repo, and the parity
+    # gate compares an explicit list of .py/.sh files only.
+    # Excluded paths are also protected from --delete, so an already-mirrored
+    # copy is left untouched rather than being torn down over Dropbox.
     rsync -a --delete \
         --exclude 'stitch_editor_state.json' \
+        --exclude 'node_modules' \
+        --exclude '.vite' \
+        --exclude '__pycache__' \
+        --exclude '*.pyc' \
+        --exclude '.venv' \
         "$SRC_TOOLING/$sub/" \
         "$DEST_DROPBOX/$sub/" \
         2>&1 | tee "$LOG_DIR/rsync_${log_safe}.log"
@@ -609,9 +625,18 @@ fi
 # (g.5) Pin runtime event to deployed event dir (not stale launch argv)
 # ----------------------------------------------------------------
 echo "[deploy] (g.5) post-restart event/load pin for $event_id ..."
+# Whole-fleet cold boot against Dropbox is observed at 4-5 min; 6x30s of raw
+# event/load attempts gave up while the server was still reconciling and came
+# up 200 moments later. Wait for readiness on the shared cold-boot budget
+# (EVENT_SERVER_COLD_BOOT_ATTEMPTS) first, then pin.
+if ! event_server_wait_http "$SERVER_PORT"; then
+    echo "FATAL: :${SERVER_PORT} not serving after cold-boot wait budget" >&2
+    tail -20 "$LOG_DIR/server.log" >&2 || true
+    exit 1
+fi
 LOAD_HTTP="000"
 for attempt in 1 2 3 4 5 6; do
-    LOAD_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 30 \
+    LOAD_HTTP=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 60 \
         -X POST "http://localhost:${SERVER_PORT}/api/event/load" \
         -H "Content-Type: application/json" \
         -d "{\"event_id\":\"${event_id}\"}" || echo "000")
@@ -619,7 +644,7 @@ for attempt in 1 2 3 4 5 6; do
         break
     fi
     echo "[deploy] (g.5) event/load not ready (attempt ${attempt}/6, HTTP ${LOAD_HTTP}) — waiting for launchd handoff ..."
-    sleep 3
+    sleep 10
 done
 if [[ "$LOAD_HTTP" != "200" ]]; then
     echo "FATAL: /api/event/load for $event_id returned HTTP $LOAD_HTTP" >&2

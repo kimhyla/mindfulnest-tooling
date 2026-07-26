@@ -85,15 +85,52 @@ def _rel_event_path(event_dir: Path, prod_root: Path) -> str:
     return f"events/{event_dir.name}"
 
 
+# [CONFIRMED against Python 3.12 errno constants on Darwin]
+# errno 11 = EDEADLK; errno 35 = EAGAIN. Both were observed as transient
+# File Provider failures and are retried here.
+_DROPBOX_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
+
+
 def _copy_file(src: Path, dest: Path) -> dict[str, Any]:
+    """Copy with Dropbox errno 11/35 retry; never finalize an empty dest when src has bytes."""
     dest.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dest)
-    return {
-        "source": str(src),
-        "dest": str(dest),
-        "bytes": dest.stat().st_size,
-        "sha256": _sha256(dest),
-    }
+    src_size = src.stat().st_size
+    last_err: OSError | None = None
+    for attempt in range(12):
+        tmp = dest.with_suffix(dest.suffix + f".partial.{os.getpid()}.{attempt}")
+        try:
+            # Chunked copy — avoid shutil.copy2/fcopyfile Dropbox deadlocks.
+            with src.open("rb") as fin, tmp.open("wb") as fout:
+                while True:
+                    chunk = fin.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    fout.write(chunk)
+            copied = tmp.stat().st_size
+            if src_size > 0 and copied == 0:
+                raise OSError(11, f"empty copy of non-empty source: {src}")
+            tmp.replace(dest)
+            return {
+                "source": str(src),
+                "dest": str(dest),
+                "bytes": dest.stat().st_size,
+                "sha256": _sha256(dest),
+            }
+        except OSError as exc:
+            last_err = exc
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            transient = (
+                getattr(exc, "errno", None) in _DROPBOX_IO_TRANSIENT_ERRNOS
+                or "empty copy" in str(exc)
+            )
+            if not transient or attempt >= 11:
+                raise
+            time.sleep(min(4.0, 0.15 * (2 ** attempt)))
+    assert last_err is not None
+    raise last_err
 
 
 def _collect_phase_lipsync_sidecars(event_dir: Path) -> list[Path]:
@@ -108,57 +145,124 @@ def create_snapshot(
     label: str | None = None,
     source: str = "manual",
 ) -> SnapshotResult:
-    """Copy all production JSON/YAML state into ``dest_dir``."""
+    """Copy all production JSON/YAML state into ``dest_dir``.
+
+    Writes into a staging directory first, then atomically replaces ``dest``.
+    Prevents vacation-return class: ``latest/global/beat_generator_state.json``
+    left at 0 bytes after a mid-copy Dropbox failure + rmtree.
+    """
     prod = Path(prod_root)
     events = event_dirs if event_dirs is not None else discover_event_dirs(prod)
     if dest_dir is None:
         dest_dir = snapshot_root(prod) / LATEST_DIR_NAME
     dest = Path(dest_dir)
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True, exist_ok=True)
+    staging = dest.with_name(dest.name + f".staging.{os.getpid()}")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=True)
 
     entries: list[dict[str, Any]] = []
     files_copied = 0
 
-    for rel in GLOBAL_FILES:
-        src = prod / rel
-        if not src.is_file():
-            continue
-        meta = _copy_file(src, dest / "global" / Path(rel).name)
-        meta["kind"] = "global"
-        meta["rel"] = rel
-        entries.append(meta)
-        files_copied += 1
-
-    for event_dir in events:
-        ev_rel = _rel_event_path(event_dir, prod)
-        ps = event_dir / "production_state.json"
-        if ps.is_file():
-            meta = _copy_file(ps, dest / ev_rel / "production_state.json")
-            meta["kind"] = "production_state"
-            meta["event"] = event_dir.name
-            entries.append(meta)
-            files_copied += 1
-        sidecars = _collect_phase_lipsync_sidecars(event_dir)
-        for sc in sidecars:
-            meta = _copy_file(sc, dest / ev_rel / "phase_lipsync_sidecars" / sc.name)
-            meta["kind"] = "phase_lipsync_sidecar"
-            meta["event"] = event_dir.name
+    try:
+        for rel in GLOBAL_FILES:
+            src = prod / rel
+            if not src.is_file():
+                continue
+            if src.stat().st_size == 0:
+                # Never promote an empty live file into latest/ (poisoned sync).
+                print(
+                    f"[production_snapshot] WARN skip empty source: {src}",
+                    flush=True,
+                )
+                continue
+            meta = _copy_file(src, staging / "global" / Path(rel).name)
+            meta["kind"] = "global"
+            meta["rel"] = rel
             entries.append(meta)
             files_copied += 1
 
-    manifest = {
-        "manifest_version": MANIFEST_VERSION,
-        "created_at": _utc_now_iso(),
-        "label": label or "",
-        "source": source,
-        "prod_root": str(prod),
-        "events": [e.name for e in events],
-        "files_copied": files_copied,
-        "entries": entries,
-    }
-    (dest / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        for event_dir in events:
+            ev_rel = _rel_event_path(event_dir, prod)
+            ps = event_dir / "production_state.json"
+            if ps.is_file():
+                if ps.stat().st_size == 0:
+                    print(
+                        f"[production_snapshot] WARN skip empty source: {ps}",
+                        flush=True,
+                    )
+                else:
+                    meta = _copy_file(ps, staging / ev_rel / "production_state.json")
+                    meta["kind"] = "production_state"
+                    meta["event"] = event_dir.name
+                    entries.append(meta)
+                    files_copied += 1
+            sidecars = _collect_phase_lipsync_sidecars(event_dir)
+            for sc in sidecars:
+                if sc.stat().st_size == 0:
+                    continue
+                meta = _copy_file(sc, staging / ev_rel / "phase_lipsync_sidecars" / sc.name)
+                meta["kind"] = "phase_lipsync_sidecar"
+                meta["event"] = event_dir.name
+                entries.append(meta)
+                files_copied += 1
+
+        manifest = {
+            "manifest_version": MANIFEST_VERSION,
+            "created_at": _utc_now_iso(),
+            "label": label or "",
+            "source": source,
+            "prod_root": str(prod),
+            "events": [e.name for e in events],
+            "files_copied": files_copied,
+            "entries": entries,
+        }
+        (staging / "manifest.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
+
+        # Atomic replace: keep prior latest if staging has no global sidecar but
+        # previous latest did (protect against Dropbox empty-read windows).
+        staged_bg = staging / "global" / "beat_generator_state.json"
+        prior_bg = dest / "global" / "beat_generator_state.json"
+        if (
+            (not staged_bg.is_file() or staged_bg.stat().st_size == 0)
+            and prior_bg.is_file()
+            and prior_bg.stat().st_size > 0
+        ):
+            prior_bg_dest = staging / "global" / "beat_generator_state.json"
+            prior_bg_dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(prior_bg, prior_bg_dest)
+            print(
+                "[production_snapshot] preserved prior non-empty "
+                "beat_generator_state.json (staging lacked valid copy)",
+                flush=True,
+            )
+
+        backup = dest.with_name(dest.name + f".prev.{os.getpid()}")
+        if dest.exists():
+            if backup.exists():
+                shutil.rmtree(backup)
+            dest.rename(backup)
+        staging.rename(dest)
+        if backup.exists():
+            shutil.rmtree(backup, ignore_errors=True)
+        # Entries were written under staging/; rewrite to final dest paths.
+        staging_s = str(staging)
+        dest_s = str(dest)
+        for entry in entries:
+            d = entry.get("dest")
+            if isinstance(d, str) and d.startswith(staging_s):
+                entry["dest"] = dest_s + d[len(staging_s) :]
+        manifest["entries"] = entries
+        (dest / "manifest.json").write_text(
+            json.dumps(manifest, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+        raise
+
     return SnapshotResult(snapshot_dir=dest, manifest=manifest, files_copied=files_copied)
 
 

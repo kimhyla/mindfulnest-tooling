@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -370,26 +371,150 @@ def get_element_name(speaker: str) -> str | None:
 
 _CLOUD_IO_TRANSIENT_ERRNOS = frozenset({11, 35})
 
+# FILE_SHA256_STAT_CACHE_V1 — hashing char-ref/pose images re-reads whole files
+# through the Dropbox File Provider, and callers invoke it per beat (speaker
+# heals hash the same Element/pose set 20+ times per sidecar migrate). On a
+# cold provider that held the sidecar lock for tens of minutes and hung every
+# scope swap queued behind it (2026-07-26 deploy h.6). Keyed by
+# (realpath, size, mtime_ns): a stat is cheap even on Dropbox, and any content
+# change (sync, re-register) changes mtime/size and forces a rehash. Persisted
+# under ~/.mindfulnest/cache so a file is hashed once ever, not once per boot.
+_SHA_CACHE_PATH = Path.home() / ".mindfulnest" / "cache" / "file_sha256_cache.json"
+_SHA_CACHE_LOCK = threading.Lock()
+_SHA_CACHE: dict[str, list] | None = None
+_SHA_CACHE_DIRTY = False
+_SHA_CACHE_UNSAVED = 0
+_SHA_CACHE_FLUSH_EVERY = 32
+# Per-poses-dir reverse index: dir_path -> (fingerprint, {sha256: relative_path}).
+# find_pose_rel_by_hash used to re-hash every pose file on every beat heal; with
+# N poses × M beats that held the sidecar lock for the entire Dropbox cold walk.
+_POSE_HASH_INDEX: dict[str, tuple[tuple, dict[str, str]]] = {}
 
-def file_sha256(path: str | Path) -> str | None:
-    """Content hash for cross-path Element vs @Image1 alignment checks."""
+
+def _sha_cache_load_unlocked() -> dict[str, list]:
+    global _SHA_CACHE
+    if _SHA_CACHE is None:
+        try:
+            with _SHA_CACHE_PATH.open(encoding="utf-8") as fh:
+                data = json.load(fh)
+            _SHA_CACHE = data if isinstance(data, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            _SHA_CACHE = {}
+    return _SHA_CACHE
+
+
+def _sha_cache_save_unlocked() -> None:
+    global _SHA_CACHE_DIRTY, _SHA_CACHE_UNSAVED
+    if not _SHA_CACHE_DIRTY or _SHA_CACHE is None:
+        return
+    try:
+        _SHA_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _SHA_CACHE_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(_SHA_CACHE), encoding="utf-8")
+        tmp.replace(_SHA_CACHE_PATH)
+        _SHA_CACHE_DIRTY = False
+        _SHA_CACHE_UNSAVED = 0
+    except OSError:
+        pass  # cache is an optimization; never fail the caller
+
+
+def flush_file_sha256_cache() -> None:
+    """Force any dirty sha256 cache entries to disk (call after bulk hashing)."""
+    with _SHA_CACHE_LOCK:
+        _sha_cache_save_unlocked()
+
+
+def file_sha256(path: str | Path, *, persist: bool = True) -> str | None:
+    """Content hash for cross-path Element vs @Image1 alignment checks.
+
+    ``persist=False`` records the hash in memory but defers the disk write —
+    use during bulk walks (pose-dir indexing) and call flush_file_sha256_cache
+    once at the end so N files cost one JSON write, not N.
+    """
+    global _SHA_CACHE_DIRTY, _SHA_CACHE_UNSAVED
     p = Path(path)
+    try:
+        st = p.stat()
+        if not p.is_file():
+            return None
+    except OSError:
+        return None
+    key = os.path.realpath(str(p))
+    with _SHA_CACHE_LOCK:
+        cached = _sha_cache_load_unlocked().get(key)
+        if cached and cached[0] == st.st_size and cached[1] == st.st_mtime_ns:
+            return cached[2]
     last: OSError | None = None
     for attempt in range(5):
         try:
-            if not p.is_file():
-                return None
             h = hashlib.sha256()
             with p.open("rb") as fh:
                 for chunk in iter(lambda: fh.read(1024 * 1024), b""):
                     h.update(chunk)
-            return h.hexdigest()
+            digest = h.hexdigest()
+            with _SHA_CACHE_LOCK:
+                _sha_cache_load_unlocked()[key] = [st.st_size, st.st_mtime_ns, digest]
+                _SHA_CACHE_DIRTY = True
+                _SHA_CACHE_UNSAVED += 1
+                if persist and _SHA_CACHE_UNSAVED >= _SHA_CACHE_FLUSH_EVERY:
+                    _sha_cache_save_unlocked()
+            return digest
         except OSError as exc:
             last = exc
             if exc.errno not in _CLOUD_IO_TRANSIENT_ERRNOS or attempt >= 4:
                 return None
             time.sleep(0.12 * (attempt + 1))
     return None
+
+
+def _poses_dir_fingerprint(poses_dir: Path) -> tuple:
+    """Cheap directory fingerprint — names + size + mtime, no content reads."""
+    entries: list[tuple[str, int, int]] = []
+    try:
+        for pose in poses_dir.iterdir():
+            try:
+                if not pose.is_file():
+                    continue
+                st = pose.stat()
+                entries.append((pose.name, st.st_size, st.st_mtime_ns))
+            except OSError:
+                continue
+    except OSError:
+        return ()
+    return tuple(sorted(entries))
+
+
+def _pose_hash_index_for(poses_dir: Path, root: Path) -> dict[str, str]:
+    """Return {sha256: relative_path} for a poses dir, rebuilding only on change."""
+    dir_key = os.path.realpath(str(poses_dir))
+    fingerprint = _poses_dir_fingerprint(poses_dir)
+    cached = _POSE_HASH_INDEX.get(dir_key)
+    if cached and cached[0] == fingerprint:
+        return cached[1]
+    index: dict[str, str] = {}
+    try:
+        poses = list(poses_dir.iterdir())
+    except OSError:
+        poses = []
+    for pose in poses:
+        try:
+            if not pose.is_file():
+                continue
+        except OSError:
+            continue
+        digest = file_sha256(pose, persist=False)
+        if not digest:
+            continue
+        try:
+            rel = str(pose.relative_to(root))
+        except ValueError:
+            rel = str(pose)
+        prev = index.get(digest)
+        if prev is None or (len(rel), rel) < (len(prev), prev):
+            index[digest] = rel
+    flush_file_sha256_cache()
+    _POSE_HASH_INDEX[dir_key] = (fingerprint, index)
+    return index
 
 
 def element_image_paths(speaker: str) -> list[Path]:
@@ -522,7 +647,11 @@ def char_ref_matches_element_images(
 
 
 def find_pose_rel_by_hash(char_key: str, char_path: str) -> str | None:
-    """Return Production-relative pose path when char ref bytes already exist on disk."""
+    """Return Production-relative pose path when char ref bytes already exist on disk.
+
+    Uses a fingerprint-keyed reverse index of the poses dir so a sidecar migrate
+    that heals N beats pays for hashing each pose file once, not N times.
+    """
     root = prod_root()
     char_hash = file_sha256(char_path)
     if not char_hash:
@@ -530,16 +659,7 @@ def find_pose_rel_by_hash(char_key: str, char_path: str) -> str | None:
     poses_dir = root / char_key / "poses"
     if not poses_dir.is_dir():
         return None
-    matches: list[str] = []
-    for pose in poses_dir.iterdir():
-        if not pose.is_file():
-            continue
-        if file_sha256(pose) == char_hash:
-            matches.append(str(pose.relative_to(root)))
-    if not matches:
-        return None
-    matches.sort(key=lambda rel: (len(rel), rel))
-    return matches[0]
+    return _pose_hash_index_for(poses_dir, root).get(char_hash)
 
 
 def reconcile_char_ref_with_element(

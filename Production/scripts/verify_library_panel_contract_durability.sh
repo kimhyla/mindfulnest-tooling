@@ -44,8 +44,11 @@ check_port() {
     echo "[library-panel-contract] SKIP live — :${port} (${event_id}) build-sha=${served_sha} != HEAD=${head_sha}"
     return 0
   fi
-  local body
-  body="$(curl -sf --max-time 60 "http://localhost:${port}/api/cr/library?event_id=${event_id}")"
+  local body filtered_body
+  body="$(event_curl_json "http://localhost:${port}/api/cr/library?event_id=${event_id}")" \
+    || return 1
+  filtered_body="$(event_curl_json "http://localhost:${port}/api/cr/library?event_id=${event_id}&panel=images")" \
+    || return 1
   python3 -c "
 import json, sys
 d = json.loads(sys.argv[1])
@@ -66,8 +69,7 @@ if filtered.get('panel_filter') != 'images':
 if fitems and not all('images' in (i.get('panel_tabs') or []) for i in fitems):
     raise SystemExit('panel=images returned non-images rows')
 print(f'ok total={len(items)} images_tab={images_count} filtered={len(fitems)}')
-" "$body" "$(curl -sf --max-time 60 "http://localhost:${port}/api/cr/library?event_id=${event_id}&panel=images")" \
-    || return 1
+" "$body" "$filtered_body" || return 1
   echo "[library-panel-contract] OK live ${event_id} :${port}"
 }
 

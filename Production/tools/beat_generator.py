@@ -1101,13 +1101,30 @@ def _cleanup_stale_dropbox_sidecar_lock_file() -> None:
         print(f"[beatgen_store] stale lock cleanup skipped: {exc}", flush=True)
 
 
+def _local_sidecar_lock_path(sidecar_path: str) -> str:
+    """Lock file for a JSON sidecar — under ~/.mindfulnest/locks, never Dropbox.
+
+    Same invariant as StateManager/StitchEditorState (b71ee43f):
+    [CONFIRMED against the 2026-07-26 SIGUSR2 faulthandler dump] milestone load
+    waited 35+ minutes on the on-Dropbox lock while event_load_lock and
+    bg_scope_lock were held. The lock only coordinates processes on this Mac,
+    so a local file
+    keyed by the sidecar's absolute path preserves exactly that coordination;
+    cross-machine safety is the Directus lock's job, not flock's.
+    """
+    lock_dir = os.path.join(os.path.expanduser("~"), ".mindfulnest", "locks")
+    os.makedirs(lock_dir, exist_ok=True)
+    digest = hashlib.sha1(sidecar_path.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(lock_dir, f"bg_sidecar_{digest}.lock")
+
+
 @contextlib.contextmanager
 def _legacy_json_sidecar_file_lock(*, timeout_s: float):
-    """Dropbox flock — rollback path only (MN_SIDECAR_SQLITE_AUTHORITY=0)."""
+    """JSON-authority sidecar flock (milestone scope + SQLite rollback path)."""
     import errno
 
     path = os.path.abspath(BG_SIDECAR_PATH)
-    lock_path = path + ".lock"
+    lock_path = _local_sidecar_lock_path(path)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     acquired_at: float | None = None
     with open(lock_path, "a+", encoding="utf-8") as lock_fh:
@@ -10322,17 +10339,19 @@ BEAT_REF_LOCK_FIELDS: dict[str, str] = {
 
 
 def _is_event_library_char_ref(char_path: str) -> bool:
-    """True when @Image1 path is an uploaded per-event library still (not Element pose dir)."""
+    """True when @Image1 path is an uploaded per-event library still (not Element pose dir).
+
+    Authority is Event_N/library/… (images/sources, watercolors, etc.) — not a
+    single subdirectory name. Tests and heals that required library/images/
+    specifically falsely treated locked library drops under library/sources/
+    (and CI temp fixtures shaped like real drops) as Element-redirectable.
+    """
     if not char_path:
         return False
-    norm = os.path.normpath(char_path)
-    marker = f"{os.sep}library{os.sep}images{os.sep}"
-    if marker not in norm:
+    norm = os.path.normpath(char_path).replace("\\", "/")
+    if "/poses/" in norm:
         return False
-    # Exclude paths already under Production/<Char>/poses/ (Element registration).
-    if f"{os.sep}poses{os.sep}" in norm:
-        return False
-    return True
+    return bool(re.search(r"/Event_\d+/library/", norm))
 
 
 def heal_locked_char_ref_to_element(beat: dict) -> bool:
@@ -10449,7 +10468,14 @@ def _pick_element_ref_path(beat: dict, element_paths: list[Path]) -> Path:
 
 
 def infer_char_ref_registry_speaker(char_path: str) -> str | None:
-    """Return registry character name when @Image1 bytes belong to their Element set."""
+    """Return registry character name when @Image1 bytes belong to their Element set.
+
+    Pose-dir fallback is intentionally off: heal/migrate runs under the sidecar
+    lock and used to hash every character's poses/ for every beat (N chars × M
+    beats through Dropbox), which hung scope swaps for tens of minutes. Element
+    frontal + refer_images are the ownership authority; pose-dir matching is for
+    explicit reconcile paths that are not lock-bound.
+    """
     if not char_path or not os.path.isfile(char_path):
         return None
     try:
@@ -10460,7 +10486,7 @@ def infer_char_ref_registry_speaker(char_path: str) -> str | None:
             if not reg.is_speaker_voice_ready(name):
                 continue
             if reg.char_ref_matches_element_images(
-                char_path, name, allow_pose_dir_fallback=True,
+                char_path, name, allow_pose_dir_fallback=False,
             )[0]:
                 return name
     except Exception:
@@ -10630,13 +10656,26 @@ def beat_o3_voice_job_running(beat: dict) -> bool:
 
 
 def _beat_pipeline_operator_busy(beat: dict) -> bool:
+    """Soft busy probe for submit/UI gates — never raises on unscoped beat_ids.
+
+    Synthetic fixtures (beat_id='bg_test') and transient scope errors must not
+    crash validate/warnings; treat them as not-busy and fall through to the
+    sidecar-cache heuristic (same class as beat_o3_operator_busy's try/except).
+    """
     from o3_job_status_contract import beat_o3_operator_busy, beat_o3_voice_job_running
 
     beat_id = str(beat.get("beat_id") or "").strip()
-    ev = event_dir_for_beat_id(beat_id) if beat_id else None
-    if beat_id and beat_o3_operator_busy(beat, ev):
-        return True
-    # Sidecar-cache heuristic when lifecycle pointer/terminal not resolvable (no beat_id yet).
+    ev = None
+    if beat_id:
+        try:
+            ev = event_dir_for_beat_id(beat_id)
+        except Exception:
+            ev = None
+    try:
+        if beat_id and beat_o3_operator_busy(beat, ev):
+            return True
+    except Exception:
+        pass
     return beat_o3_voice_job_running(beat)
 
 
@@ -12142,11 +12181,17 @@ def merge_missing_segment_beats_from_json_mirror(
     only (draft extract rows with no O3 clip yet). Never removes live beats.
     """
     path = Path(mirror_path)
-    if not path.is_file():
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return {}
+    except OSError:
         return {}
     try:
         mirror = _read_json_file_durable(str(path))
-    except OSError:
+    except (OSError, json.JSONDecodeError):
+        # Empty / mid-sync Dropbox snapshot must not kill cold boot (vacation return).
+        return {}
+    if not isinstance(mirror, dict) or not mirror:
         return {}
     evt = normalize_bg_event_id(event_id)
     merged: dict[str, int] = {}

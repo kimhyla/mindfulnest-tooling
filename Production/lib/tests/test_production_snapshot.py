@@ -192,3 +192,56 @@ def test_manifest_sha256_matches_restored_file(tmp_path: Path) -> None:
     entry = next(e for e in manifest["entries"] if e["kind"] == "global")
     dest = Path(entry["dest"])
     assert entry["sha256"] == snap._sha256(dest)
+
+
+def test_create_snapshot_skips_empty_live_sidecar(tmp_path: Path) -> None:
+    prod = tmp_path / "Production"
+    ev = prod / "Event_1"
+    ev.mkdir(parents=True)
+    (prod / "beat_generator_state.json").write_text("", encoding="utf-8")
+    _write_json(ev / "production_state.json", {"event_id": "Event_1"})
+
+    result = snap.create_snapshot(prod, source="test")
+    staged = result.snapshot_dir / "global" / "beat_generator_state.json"
+    assert not staged.exists()
+    # production_state still copied
+    assert (result.snapshot_dir / "events" / "Event_1" / "production_state.json").is_file()
+
+
+def test_create_snapshot_preserves_prior_when_new_global_missing(tmp_path: Path) -> None:
+    prod = tmp_path / "Production"
+    ev = prod / "Event_1"
+    ev.mkdir(parents=True)
+    _write_json(prod / "beat_generator_state.json", {"arcs": {"arc_1": {"keep": True}}})
+    _write_json(ev / "production_state.json", {"event_id": "Event_1"})
+    snap.create_snapshot(prod, source="seed")
+
+    # Poison live sidecar empty — next snapshot must keep prior latest content.
+    (prod / "beat_generator_state.json").write_text("", encoding="utf-8")
+    result = snap.create_snapshot(prod, source="poison")
+    latest = result.snapshot_dir / "global" / "beat_generator_state.json"
+    assert latest.is_file()
+    assert json.loads(latest.read_text(encoding="utf-8"))["arcs"]["arc_1"]["keep"] is True
+
+
+def test_copy_file_retries_errno11(monkeypatch, tmp_path: Path) -> None:
+    src = tmp_path / "src.json"
+    dest = tmp_path / "dest.json"
+    src.write_text('{"ok": true}', encoding="utf-8")
+    calls = {"n": 0}
+    real_open = Path.open
+
+    def flaky_open(self, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self.resolve() == src.resolve() and "r" in str(mode):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError(11, "Resource deadlock avoided")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", flaky_open)
+    monkeypatch.setattr(snap.time, "sleep", lambda _s: None)
+    meta = snap._copy_file(src, dest)
+    assert meta["bytes"] > 0
+    assert json.loads(dest.read_text()) == {"ok": True}
+    assert calls["n"] == 2

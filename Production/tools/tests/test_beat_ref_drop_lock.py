@@ -48,8 +48,14 @@ def test_apply_user_beat_ref_update_bg_ref_lock(tmp_path: Path):
 
 
 def test_migrate_sidecar_preserves_locked_library_char_ref(tmp_path: Path, monkeypatch):
+    """Locked Event_N/library drops must survive migrate — lock + library path is authority."""
     canonical = tmp_path / "lorelai_canonical.png"
-    library = tmp_path / "ChatGPT_Image_Jun_14.png"
+    # Real classifier: Event_N/library/… (not bare temp filenames).
+    library = (
+        tmp_path / "Production" / "Event_2" / "library" / "images" / "sources"
+        / "ChatGPT_Image_Jun_14.png"
+    )
+    library.parent.mkdir(parents=True, exist_ok=True)
     canonical.write_bytes(b"canonical")
     library.write_bytes(b"library")
 
@@ -67,7 +73,7 @@ def test_migrate_sidecar_preserves_locked_library_char_ref(tmp_path: Path, monke
     )
     monkeypatch.setattr(
         "tools.kling_character_registry.file_sha256",
-        lambda p: "hash_library"
+        lambda p, **_k: "hash_library"
         if Path(p).read_bytes() == b"library"
         else "hash_canonical",
     )
@@ -91,7 +97,9 @@ def test_migrate_sidecar_preserves_locked_library_char_ref(tmp_path: Path, monke
     }
     bg._migrate_sidecar(sidecar)
     beat = sidecar["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"][0]
-    assert beat["reference_image"]["abs_path"] == str(canonical.resolve())
+    # Locked library drops must survive migrate — do not rewrite to Element frontal.
+    assert beat["reference_image"]["abs_path"] == str(library.resolve())
+    assert beat.get("reference_image_locked") is True
     assert library.read_bytes() == b"library"
 
 

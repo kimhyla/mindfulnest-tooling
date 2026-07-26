@@ -233,15 +233,28 @@ def terminate_port_servers(
 
 def cleanup_legacy_event_pid(event_dir: Path, port: int) -> None:
     legacy = legacy_event_pid_path(event_dir, port)
-    if not legacy.is_file():
-        return
     try:
-        pid = int(legacy.read_text(encoding="utf-8").strip())
-    except ValueError:
+        if not legacy.is_file():
+            return
+    except OSError:
+        return
+    pid: int | None = None
+    for attempt in range(8):
         try:
-            legacy.unlink(missing_ok=True)
-        except OSError:
-            pass
+            pid = int(legacy.read_text(encoding="utf-8").strip())
+            break
+        except ValueError:
+            try:
+                legacy.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return
+        except OSError as exc:
+            # Dropbox File Provider transient errno 11/35 — retry, then skip.
+            if getattr(exc, "errno", None) not in (11, 35) or attempt >= 7:
+                return
+            time.sleep(min(2.0, 0.15 * (2 ** attempt)))
+    if pid is None:
         return
     if process_alive(pid):
         cmd = process_cmdline(pid)
