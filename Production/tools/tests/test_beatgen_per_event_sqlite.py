@@ -379,3 +379,43 @@ def test_snapshot_union_when_mirror_empty(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(bg, "_sidecar_use_sqlite", lambda: True)
     report = bg.reconcile_sqlite_segment_beats_from_json_mirror(event_dir)
     assert report.get("event_3_pre") == 1
+
+
+def test_snapshot_metadata_errno_does_not_crash_cold_boot(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Optional snapshot metadata failure must be skipped, not crash-loop launchd."""
+    from lib.beatgen_store import BeatgenStore
+
+    event_dir = tmp_path / "Event_2"
+    event_dir.mkdir()
+    mirror = tmp_path / "beat_generator_state.json"
+    mirror.write_text(json.dumps({"arcs": {"arc_1": {"segments": {}}}}))
+    snap = (
+        tmp_path
+        / ".production_snapshots"
+        / "latest"
+        / "global"
+        / "beat_generator_state.json"
+    )
+    snap.parent.mkdir(parents=True)
+    snap.write_text(json.dumps({"arcs": {}}))
+
+    db = tmp_path / "beatgen_event2.db"
+    monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(db))
+    BeatgenStore.reset_singleton_for_tests()
+    BeatgenStore(db).import_from_dict({"arcs": {}}, replace=True)
+    monkeypatch.setattr(bg, "_PROD_DIR", str(tmp_path))
+    monkeypatch.setattr(bg, "BG_SIDECAR_PATH", str(mirror))
+    monkeypatch.setattr(bg, "_MILESTONE_SIDECAR_JSON_ONLY", False)
+    monkeypatch.setattr(bg, "_sidecar_use_sqlite", lambda: True)
+
+    real_is_file = Path.is_file
+
+    def transient_snapshot_stat(path: Path) -> bool:
+        if path == snap:
+            raise OSError(11, "Resource deadlock avoided")
+        return real_is_file(path)
+
+    monkeypatch.setattr(Path, "is_file", transient_snapshot_stat)
+    assert bg.reconcile_sqlite_segment_beats_from_json_mirror(event_dir) == {}

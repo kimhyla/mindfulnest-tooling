@@ -11,7 +11,10 @@ import beat_generator as bg
 import lib.ffmpeg_io as fio
 
 
-def test_read_json_file_durable_retries_errno11(monkeypatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("transient_errno", [11, 35])
+def test_read_json_file_durable_retries_transient_errno(
+    monkeypatch, tmp_path: Path, transient_errno: int,
+) -> None:
     path = tmp_path / "sidecar.json"
     path.write_text('{"schema_version": 1, "arcs": {}}', encoding="utf-8")
     calls = {"n": 0}
@@ -20,7 +23,7 @@ def test_read_json_file_durable_retries_errno11(monkeypatch, tmp_path: Path) -> 
     def flaky_copy(src, dst, **kwargs):
         calls["n"] += 1
         if calls["n"] == 1:
-            raise OSError(11, "Resource deadlock avoided")
+            raise OSError(transient_errno, "transient File Provider failure")
         return real_copy(src, dst)
 
     monkeypatch.setattr(bg, "_copy_file_chunked", flaky_copy)
@@ -28,6 +31,10 @@ def test_read_json_file_durable_retries_errno11(monkeypatch, tmp_path: Path) -> 
     data = bg._read_json_file_durable(str(path))
     assert data.get("schema_version") == 1
     assert calls["n"] == 2
+
+
+def test_read_json_file_durable_missing_path_is_empty(tmp_path: Path) -> None:
+    assert bg._read_json_file_durable(str(tmp_path / "missing.json")) == bg._EMPTY_SIDECAR()
 
 
 def test_read_json_file_durable_avoids_shutil_copy2(monkeypatch, tmp_path: Path) -> None:
