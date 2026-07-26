@@ -10,12 +10,21 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 # Dropbox/FUSE transient errno on macOS CloudStorage
+# [CONFIRMED against Python 3.12 errno constants on Darwin]
+# errno 11 = EDEADLK; errno 35 = EAGAIN.
 _TRANSIENT_ERRNOS = frozenset({11, 35})
 _MAX_ATTEMPTS = 12
+# Public aliases for callers that must share the same retry policy.
+DROPBOX_IO_TRANSIENT_ERRNOS = _TRANSIENT_ERRNOS
+DROPBOX_IO_MAX_ATTEMPTS = _MAX_ATTEMPTS
 
 
 def _backoff_s(attempt: int) -> float:
     return min(4.0, 0.15 * (2 ** attempt))
+
+
+def dropbox_io_backoff_s(attempt: int) -> float:
+    return _backoff_s(attempt)
 
 
 def path_is_cloud_storage_backed(path: str | Path) -> bool:

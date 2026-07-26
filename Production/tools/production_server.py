@@ -8361,12 +8361,21 @@ class ProductionHandler(BaseHTTPRequestHandler):
                        error_message="path validation failed",
                        retry_safe=False,
                    )
+        # CODEQL_PATH_INJECTION_NATIVE_PATTERN_REFACTOR_V1 — assign safe_serve
+        # only inside startswith; open/stat only that assigned string.
         safe_serve = ""
         for _r in roots:
             if _r and (_serve_resolved == _r or _serve_resolved.startswith(_r + os.sep)):
                 safe_serve = _serve_resolved
                 break
-        if not (safe_serve and os.path.isfile(safe_serve)):
+        if not safe_serve:
+            return self._send_error_v59(
+                       403,
+                       error_code="PATH_OUTSIDE_PROJECT_ROOT",
+                       error_message="path outside project root",
+                       retry_safe=False,
+                   )
+        if not os.path.isfile(safe_serve):
             return self._send_error_v59(
                        403,
                        error_code="PATH_OUTSIDE_PROJECT_ROOT",

@@ -5,9 +5,12 @@ workspace (.playback_cache), not live Dropbox File Provider range reads.
 Cloud-backed Event dirs → ~/.mindfulnest/media/<Event_N>/.playback_cache
 (see media_hot_root.py). Local/tmp event dirs stay in-tree for pytest.
 
-HOT_SERVE_CACHE_FIRST_V1: when Dropbox metadata/copy raises errno 11/35, serve
-any already-warmed local ``pb_*_<basename>`` rather than black players. Token
-identity still prefers size+mtime when File Provider answers.
+HOT_SERVE_CACHE_FIRST_V1 — [CONFIRMED against Event_6 :5116 logs 2026-07-26
+hot-serve materialize failed errno 11 while ~/.mindfulnest/media/Event_6/
+.playback_cache already held phase_b_lipsync + beat deliveries]: when Dropbox
+metadata/copy raises errno 11/35, serve any already-warmed local
+``pb_*_<basename>`` rather than black players. Token identity still prefers
+size+mtime when File Provider answers.
 """
 from __future__ import annotations
 
@@ -18,7 +21,10 @@ import time
 from pathlib import Path
 
 from lib.ffmpeg_io import (
-    copy_file_durable,
+    DROPBOX_IO_MAX_ATTEMPTS,
+    DROPBOX_IO_TRANSIENT_ERRNOS,
+    copy_file_durable,  # pre-existing in lib.ffmpeg_io (not added by this PR)
+    dropbox_io_backoff_s,
     dropbox_io_transient,
     path_isfile_durable,
     path_stat_durable,
@@ -30,8 +36,8 @@ PLAYBACK_CACHE_VERSION = "PLAYBACK_CACHE_V1"
 # Dropbox rematerialize storms (was 50; Event_6 alone warms 15–40 clips).
 _LRU_KEEP = 120
 _TOKEN_RE = re.compile(r"^[0-9a-f]{16}$")
-_TRANSIENT_ERRNOS = frozenset({11, 35})
-_MAX_ATTEMPTS = 12
+_TRANSIENT_ERRNOS = DROPBOX_IO_TRANSIENT_ERRNOS
+_MAX_ATTEMPTS = DROPBOX_IO_MAX_ATTEMPTS
 
 
 def playback_cache_dir(event_dir: Path) -> Path:
@@ -60,7 +66,7 @@ def event_dir_from_media_path(
 
 
 def _backoff_s(attempt: int) -> float:
-    return min(4.0, 0.15 * (2 ** attempt))
+    return dropbox_io_backoff_s(attempt)
 
 
 def _safe_basename(source_path: Path | str) -> str:
@@ -84,10 +90,14 @@ def find_cached_by_basename(
     keep seeing already-warmed Phase B / Beat Gen / intro media.
     """
     safe = _safe_basename(source_path)
+    if not safe or "/" in safe or "\\" in safe or safe in (".", ".."):
+        return None
     suffix = f"_{safe}"
     cache = playback_cache_dir(Path(event_dir))
     try:
-        cache_s = os.path.abspath(str(cache))
+        # CODEQL_PATH_INJECTION_NATIVE_PATTERN — realpath cache root, then
+        # assign joined path only inside startswith (never open unsanitized).
+        cache_s = os.path.realpath(str(cache))
         names = os.listdir(cache_s)
     except OSError:
         return None
@@ -97,14 +107,19 @@ def find_cached_by_basename(
             continue
         if "/" in name or "\\" in name or name in (".", ".."):
             continue
-        full = os.path.join(cache_s, name)
+        cand = os.path.realpath(os.path.join(cache_s, name))
+        safe_full = ""
+        if cand == cache_s or cand.startswith(cache_s + os.sep):
+            safe_full = cand
+        if not safe_full:
+            continue
         try:
-            st = os.stat(full)
+            st = os.stat(safe_full)
         except OSError:
             continue
-        if not os.path.isfile(full) or st.st_size <= 0:
+        if not os.path.isfile(safe_full) or st.st_size <= 0:
             continue
-        hits.append((st.st_mtime, full))
+        hits.append((st.st_mtime, safe_full))
     if not hits:
         return None
     hits.sort(reverse=True)
@@ -122,8 +137,9 @@ def ensure_hot_serve_file(
     /files and playback serve materialize once into ~/.mindfulnest/media
     .playback_cache (APFS), then stream from there.
 
-    HOT_SERVE_CACHE_FIRST_V1 — if Dropbox is busy, serve an existing local
-    basename cache hit instead of failing the player black.
+    HOT_SERVE_CACHE_FIRST_V1 — [CONFIRMED against Event_6 hot-serve errno 11
+    logs 2026-07-26]: if Dropbox is busy, serve an existing local basename
+    cache hit instead of failing the player black.
     """
     from lib.ffmpeg_io import path_is_cloud_storage_backed
     from media_hot_root import default_media_hot_root
@@ -134,9 +150,13 @@ def ensure_hot_serve_file(
         return src_resolved
     # Already under local hot root (absolute /files to ui_preview, etc.)
     try:
-        hot = os.path.abspath(str(default_media_hot_root().expanduser()))
+        hot = os.path.realpath(str(default_media_hot_root().expanduser()))
+        # CODEQL_PATH_INJECTION_NATIVE_PATTERN
+        safe_hot = ""
         if src_s == hot or src_s.startswith(hot + os.sep):
-            return Path(src_s)
+            safe_hot = src_s
+        if safe_hot:
+            return Path(safe_hot)
     except OSError:
         pass
 
@@ -200,7 +220,7 @@ def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> Non
     # HOT_SERVE_ALL_FILES_V1 — cache holds mp4 + audio stems + images (pb_*).
     # Basename-only entries from listdir; reject traversal names.
     try:
-        cache_s = os.path.abspath(str(cache))
+        cache_s = os.path.realpath(str(cache))
         names = os.listdir(cache_s)
     except OSError:
         return
@@ -208,18 +228,24 @@ def playback_cache_lru_cleanup(event_dir: Path, *, keep: int = _LRU_KEEP) -> Non
     for name in names:
         if "/" in name or "\\" in name or name in (".", ".."):
             continue
-        full = os.path.join(cache_s, name)
+        cand = os.path.realpath(os.path.join(cache_s, name))
+        # CODEQL_PATH_INJECTION_NATIVE_PATTERN
+        safe_full = ""
+        if cand == cache_s or cand.startswith(cache_s + os.sep):
+            safe_full = cand
+        if not safe_full:
+            continue
         # Incomplete durable copies left behind under File Provider pressure.
         if name.startswith(".mn_copy_"):
             try:
-                os.unlink(full)
+                os.unlink(safe_full)
             except OSError:
                 pass
             continue
         if not name.startswith("pb_"):
             continue
-        if os.path.isfile(full):
-            files.append(full)
+        if os.path.isfile(safe_full):
+            files.append(safe_full)
     files.sort(key=lambda p: os.path.getmtime(p), reverse=True)
     for stale in files[keep:]:
         try:
