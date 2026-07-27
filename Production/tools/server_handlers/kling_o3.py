@@ -866,7 +866,14 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
     trim_result: dict = {}
 
     def _trim(b: dict, _sc: dict) -> None:
-        trim_result.update(bg.set_kling_o3_beat_trim(b, trim_start=trim_start, trim_back=trim_back))
+        trim_result.update(
+            bg.set_kling_o3_beat_trim(
+                b,
+                trim_start=trim_start,
+                trim_back=trim_back,
+                event_dir=h.app.event_dir,
+            )
+        )
 
     try:
         ok, _beat = bg.update_beat_locked(beat_id, _trim)
@@ -981,8 +988,28 @@ def _prepare_bg_export_request(h, body: dict) -> dict | None:
         except Exception as exc:  # noqa: BLE001
             print(f"[BG] export-to-stitcher trim seed persist failed: {exc}", flush=True)
 
-    trim_changed, trim_errors = bg.prepare_beats_for_stitch_export(beats)
+    trim_changed, trim_errors = bg.prepare_beats_for_stitch_export(
+        beats, event_dir=h.app.event_dir,
+    )
     if trim_errors:
+        duration_errs = [e for e in trim_errors if bg.KLING_O3_DURATION_UNREADABLE_V1 in e]
+        authority_errs = [e for e in trim_errors if e not in duration_errs]
+        if duration_errs and not authority_errs:
+            h._send_error_v59(
+                400,
+                error_code="DURATION_UNREADABLE",
+                error_message="; ".join(duration_errs),
+                retry_safe=True,
+                extra={
+                    "beat_ids": [e.split(":")[0] for e in duration_errs],
+                    "code": bg.KLING_O3_DURATION_UNREADABLE_V1,
+                    "hint": (
+                        "Clip duration unreadable (Dropbox File Provider busy). "
+                        "Hard-refresh Beat Gen so the local cache warms, then retry Send to Stitcher."
+                    ),
+                },
+            )
+            return None
         h._send_error_v59(
             400,
             error_code="EXPORT_TRIM_AUTHORITY",
@@ -993,7 +1020,7 @@ def _prepare_bg_export_request(h, body: dict) -> dict | None:
                 "code": bg.KLING_O3_EXPORT_TRIM_AUTHORITY_V1,
                 "hint": (
                     "Trim authority drift — open the listed beat(s), apply trim on the active option, "
-                    "then retry Send to Stitcher."
+                    "then retry Send to Stitcher. If duration was also unreadable, hard-refresh first."
                 ),
             },
         )

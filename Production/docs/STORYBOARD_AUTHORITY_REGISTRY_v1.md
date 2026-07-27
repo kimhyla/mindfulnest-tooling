@@ -56,7 +56,7 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **o3_job_busy** — block edits during generation | derived | `beat_o3_operator_busy` / `beatO3JobBusy` | terminal.json + `o3_current_job_id` lifecycle | shipped | same |
 | **kling_stitch_export_ready** — Send to Stitcher per beat | disk | `beat_kling_stitch_export_ready` / `beatKlingStitchExportReady` | `finalize_kling_delivery_clip`, `sync_kling_stitch_status_from_active_clip` | shipped | `kling_stitch_readiness.py` |
 | **still_insert_stitch_approve** — still beat export gate | explicit_approve | same contract (still branch) | `kling_o3_still_stitch_approved` | shipped | same |
-| **kling_o3_export_trim** — trim window materialized on export | disk | `prepare_beats_for_stitch_export` | `set_o3_option_trim` | shipped | `beat_generator.py` |
+| **kling_o3_export_trim** — trim window materialized on export | disk | `prepare_beats_for_stitch_export` | `set_o3_option_trim` | shipped | `beat_generator.py` (local duration probe; `DURATION_UNREADABLE` ≠ Apply Trim) |
 | **magic_render_visible** — magic sparkle contract | disk | `magic_render_contract` compositor kwargs + durability tests | `write_magic_delivery` | shipped | `HOW_TO_MAKE_VISIBLE_MAGIC.md` |
 | **element_visual_canonical_lock** — Element frontal identity bytes | disk | `verify_frontal_sha256` / `resolve_frontal_abs_path` | **`set_element_identity` only** | shipped | `TECH_SPEC_ELEMENT_VISUAL_CANONICAL_LOCK_v1.md` |
 | **element_char_ref_submit_parity** — session Generate gate vs O3 submit | derived | `resolve_beat_element_char_ref_gate` / `beatElementCharRefOk` | `sync_element_char_ref_status` | shipped | `TECH_SPEC_ELEMENT_CHAR_REF_SUBMIT_PARITY_v1.md` |

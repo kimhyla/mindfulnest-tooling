@@ -4507,13 +4507,17 @@ def _ffprobe_ok(path: Path) -> bool:
     return r.returncode == 0 and '"codec_name"' in r.stdout
 
 
-def _ffprobe_duration(path: Path) -> float:
+def _ffprobe_duration(path: Path, *, timeout_s: float = 12.0) -> float:
+    """Raw ffprobe duration. Prefer ``ffprobe_media_duration`` for Dropbox masters."""
     try:
         r = subprocess.run(
             ["ffprobe", "-v", "error", "-show_entries", "format=duration",
              "-of", "json", str(path)],
-            capture_output=True, text=True)
+            capture_output=True, text=True, timeout=max(1.0, float(timeout_s)),
+        )
     except FileNotFoundError:
+        return 0.0
+    except subprocess.TimeoutExpired:
         return 0.0
     if r.returncode != 0:
         return 0.0
@@ -4521,6 +4525,48 @@ def _ffprobe_duration(path: Path) -> float:
         return float(json.loads(r.stdout)["format"]["duration"])
     except Exception:
         return 0.0
+
+
+KLING_O3_EXPORT_DURATION_LOCAL_PROBE_V1 = "KLING_O3_EXPORT_DURATION_LOCAL_PROBE_V1"
+KLING_O3_DURATION_UNREADABLE_V1 = "KLING_O3_DURATION_UNREADABLE_V1"
+
+
+def ffprobe_media_duration(
+    path: str | Path,
+    *,
+    event_dir: str | Path | None = None,
+    event_id: str = "",
+    dropbox_probe: str = "short",
+    timeout_s: float = 12.0,
+) -> float:
+    """Duration via local APFS hot-serve — never ffprobe Dropbox File Provider masters.
+
+    KLING_O3_EXPORT_DURATION_LOCAL_PROBE_V1: trim/export gates used to probe
+    CloudStorage paths directly; File Provider stalls returned duration=0 and
+    were misreported as Apply-Trim / EXPORT_TRIM_AUTHORITY. Warm ``pb_*``
+    cache hits skip Dropbox entirely (HOT_SERVE_TRUE_CACHE_FIRST_V2).
+    """
+    src = Path(path) if path else Path()
+    if not str(src):
+        return 0.0
+    try:
+        from lib.ffmpeg_io import path_is_cloud_storage_backed  # noqa: PLC0415
+
+        if path_is_cloud_storage_backed(src):
+            src = ensure_local_media(
+                src,
+                event_id=event_id,
+                event_dir=event_dir,
+                dropbox_probe=dropbox_probe,
+            )
+    except OSError:
+        return 0.0
+    try:
+        if not src.is_file():
+            return 0.0
+    except OSError:
+        return 0.0
+    return _ffprobe_duration(src, timeout_s=timeout_s)
 
 
 def assemble_group(sidecar, group_id, output_dir):
@@ -6676,14 +6722,19 @@ def set_kling_o3_beat_trim(
     *,
     trim_start: float,
     trim_back: float | None,
+    event_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate and persist manual trim metadata on a Kling O3 beat."""
     path = beat.get("kling_o3_video_path") or ""
     if not path or not os.path.isfile(path):
         raise ValueError("No Kling video on beat — generate a clip before trimming")
-    raw_dur = _ffprobe_duration(Path(path))
+    raw_dur = ffprobe_media_duration(path, event_dir=event_dir, dropbox_probe="short")
     if raw_dur <= 0:
-        raise ValueError("Could not read clip duration")
+        raise ValueError(
+            "Could not read clip duration "
+            f"({KLING_O3_DURATION_UNREADABLE_V1} — Dropbox File Provider may be busy; "
+            "hard-refresh Beat Gen and retry)"
+        )
 
     start = max(0.0, float(trim_start))
     back = None if trim_back is None else max(0.0, float(trim_back))
@@ -7033,6 +7084,7 @@ def set_o3_option_cut(
     cut_start_s: float,
     cut_end_s: float,
     video_path: str | None = None,
+    event_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate and persist cut-out window on one O3 option row."""
     opt = find_o3_option_by_slot_index(
@@ -7045,9 +7097,13 @@ def set_o3_option_cut(
     vp = resolve_o3_option_disk_video_path(opt, video_path)
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before cutting")
-    raw_dur = _ffprobe_duration(Path(vp))
+    raw_dur = ffprobe_media_duration(vp, event_dir=event_dir, dropbox_probe="short")
     if raw_dur <= 0:
-        raise ValueError("Could not read clip duration")
+        raise ValueError(
+            "Could not read clip duration "
+            f"({KLING_O3_DURATION_UNREADABLE_V1} — Dropbox File Provider may be busy; "
+            "hard-refresh Beat Gen and retry)"
+        )
 
     start = max(0.0, float(cut_start_s))
     end = max(start + MIN_O3_CUT_S, float(cut_end_s))
@@ -7210,13 +7266,21 @@ def migrate_o3_option_edge_cut_to_trim(opt: dict, *, raw_dur: float) -> bool:
     return changed
 
 
-def migrate_o3_options_edge_cut_to_trim(beat: dict) -> bool:
+def migrate_o3_options_edge_cut_to_trim(
+    beat: dict,
+    *,
+    event_dir: str | Path | None = None,
+) -> bool:
     changed = False
     for opt in beat.get("kling_o3_options") or []:
         if not isinstance(opt, dict):
             continue
         vp = str(opt.get("video_path") or "").strip()
-        raw_dur = _ffprobe_duration(Path(vp)) if vp and os.path.isfile(vp) else 0.0
+        raw_dur = (
+            ffprobe_media_duration(vp, event_dir=event_dir, dropbox_probe="short")
+            if vp
+            else 0.0
+        )
         if migrate_o3_option_edge_cut_to_trim(opt, raw_dur=raw_dur):
             changed = True
     if changed:
@@ -7236,50 +7300,78 @@ KLING_O3_EXPORT_TRIM_AUTHORITY_V1 = "KLING_O3_EXPORT_TRIM_AUTHORITY_V1"
 KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1 = "KLING_O3_EXPORT_TRIM_ACCURATE_SEEK_V1"
 
 
-def assert_beat_export_trim_ready(beat: dict) -> str | None:
-    """Return error when trim intent exists but export would ship the full clip."""
+def assert_beat_export_trim_ready(
+    beat: dict,
+    *,
+    event_dir: str | Path | None = None,
+) -> str | None:
+    """Return error when trim intent exists but export would ship the full clip.
+
+    Distinguishes duration-probe failure (Dropbox File Provider) from true
+    option↔beat trim authority drift — never tell the operator to Apply Trim
+    when the numbers are already present but duration could not be read.
+    """
     vp = str(beat.get("kling_o3_video_path") or "").strip()
-    if not vp or not os.path.isfile(vp):
+    if not vp:
         return None
+    try:
+        if not os.path.isfile(vp):
+            return None
+    except OSError:
+        # File Provider can raise on isfile — still attempt local duration probe.
+        pass
     opt = find_o3_option_by_video_path(beat, vp)
     wants_trim = option_has_o3_trim(opt) or still_insert_sidecar_trim_pending(beat)
     if not wants_trim:
         return None
-    raw_dur = _ffprobe_duration(Path(vp))
+    beat_id = str(beat.get("beat_id") or "beat")
+    raw_dur = ffprobe_media_duration(vp, event_dir=event_dir, dropbox_probe="short")
+    if raw_dur <= 0:
+        return (
+            f"{beat_id}: could not read clip duration for export "
+            f"({KLING_O3_DURATION_UNREADABLE_V1})"
+        )
     if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
         return None
-    beat_id = str(beat.get("beat_id") or "beat")
     return (
         f"{beat_id}: trim metadata present but export would use full clip "
         f"({KLING_O3_EXPORT_TRIM_AUTHORITY_V1})"
     )
 
 
-def prepare_beats_for_stitch_export(beats: list[dict]) -> tuple[bool, list[str]]:
+def prepare_beats_for_stitch_export(
+    beats: list[dict],
+    *,
+    event_dir: str | Path | None = None,
+) -> tuple[bool, list[str]]:
     """Single export prep: migrate edge cuts, mirror option→beat trim, heal, validate."""
     changed = False
     errors: list[str] = []
     for beat in beats:
-        if migrate_o3_options_edge_cut_to_trim(beat):
+        if migrate_o3_options_edge_cut_to_trim(beat, event_dir=event_dir):
             changed = True
         hydrate_beat_trim_from_active_option(beat)
         hydrate_beat_baked_export_from_active_option(beat)
-        if heal_invalid_kling_o3_trim(beat):
+        if heal_invalid_kling_o3_trim(beat, event_dir=event_dir):
             changed = True
         vp = str(beat.get("kling_o3_video_path") or "").strip()
         opt = find_o3_option_by_video_path(beat, vp) if vp else None
         if isinstance(opt, dict) and option_has_o3_trim(opt):
             mirror_beat_trim_from_option(beat, opt)
             changed = True
-        err = assert_beat_export_trim_ready(beat)
+        err = assert_beat_export_trim_ready(beat, event_dir=event_dir)
         if err:
             errors.append(err)
     return changed, errors
 
 
-def migrate_segment_o3_trims_for_export(beats: list[dict]) -> bool:
+def migrate_segment_o3_trims_for_export(
+    beats: list[dict],
+    *,
+    event_dir: str | Path | None = None,
+) -> bool:
     """Convert edge cut-out rows to trim before Send to Stitcher materialize."""
-    changed, _errors = prepare_beats_for_stitch_export(beats)
+    changed, _errors = prepare_beats_for_stitch_export(beats, event_dir=event_dir)
     return changed
 
 
@@ -7461,6 +7553,7 @@ def set_o3_option_trim(
     trim_start: float,
     trim_back: float | None,
     video_path: str | None = None,
+    event_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Validate and persist front/back trim on one O3 option row (start + end crop)."""
     opt = find_o3_option_by_slot_index(
@@ -7474,9 +7567,15 @@ def set_o3_option_trim(
     if not vp or not os.path.isfile(vp):
         raise ValueError("No Kling video on option — select a clip before trimming")
     duration_path = _o3_trim_authority_path(beat, opt, vp)
-    raw_dur = _ffprobe_duration(duration_path)
+    raw_dur = ffprobe_media_duration(
+        duration_path, event_dir=event_dir, dropbox_probe="short",
+    )
     if raw_dur <= 0:
-        raise ValueError("Could not read clip duration")
+        raise ValueError(
+            "Could not read clip duration "
+            f"({KLING_O3_DURATION_UNREADABLE_V1} — Dropbox File Provider may be busy; "
+            "hard-refresh Beat Gen and retry)"
+        )
 
     start = max(0.0, float(trim_start))
     back = None if trim_back is None else max(0.0, float(trim_back))
@@ -7690,11 +7789,16 @@ def ensure_local_media(
     *,
     event_id: str = "",
     event_dir: str | Path | None = None,
+    dropbox_probe: str = "when_needed",
 ) -> Path:
     """Local APFS path for ffmpeg ``-i`` — same hot-serve cache as ``/files``.
 
     HOT_SERVE_BAKE_V1: replaces the older ``~/.cache/mindfulnest/events`` mirror so
     trim/cut bake and browser playback share one Dropbox→APFS materialize path.
+
+    ``dropbox_probe`` is forwarded to ``ensure_hot_serve_file`` (``when_needed`` /
+    ``short`` / ``never``). Trim/export duration gates use ``short`` so a hung
+    File Provider cannot block Send to Stitcher forever.
     """
     from media_playback_cache import ensure_hot_serve_file, event_dir_from_media_path
 
@@ -7712,7 +7816,7 @@ def ensure_local_media(
 
             ed = default_media_hot_root() / name
             ed.mkdir(parents=True, exist_ok=True)
-    return ensure_hot_serve_file(src, event_dir=ed)
+    return ensure_hot_serve_file(src, event_dir=ed, dropbox_probe=dropbox_probe)
 
 
 def materialize_o3_cut_out_clip(
@@ -8070,7 +8174,11 @@ def reconcile_kling_o3_trim_all_events(sidecar: dict, prod_root: str | Path | No
     return changed
 
 
-def heal_invalid_kling_o3_trim(beat: dict) -> bool:
+def heal_invalid_kling_o3_trim(
+    beat: dict,
+    *,
+    event_dir: str | Path | None = None,
+) -> bool:
     """Clear trim when it exceeds the active clip (e.g. g8 trim kept after g9 lands)."""
     path = beat.get("kling_o3_video_path") or ""
     if not path or not os.path.isfile(path):
@@ -8079,7 +8187,9 @@ def heal_invalid_kling_o3_trim(beat: dict) -> bool:
     back = beat.get("kling_o3_trim_back")
     if start <= 0.01 and (back is None or float(back) <= 0.05):
         return False
-    raw_dur = _ffprobe_duration(Path(path))
+    # Never clear trim when duration is unreadable — Dropbox stalls must not wipe
+    # operator trim authority (category: false heal / "trims gone").
+    raw_dur = ffprobe_media_duration(path, event_dir=event_dir, dropbox_probe="short")
     if raw_dur <= 0:
         return False
     trim_start, trim_end, _ = resolve_kling_o3_trim_window(beat, video_path=path)
