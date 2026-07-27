@@ -19,10 +19,21 @@ FLEET_EVENTS=(Event_1 Event_2 Event_3 Event_4 Event_5 Event_6)
 restarted=0
 started=0
 
+# Agent / minimal PATH shells often omit /usr/sbin — bare `lsof` then returns
+# empty forever and fleet cold-boot wait spins ~8 min/event (2026-07-26).
+LSOF_BIN="$(command -v lsof 2>/dev/null || true)"
+if [[ ! -x "${LSOF_BIN}" && -x /usr/sbin/lsof ]]; then
+  LSOF_BIN=/usr/sbin/lsof
+fi
+if [[ ! -x "${LSOF_BIN}" ]]; then
+  echo "FATAL: lsof not found (tried PATH and /usr/sbin/lsof)" >&2
+  exit 1
+fi
+
 port_listener_pid() {
   # `|| true`: lsof exits 1 when the port has no listener (normal mid cold
   # boot) — must not kill the script under set -euo pipefail.
-  lsof -ti "tcp:${1}" -s tcp:LISTEN 2>/dev/null | head -1 || true
+  "${LSOF_BIN}" -ti "tcp:${1}" -s tcp:LISTEN 2>/dev/null | head -1 || true
 }
 
 # FLEET_RESTART_NEW_PID_WAIT_V1 (2026-07-17): /api/server/restart acks and
