@@ -23,6 +23,10 @@ def test_bg_beat_reorder_buttons_wired():
     # Option tiles must key by beat_id+slot so ↑/↓ does not remount-storm media.
     assert "bg-opt-${beat.beat_id}-${i}" in src
     assert "setPlaybackUrl(null)" in src
+    # BG_ACTIVE_BEAT_MEDIA_V1 — idle beats must not mount preview <video> loads.
+    assert "BG_ACTIVE_BEAT_MEDIA_V1" in src
+    assert "mediaHot" in src
+    assert "bg-option-video-idle-" in src
 
 
 def test_stitcher_keepalive_mounted():

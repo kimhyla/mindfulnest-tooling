@@ -3416,6 +3416,14 @@ export function BgTab() {
               key={b.beat_id}
               index={i}
               beat={b}
+              // BG_ACTIVE_BEAT_MEDIA_V1 — only the jumped-to beat mounts preview
+              // <video> tags. Loading metadata for every option on every beat
+              // stormed /files after ↑/↓ and left tiles spinning.
+              mediaHot={
+                activeNavIndex !== null
+                  ? activeNavIndex === i
+                  : i === 0
+              }
               eventId={activeScope.value.event_id}
               videoRole={activeTargetVideo.value}
               pollResultForBeat={pollResults[b.beat_id]}
@@ -3924,6 +3932,8 @@ function BgMagicStillPreview({
 interface BeatGenCardProps {
   index: number;
   beat: BgBeat;
+  /** When false, option tiles must not mount preview <video> network loads. */
+  mediaHot: boolean;
   eventId: string;
   videoRole: string;
   pollResultForBeat?: GptOption[];
@@ -3999,7 +4009,7 @@ interface BeatGenCardProps {
 }
 
 function BeatGenCard({
-  index, beat, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
+  index, beat, mediaHot, eventId, videoRole, pollResultForBeat, busy, nativeExperimentBusy,
   o3IntentSnapshot, o3SubmitAudit, o3WarningMessage, lipsyncPublicHostReady,
   onDelete, onUpdateText, onUpdateSpeaker, onSetGenerationMode,
   onBeginGenerateSubmit, onAbortGenerateSubmit,
@@ -4540,6 +4550,7 @@ function BeatGenCard({
             optionIndex={i}
             beatIndex={index}
             beatId={beat.beat_id}
+            mediaHot={mediaHot}
             option={opt}
             selected={!!opt && (
               opt.video_path
@@ -4923,6 +4934,8 @@ interface BgOptionTilePropsExt extends BgOptionTileProps {
   stillStitchApproved?: boolean;
   videoCacheKey?: string;
   onApproveStill?: (optionKey: string) => void;
+  /** BG_ACTIVE_BEAT_MEDIA_V1 — idle beats must not mount preview videos. */
+  mediaHot?: boolean;
 }
 
 function BgOptionTile({
@@ -4930,7 +4943,7 @@ function BgOptionTile({
   cutStartS: _cutStartS, cutEndS: _cutEndS, trimStartS = 0, trimBackS = 0, onApplyO3Cut, trimStart, trimBack, onApplyO3Trim,
   replaceSelected, onSetReplaceSlot, showReplaceOnRegen,
   overrideVideoUrl, stillInsert, stitchExportReady = false, stillStitchApproved = false,
-  videoCacheKey, onApproveStill,
+  videoCacheKey, onApproveStill, mediaHot = false,
 }: BgOptionTilePropsExt) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const trimPlaybackListenerRef = useRef<((this: HTMLVideoElement, ev: Event) => void) | null>(null);
@@ -5704,7 +5717,7 @@ function BgOptionTile({
       onClick={keyMissing ? undefined : onClick}
       title={tooltip}
     >
-      {selected && activeVideoUrl && !clipMissingOnDisk ? (
+      {selected && mediaHot && activeVideoUrl && !clipMissingOnDisk ? (
         <>
           <div
             class="mn-bg-option-video-wrap"
@@ -5901,7 +5914,7 @@ function BgOptionTile({
         <div class="mn-bg-option-empty" data-testid={`bg-option-video-missing-${beatIndex}-${optionIndex}`}>
           Clip missing on disk — regenerate O3 or pick another slot.
         </div>
-      ) : !selected && hasClipVideo && canonicalVideoUrl ? (
+      ) : !selected && hasClipVideo && canonicalVideoUrl && mediaHot ? (
         <video
           class="mn-bg-option-video-preview"
           preload="metadata"
@@ -5910,6 +5923,15 @@ function BgOptionTile({
           src={canonicalVideoUrl}
           data-testid={`bg-option-video-preview-${beatIndex}-${optionIndex}`}
         />
+      ) : !selected && hasClipVideo && !mediaHot ? (
+        // Idle beats: thumb / placeholder only — no network media storm.
+        option.thumb_b64 ? (
+          <img src={option.thumb_b64} alt={`option ${optionIndex + 1}`} />
+        ) : (
+          <div class="mn-bg-option-empty" data-testid={`bg-option-video-idle-${beatIndex}-${optionIndex}`}>
+            clip ready — select beat to preview
+          </div>
+        )
       ) : option.thumb_b64 ? (
         <img src={option.thumb_b64} alt={`option ${optionIndex + 1}`} />
       ) : (
