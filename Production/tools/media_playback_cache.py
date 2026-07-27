@@ -11,14 +11,26 @@ hot-serve materialize failed errno 11 while ~/.mindfulnest/media/Event_6/
 metadata/copy raises errno 11/35, serve any already-warmed local
 ``pb_*_<basename>`` rather than black players. Token identity still prefers
 size+mtime when File Provider answers.
+
+HOT_SERVE_TRUE_CACHE_FIRST_V2 — [CONFIRMED Event_6 2026-07-26]: File Provider
+can *block* inside ``isfile``/``realpath`` without raising. Warm ``pb_*`` must
+return **before** any Dropbox probe — not only after an errno. Otherwise hung
+/files and /api/cr/thumb occupy HTTP worker + browser lanes and even warm
+Beat Gen clips spin forever.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import os
 import re
 import time
 from pathlib import Path
+
+# Request-path cold miss: do not sit in Dropbox isfile/copy for tens of seconds
+# while Beat Gen videos starve. Warm hits never reach this budget.
+_SHORT_DROPBOX_PROBE_S = 2.0
+_SHORT_DROPBOX_ATTEMPTS = 2
 
 from lib.ffmpeg_io import (
     DROPBOX_IO_MAX_ATTEMPTS,
@@ -181,6 +193,7 @@ def ensure_hot_serve_file(
     path: Path | str,
     *,
     event_dir: Path | str | None = None,
+    dropbox_probe: str = "when_needed",
 ) -> Path:
     """Return a path safe for range-serve (never Dropbox File Provider bytes).
 
@@ -188,12 +201,20 @@ def ensure_hot_serve_file(
     /files and playback serve materialize once into ~/.mindfulnest/media
     .playback_cache (APFS), then stream from there.
 
-    HOT_SERVE_CACHE_FIRST_V1 — [CONFIRMED against Event_6 hot-serve errno 11
-    logs 2026-07-26]: if Dropbox is busy, serve an existing local basename
-    cache hit instead of failing the player black.
+    HOT_SERVE_TRUE_CACHE_FIRST_V2 — warm ``pb_*_<basename>`` returns
+    immediately with **zero** Dropbox ``isfile``/``stat``/copy. File Provider
+    can block forever without raising; probing first reintroduced Beat Gen spin.
+
+    ``dropbox_probe`` (cold miss only):
+    - ``when_needed`` — full durable retries (background warm / explicit copy)
+    - ``short`` — ~2s budget for request-path ``/files`` and thumbs
+    - ``never`` — raise OSError(11) if no local cache (fail-fast thumbs)
     """
     from lib.ffmpeg_io import path_is_cloud_storage_backed
     from media_hot_root import default_media_hot_root
+
+    if dropbox_probe not in ("when_needed", "short", "never"):
+        raise ValueError(f"invalid dropbox_probe: {dropbox_probe!r}")
 
     src_s = _norm_source_path(path)
     src_resolved = Path(src_s)
@@ -217,24 +238,35 @@ def ensure_hot_serve_file(
         else event_dir_from_media_path(src_resolved)
     )
 
-    # Cache-first: if we already warmed this basename, prefer it when Dropbox
-    # metadata is flaky — do not require a successful Dropbox isfile()/stat().
+    # TRUE cache-first: never touch Dropbox when APFS already has bytes.
     cached_hit = find_cached_by_basename(ed, src_resolved)
-    roots = _operator_media_roots()
+    if cached_hit is not None:
+        return cached_hit
 
+    if dropbox_probe == "never":
+        raise OSError(
+            11,
+            f"no local hot-serve cache; Dropbox probe skipped: {src_s}",
+        )
+
+    if dropbox_probe == "short":
+        return _ensure_hot_serve_dropbox_short(ed, src_s)
+
+    return _ensure_hot_serve_dropbox_full(ed, src_s)
+
+
+def _ensure_hot_serve_dropbox_full(ed: Path, src_s: str) -> Path:
+    """Cold miss: durable Dropbox isfile + materialize (may block)."""
+    roots = _operator_media_roots()
     try:
         exists = path_isfile_durable(src_s, roots=roots)
     except (OSError, PermissionError) as exc:
-        if cached_hit is not None:
-            return cached_hit
         raise OSError(
             getattr(exc, "errno", 11) or 11,
             f"Dropbox metadata unavailable for hot-serve: {src_s}: {exc}",
         ) from exc
     if not exists:
-        if cached_hit is not None:
-            return cached_hit
-        return src_resolved
+        return Path(src_s)
 
     last_err: OSError | None = None
     for attempt in range(_MAX_ATTEMPTS):
@@ -245,11 +277,57 @@ def ensure_hot_serve_file(
             if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
                 break
             time.sleep(_backoff_s(attempt))
-    if cached_hit is not None:
-        return cached_hit
     if last_err:
         raise last_err
     raise RuntimeError(f"hot-serve materialize failed: {src_s}")
+
+
+def _ensure_hot_serve_dropbox_short(ed: Path, src_s: str) -> Path:
+    """Cold miss on request path: bounded Dropbox budget, then errno 11.
+
+    File Provider can block inside ``isfile`` without raising. Cap wall time so
+    hung thumbs/library GETs cannot occupy HTTP workers forever.
+    """
+    roots = _operator_media_roots()
+
+    def _probe() -> Path:
+        # One-shot isfile (no durable 12-retry loop) — timeout thread owns budget.
+        try:
+            from lib.ffmpeg_io import confined_path_under_roots
+
+            path_s = confined_path_under_roots(src_s, roots)
+            if not os.path.isfile(path_s):
+                return Path(src_s)
+        except (OSError, PermissionError, ValueError) as exc:
+            raise OSError(
+                getattr(exc, "errno", 11) or 11,
+                f"Dropbox metadata unavailable for hot-serve: {src_s}: {exc}",
+            ) from exc
+        last_err: OSError | None = None
+        for attempt in range(_SHORT_DROPBOX_ATTEMPTS):
+            try:
+                return materialize_playback_cache(ed, Path(src_s))
+            except OSError as exc:
+                last_err = exc
+                if (
+                    exc.errno not in _TRANSIENT_ERRNOS
+                    or attempt >= _SHORT_DROPBOX_ATTEMPTS - 1
+                ):
+                    break
+                time.sleep(min(_backoff_s(attempt), 0.25))
+        if last_err:
+            raise last_err
+        raise RuntimeError(f"hot-serve materialize failed: {src_s}")
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(_probe)
+        try:
+            return fut.result(timeout=_SHORT_DROPBOX_PROBE_S)
+        except concurrent.futures.TimeoutError as exc:
+            raise OSError(
+                11,
+                f"Dropbox hot-serve probe timed out after {_SHORT_DROPBOX_PROBE_S}s: {src_s}",
+            ) from exc
 
 
 def playback_cache_token(source_path: Path) -> str:
