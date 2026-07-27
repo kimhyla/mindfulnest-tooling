@@ -1,14 +1,15 @@
 """Media playback cache API handlers — PLAYBACK_CACHE_V1."""
 from __future__ import annotations
 
-import re
+import os
 from pathlib import Path
 
 from media_playback_cache import (
+    find_cached_by_basename,
     lookup_playback_cache_file,
-    resolve_playback_url,
+    token_from_playback_cache_name,
 )
-from o3_session_terminal_reconcile import playback_event_dir_for_source
+from lib.paths import DROPBOX_ROOT
 
 
 def _playback_search_event_dirs(h, scoped_event: str) -> list[Path]:
@@ -20,17 +21,18 @@ def _playback_search_event_dirs(h, scoped_event: str) -> list[Path]:
     def _add(path: Path | None) -> None:
         if path is None:
             return
-        p = Path(path).resolve()
-        key = str(p)
-        if not p.is_dir() or key in seen:
+        # HOT_SERVE_TRUE_CACHE_FIRST_V2 — never Path.resolve()/is_dir() on
+        # Dropbox Event roots here; File Provider can block and gray Beat Gen.
+        key = os.path.abspath(str(path))
+        if key in seen:
             return
         seen.add(key)
-        dirs.append(p)
+        dirs.append(Path(key))
 
     _add(getattr(h.app, "milestone_library_event_dir", None))
     _add(Path(h.app.event_dir))
     candidate = prod / scoped_event
-    _add(candidate if candidate.is_dir() else None)
+    _add(candidate)
     return dirs
 
 
@@ -46,100 +48,67 @@ def handle_playback_resolve(h, body: dict) -> None:
             error_message="path required",
             retry_safe=False,
         )
+
+    # HOT_SERVE_TRUE_CACHE_FIRST_V2 — basename APFS hit BEFORE Dropbox
+    # Path.resolve()/isfile. Absolute CloudStorage paths hang inside resolve().
+    leaf = Path(path).name
+    host = h.headers.get("Host", "localhost:5111")
+    server_base = f"http://{host}"
+    for ed in _playback_search_event_dirs(h, Path(h.app.event_dir).name):
+        hit = find_cached_by_basename(ed, leaf) if leaf else None
+        if hit is None:
+            continue
+        token = token_from_playback_cache_name(hit.name)
+        if not token:
+            continue
+        event_id = ed.name
+        playback_url = f"{server_base}/api/media/playback/{event_id}/{token}"
+        # Skip ffprobe on the warm path — 40 concurrent resolves on Beat Gen
+        # load must stay near-instant. duration_s=0 → client keeps /files URL
+        # (also APFS cache-first); non-zero would swap onto /api/media/playback.
+        payload = {
+            "ok": True,
+            "code": "PLAYBACK_CACHE_V1",
+            "playback_url": playback_url,
+            "cache_token": token,
+            "duration_s": 0.0,
+            "raw_duration_s": 0.0,
+            "from_cache": True,
+            "cache_path": str(hit),
+            "source_path": path,
+        }
+        return h._send_json(200, payload)
+
+    # Cold miss: do NOT Path.resolve() Dropbox masters (hangs File Provider).
+    # Soft abspath containment, then refuse until APFS is warmed elsewhere.
+    abs_norm = os.path.abspath(os.path.expanduser(path))
     try:
-        abs_path = h._stitch_resolve_path(path)
-    except ValueError:
+        drop_prefix = os.path.abspath(str(DROPBOX_ROOT))
+    except OSError:
+        drop_prefix = str(DROPBOX_ROOT)
+    under_drop = abs_norm == drop_prefix or abs_norm.startswith(drop_prefix + os.sep)
+    if not under_drop and not Path(path).is_absolute():
+        try:
+            abs_path = h._stitch_resolve_path(path)
+            abs_norm = abs_path
+            under_drop = True
+        except ValueError:
+            under_drop = False
+    if not under_drop:
         return h._send_error_v59(
             403,
             error_code="PATH_OUTSIDE_PROJECT_ROOT",
             error_message="path outside project root",
             retry_safe=False,
         )
-    from lib.ffmpeg_io import path_isfile_durable
-    from media_playback_cache import _operator_media_roots, find_cached_by_basename
-
-    src = Path(abs_path)
-    roots = _operator_media_roots()
-
-    def _src_available(candidate: Path) -> bool:
-        # HOT_SERVE_TRUE_CACHE_FIRST_V2 — APFS warm hit before Dropbox isfile.
-        # Dozens of Beat Gen tiles call playback_resolve on load; Dropbox-first
-        # starved /files and left videos gray.
-        try:
-            ed = playback_event_dir_for_source(
-                candidate,
-                Path(h.app.event_dir),
-                getattr(h.app, "milestone_library_event_dir", None),
-            )
-        except Exception:
-            ed = Path(h.app.event_dir)
-        if find_cached_by_basename(ed, candidate) is not None:
-            return True
-        try:
-            if path_isfile_durable(candidate, roots=roots):
-                return True
-        except (OSError, PermissionError):
-            pass
-        return False
-
-    if not _src_available(src):
-        lib = getattr(h.app, "milestone_library_event_dir", None)
-        if lib is not None and not Path(abs_path).is_absolute():
-            alt = Path(lib) / path
-            if _src_available(alt):
-                abs_path = str(alt.resolve())
-                src = alt.resolve()
-        if not _src_available(src) and re.search(r"Event_\d+", path):
-            try:
-                abs_path = h._stitch_resolve_path(path)
-                src = Path(abs_path)
-            except ValueError:
-                pass
-    if not _src_available(src):
-        return h._send_error_v59(
-            404,
-            error_code="FILE_NOT_FOUND",
-            error_message=f"file not found: {path}",
-            retry_safe=False,
-        )
-    playback_event_dir = playback_event_dir_for_source(
-        src,
-        Path(h.app.event_dir),
-        getattr(h.app, "milestone_library_event_dir", None),
+    return h._send_error_v59(
+        503,
+        error_code="PLAYBACK_CACHE_FAILED",
+        error_message=(
+            "local playback cache miss — Dropbox cold probe skipped; retry after warm"
+        ),
+        retry_safe=True,
     )
-    event_id = playback_event_dir.name
-    host = h.headers.get("Host", "localhost:5111")
-    server_base = f"http://{host}"
-    try:
-        result = resolve_playback_url(
-            abs_path,
-            event_dir=playback_event_dir,
-            event_id=event_id,
-            server_base=server_base,
-        )
-    except FileNotFoundError as exc:
-        return h._send_error_v59(
-            404,
-            error_code="FILE_NOT_FOUND",
-            error_message=str(exc),
-            retry_safe=False,
-        )
-    except OSError as exc:
-        return h._send_error_v59(
-            503,
-            error_code="PLAYBACK_CACHE_FAILED",
-            error_message=str(exc),
-            retry_safe=True,
-        )
-    payload = {
-        "ok": True,
-        "code": "PLAYBACK_CACHE_V1",
-        **result,
-    }
-    duration_s = result.get("duration_s")
-    if duration_s is not None:
-        payload["raw_duration_s"] = duration_s
-    return h._send_json(200, payload)
 
 
 def serve_playback_cache_file(h, event_id: str, token: str) -> None:

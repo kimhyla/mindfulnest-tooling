@@ -90,9 +90,14 @@ def test_materialize_and_playback_resolve_are_cache_first() -> None:
         "path_isfile_durable"
     )
     pb = (TOOLS / "server_handlers" / "media_playback.py").read_text(encoding="utf-8")
-    avail = pb.split("def _src_available", 1)[1].split("if not _src_available", 1)[0]
-    assert "find_cached_by_basename" in avail
-    assert avail.index("find_cached_by_basename") < avail.index("path_isfile_durable")
+    resolve = pb.split("def handle_playback_resolve", 1)[1].split(
+        "def serve_playback_cache_file", 1,
+    )[0]
+    assert "find_cached_by_basename" in resolve
+    assert resolve.index("find_cached_by_basename") < resolve.index(
+        "PLAYBACK_CACHE_FAILED"
+    )
+    assert "_stitch_resolve_path" not in resolve.split("Cold miss", 1)[0]
 
 
 def test_peaks_and_stitch_audio_use_durable_dropbox_reads() -> None:
