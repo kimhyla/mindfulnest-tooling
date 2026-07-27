@@ -4235,10 +4235,9 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
     active_context. Falls back to active_context only when the
     corresponding scope key is missing (legacy clients).
 
-    Rule 35 N/A: bg.write_sidecar() called below is a LOCAL atomic JSON
-    file write (json.dump + os.replace, see beat_generator.py:313). NOT
-    a Directus prod_* write. try_post_or_queue requirement does not
-    apply.
+    Fast path (BG_REORDER_INDEX_ONLY_V1): no heavy ``_migrate_sidecar``, no
+    full beat_json replace — SQLite updates ``beat_index`` only so ↑/↓ cannot
+    hang behind session-state / Dropbox load.
     """
     # LD-456 SCOPE_VALIDATION_V1
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
@@ -4252,8 +4251,9 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
                    retry_safe=False,
                )
     bg = _bg_module()
+    t0 = time.monotonic()
+    # Order-only: never run heavy heal migrate on the ↑/↓ hot path.
     sidecar_probe = bg.read_sidecar()
-    sidecar_probe = bg._migrate_sidecar(sidecar_probe)
     ctx = sidecar_probe.get("active_context")
     scope_event_id = body.get("scope_event_id")
     if scope_event_id is None:
@@ -4277,23 +4277,32 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
     if scope_phase is None:
         scope_phase = (ctx.get("phase") if ctx else None) or "full"
     if scope_arc is None or scope_event_id is None:
+        _bg_reorder_audit(
+            h,
+            "FAIL",
+            error_code="NO_SCOPE_OR_ACTIVE_CONTEXT",
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
         return h._send_error_v59(
             400,
             error_code="NO_SCOPE_OR_ACTIVE_CONTEXT",
             error_message="no scope or active context",
             retry_safe=False,
         )
-    scope_active_context = {
-        "arc_number": scope_arc,
-        "event_id": scope_event_id,
-        "phase": scope_phase,
-    }
 
     seg_probe = bg.get_seg_entry(sidecar_probe, scope_arc, scope_event_id, scope_phase)
     existing_beats = seg_probe.get("beats", [])
     existing_ids = {b.get("beat_id") for b in existing_beats if b.get("beat_id")}
     incoming_ids = [bid for bid in beat_ids if bid]
     if len(incoming_ids) != len(existing_ids):
+        _bg_reorder_audit(
+            h,
+            "FAIL",
+            error_code="REORDER_BEAT_COUNT_MISMATCH",
+            expected=len(existing_ids),
+            got=len(incoming_ids),
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
         return h._send_error_v59(
             400,
             error_code="REORDER_BEAT_COUNT_MISMATCH",
@@ -4304,6 +4313,12 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
             retry_safe=False,
         )
     if set(incoming_ids) != existing_ids:
+        _bg_reorder_audit(
+            h,
+            "FAIL",
+            error_code="REORDER_BEAT_SET_MISMATCH",
+            elapsed_ms=int((time.monotonic() - t0) * 1000),
+        )
         return h._send_error_v59(
             400,
             error_code="REORDER_BEAT_SET_MISMATCH",
@@ -4311,31 +4326,41 @@ def handle_bg_reorder_beats(h, body: dict)-> None:
             retry_safe=False,
         )
 
-    def _reorder(sidecar: dict) -> None:
-        ctx_l = sidecar.get("active_context")
-        if ctx_l and (
-            ctx_l.get("arc_number") != scope_active_context["arc_number"]
-            or ctx_l.get("event_id") != scope_active_context["event_id"]
-            or (ctx_l.get("phase") or "full") != scope_active_context["phase"]
-        ):
-            warnings = list(sidecar.get("migration_warnings", []))
-            warnings.append({
-                "type": "scope_active_context_divergence",
-                "message": (
-                    "reorder-beats scope differs from sidecar.active_context — "
-                    "scope is canonical per LD-545 Option B"
-                ),
-                "scope": scope_active_context,
-                "active_context": ctx_l,
-            })
-            sidecar["migration_warnings"] = warnings
-        seg = bg.get_seg_entry(sidecar, scope_arc, scope_event_id, scope_phase)
-        beats = seg.get("beats", [])
-        beat_map = {b["beat_id"]: b for b in beats}
-        seg["beats"] = [beat_map[bid] for bid in beat_ids if bid in beat_map]
-
-    bg.mutate_sidecar_locked(_reorder, migrate=True)
-    return h._send_json(200, {"ok": True})
+    ok, err = bg.reorder_segment_beats_locked(
+        scope_arc,
+        scope_event_id,
+        scope_phase,
+        incoming_ids,
+        caller="handle_bg_reorder_beats",
+    )
+    elapsed_ms = int((time.monotonic() - t0) * 1000)
+    if not ok:
+        code = "REORDER_BEAT_SET_MISMATCH"
+        if err == "count_mismatch":
+            code = "REORDER_BEAT_COUNT_MISMATCH"
+        _bg_reorder_audit(
+            h,
+            "FAIL",
+            error_code=code,
+            detail=err,
+            beat_count=len(incoming_ids),
+            elapsed_ms=elapsed_ms,
+        )
+        return h._send_error_v59(
+            400,
+            error_code=code,
+            error_message=err or "reorder failed",
+            retry_safe=False,
+        )
+    _bg_reorder_audit(
+        h,
+        "OK",
+        beat_count=len(incoming_ids),
+        first_ids=incoming_ids[:3],
+        elapsed_ms=elapsed_ms,
+        path="index_only",
+    )
+    return h._send_json(200, {"ok": True, "elapsed_ms": elapsed_ms})
 
 
 def handle_bg_delete_beat(h, body: dict)-> None:
@@ -6887,8 +6912,8 @@ def _clear_o3_job_metadata(job_id: str, *, status: str, result: dict | None = No
         print(f"[bg_o3_job] clear metadata failed for {job_id}: {exc}", flush=True)
 
 
-def _bg_o3_trim_audit_log_path(event_label: str) -> Path:
-    """Local APFS audit JSONL — never append to Dropbox Event_* (File Provider stall class)."""
+def _bg_event_audit_log_dir(event_label: str) -> Path:
+    """Local APFS audit dir — never append to Dropbox Event_* (File Provider stall class)."""
     root = Path(
         os.environ.get("MN_STATE_ROOT", "").strip()
         or (Path.home() / ".mindfulnest" / "state")
@@ -6898,7 +6923,36 @@ def _bg_o3_trim_audit_log_path(event_label: str) -> Path:
     safe = "".join(c if (c.isalnum() or c in ("_", "-", ".")) else "_" for c in label)
     d = root / "logs" / safe
     d.mkdir(parents=True, exist_ok=True)
-    return d / "_bg_o3_trim_audit.jsonl"
+    return d
+
+
+def _bg_o3_trim_audit_log_path(event_label: str) -> Path:
+    """Local APFS audit JSONL — never append to Dropbox Event_* (File Provider stall class)."""
+    return _bg_event_audit_log_dir(event_label) / "_bg_o3_trim_audit.jsonl"
+
+
+def _bg_reorder_audit_log_path(event_label: str) -> Path:
+    return _bg_event_audit_log_dir(event_label) / "_bg_reorder_audit.jsonl"
+
+
+def _bg_reorder_audit(h, audit_event: str, **fields: object) -> None:
+    """↑/↓ reorder audit — stdout + local state JSONL (no Dropbox I/O)."""
+    row: dict[str, object] = {
+        "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "event": audit_event,
+    }
+    for key, val in fields.items():
+        if val is not None and val != "":
+            row[key] = val
+    line = json.dumps(row, default=str)
+    print(f"[bg_reorder_audit] {line}", flush=True)
+    try:
+        event_label = Path(str(getattr(h.app, "event_dir", "") or "")).name or "unknown"
+        log_path = _bg_reorder_audit_log_path(event_label)
+        with open(log_path, "a", encoding="utf-8") as audit_f:
+            audit_f.write(line + "\n")
+    except OSError:
+        pass
 
 
 def _bg_o3_trim_audit(h, audit_event: str, *, beat_id: str | None = None, **fields: object) -> None:

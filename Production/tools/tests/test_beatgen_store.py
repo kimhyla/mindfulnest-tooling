@@ -66,6 +66,36 @@ def test_patch_beat_updates_row(tmp_path: Path):
                     assert row["kling_o3_status"] == "approved"
 
 
+def test_reorder_segment_beats_updates_index_only(tmp_path: Path):
+    store = BeatgenStore(tmp_path / "beatgen.db")
+    store.import_from_dict(_sample_sidecar())
+    ok, err = store.reorder_segment_beats(
+        arc_key="arc_1",
+        segment_key="event_2_pre",
+        beat_ids=[
+            "bg_arc1_event2_pre_beat_02",
+            "bg_arc1_event2_pre_beat_01",
+        ],
+    )
+    assert ok and err is None
+    out = store.assemble_sidecar_dict()
+    ids = [
+        b["beat_id"]
+        for b in out["arcs"]["arc_1"]["segments"]["event_2_pre"]["beats"]
+    ]
+    assert ids == [
+        "bg_arc1_event2_pre_beat_02",
+        "bg_arc1_event2_pre_beat_01",
+    ]
+    # Partial / wrong set must fail closed (no silent truncate).
+    bad_ok, bad_err = store.reorder_segment_beats(
+        arc_key="arc_1",
+        segment_key="event_2_pre",
+        beat_ids=["bg_arc1_event2_pre_beat_01"],
+    )
+    assert not bad_ok and bad_err == "count_mismatch"
+
+
 def test_sqlite_authority_env_flag(monkeypatch, tmp_path: Path):
     db = tmp_path / "beatgen.db"
     monkeypatch.setenv("MN_BEATGEN_DB_PATH", str(db))

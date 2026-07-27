@@ -1328,6 +1328,61 @@ def delete_beat_locked(
     return True
 
 
+def reorder_segment_beats_locked(
+    arc_number: int,
+    event_id: str,
+    phase: str,
+    beat_ids: list[str],
+    *,
+    scope=None,
+    caller: str = "reorder_segment_beats_locked",
+) -> tuple[bool, str | None]:
+    """Persist operator ↑/↓ order without heavy migrate or full beat_json rewrite.
+
+    SQLite path updates ``beat_index`` only. JSON-authority path rewrites the
+    segment list under lock with ``migrate=False``.
+    """
+    from beatgen_scope import log_beatgen_mutation, scope_from_current_globals  # noqa: PLC0415
+
+    active_scope = scope if scope is not None else scope_from_current_globals(__import__(__name__))
+    evt = normalize_bg_event_id(event_id)
+    arc_key = f"arc_{int(arc_number)}"
+    seg_key = f"event_{evt}_{phase or 'full'}"
+    incoming = [str(bid).strip() for bid in beat_ids if str(bid or "").strip()]
+    log_beatgen_mutation(
+        operation="reorder_segment_beats_locked",
+        beat_id="",
+        scope=active_scope,
+        caller=caller,
+        extra={"arc_key": arc_key, "segment_key": seg_key, "beat_count": len(incoming)},
+    )
+    if _sidecar_use_sqlite():
+        with _sidecar_lock:
+            ok, err = _beatgen_store().reorder_segment_beats(
+                arc_key=arc_key,
+                segment_key=seg_key,
+                beat_ids=incoming,
+            )
+        if ok:
+            _schedule_sidecar_mirror_export()
+        return ok, err
+
+    def _reorder(sidecar: dict) -> None:
+        seg = get_seg_entry(sidecar, arc_number, evt, phase or "full")
+        beats = seg.get("beats", [])
+        beat_map = {b["beat_id"]: b for b in beats if b.get("beat_id")}
+        existing = set(beat_map)
+        if len(incoming) != len(existing) or set(incoming) != existing:
+            raise ValueError("REORDER_BEAT_SET_MISMATCH")
+        seg["beats"] = [beat_map[bid] for bid in incoming]
+
+    try:
+        mutate_sidecar_locked(_reorder, migrate=False, scope=active_scope, caller=caller)
+    except ValueError as exc:
+        return False, str(exc)
+    return True, None
+
+
 def update_beat_locked(
     beat_id,
     mutator,
