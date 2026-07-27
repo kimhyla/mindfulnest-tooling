@@ -22,7 +22,7 @@ def _resolved_clip_basename_hint(beat: dict, event_dir: Path) -> str | None:
     return None
 
 
-def _segment_export_errors(beats: list[dict]) -> list[dict[str, str]]:
+def _segment_export_errors(beats: list[dict], *, event_dir: Path) -> list[dict[str, str]]:
     import beat_generator as bg  # noqa: PLC0415
     from o3_gallery_option_identity import (  # noqa: PLC0415
         O3GalleryExportAuthorityError,
@@ -32,9 +32,28 @@ def _segment_export_errors(beats: list[dict]) -> list[dict[str, str]]:
 
     segment_errors: list[dict[str, str]] = []
     beats_copy = copy.deepcopy(beats)
-    _trim_changed, trim_errors = bg.prepare_beats_for_stitch_export(beats_copy)
+    _trim_changed, trim_errors = bg.prepare_beats_for_stitch_export(
+        beats_copy, event_dir=event_dir,
+    )
     for err in trim_errors:
         beat_id = err.split(":", 1)[0] if ":" in err else ""
+        if bg.KLING_O3_DURATION_UNREADABLE_V1 in err:
+            segment_errors.append(
+                {
+                    "code": "DURATION_UNREADABLE",
+                    "beat_id": beat_id,
+                    "message": err,
+                    "fix_instruction": (
+                        f"Clip duration unreadable for {beat_id} "
+                        "(Dropbox File Provider busy). Hard-refresh Beat Gen so the "
+                        "local cache warms, then retry Send to Stitcher."
+                        if beat_id
+                        else "Clip duration unreadable (Dropbox busy). "
+                        "Hard-refresh Beat Gen, then retry Send to Stitcher."
+                    ),
+                }
+            )
+            continue
         segment_errors.append(
             {
                 "code": "EXPORT_TRIM_AUTHORITY",
@@ -103,7 +122,7 @@ def build_bg_stitch_export_preflight_manifest(
             row.update(block)
         beat_rows.append(row)
 
-    segment_errors = _segment_export_errors(beats)
+    segment_errors = _segment_export_errors(beats, event_dir=event_dir)
     beats_ready = all(r["ready"] for r in beat_rows) if beat_rows else False
     return {
         "code": BG_STITCH_EXPORT_PREFLIGHT_V1,

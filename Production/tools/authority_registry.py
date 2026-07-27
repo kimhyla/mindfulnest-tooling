@@ -137,7 +137,9 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         server_read="prepare_beats_for_stitch_export",
         server_write="set_o3_option_trim",
         spec_doc="Production/docs/O3_TRIM_EXPORT_TRUTH_V1.md",
-        notes="Option trim must mirror to beat-level before concat; export fails closed on drift.",
+        notes="Option trim must mirror to beat-level before concat; export fails closed on drift. "
+        "Duration probes use local APFS hot-serve (KLING_O3_EXPORT_DURATION_LOCAL_PROBE_V1); "
+        "unreadable duration is DURATION_UNREADABLE — not false Apply-Trim.",
     ),
     AuthorityConcept(
         id="o3_job_busy",

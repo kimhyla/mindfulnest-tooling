@@ -7277,6 +7277,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 cut_start_s=cut_start,
                 cut_end_s=cut_end,
                 video_path=req_video_path,
+                event_dir=event_dir,
             )
         except ValueError as exc:
             _bg_o3_trim_audit(
@@ -7370,6 +7371,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                 trim_start=trim_start,
                 trim_back=trim_back,
                 video_path=req_video_path,
+                event_dir=event_dir,
             )
         except ValueError as exc:
             _bg_o3_trim_audit(
@@ -7466,6 +7468,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     work_beat,
                     trim_start=trim_start,
                     trim_back=trim_back,
+                    event_dir=event_dir,
                 )
             except ValueError as exc:
                 _bg_o3_trim_audit(
@@ -7826,6 +7829,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                     work_beat,
                     trim_start=trim_start,
                     trim_back=trim_back,
+                    event_dir=event_dir,
                 )
             except ValueError as exc:
                 _bg_o3_trim_audit(
