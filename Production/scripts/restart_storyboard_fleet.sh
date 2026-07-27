@@ -2,9 +2,9 @@
 # restart_storyboard_fleet.sh — STORYBOARD_FLEET_RESTART_V1
 #
 # After storyboard bundle fanout, restart (or cold-start) every dedicated Event_N
-# server so GET / on :5111–:5116 serves the same fresh storyboard_v59_prod.html.
-# Deploying only the target event left Events 1–4 on stale build-sha while Event_5
-# was updated — this closes that class permanently.
+# server so GET / on :5111–:5117 serves the same fresh storyboard_v59_prod.html.
+# Deploying only the target event left some ports on stale build-sha while another
+# event was updated — this closes that class permanently (includes Event_7).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,7 +15,7 @@ ROOT="${MN_TOOLING_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 DROPBOX="${MN_DROPBOX_ROOT:-${HOME}/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files}"
 START="${SCRIPT_DIR}/start_event_server.sh"
 
-FLEET_EVENTS=(Event_1 Event_2 Event_3 Event_4 Event_5 Event_6)
+FLEET_EVENTS=(Event_1 Event_2 Event_3 Event_4 Event_5 Event_6 Event_7)
 restarted=0
 started=0
 
