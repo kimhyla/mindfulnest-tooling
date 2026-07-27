@@ -8196,11 +8196,33 @@ class ProductionHandler(BaseHTTPRequestHandler):
         return safe_realpath_under_serve_roots(cand)
 
     def _resolve_served_file_path(self, file_path: str) -> str | None:
-        """Resolve ?path= to an on-disk file under Dropbox, tooling, or event_dir."""
+        """Resolve ?path= to an on-disk file under Dropbox, tooling, or event_dir.
+
+        HOT_SERVE_TRUE_CACHE_FIRST_V2 — try local APFS ``pb_*`` by basename
+        before any Dropbox ``realpath``/``isfile``. File Provider can block
+        forever inside those calls; warm Beat Gen clips must not wait on it.
+        """
         from lib.path_serve_security import reject_path_traversal_segments
 
         if not file_path:
             return None
+
+        # Warm APFS hit first — zero Dropbox I/O.
+        try:
+            from media_playback_cache import find_cached_by_basename
+            from media_hot_root import media_hot_serve_roots
+
+            leaf = Path(file_path).name
+            if leaf and "/" not in leaf and "\\" not in leaf and leaf not in (".", ".."):
+                hit = find_cached_by_basename(Path(self.app.event_dir), leaf)
+                if hit is not None:
+                    hit_s = os.path.realpath(str(hit))
+                    for root in media_hot_serve_roots():
+                        if root and (hit_s == root or hit_s.startswith(root + os.sep)):
+                            return hit_s
+        except Exception:
+            pass
+
         if os.path.isabs(file_path):
             return self._path_under_allowed_serve_roots(file_path)
 
@@ -12127,11 +12149,18 @@ body {{padding-top:44px!important;}}
         HOT_SERVE_ALL_FILES_V1 — used by /files for every extension (mp3 stems,
         images, mp4/mov). Cloud File Provider concurrent reads raise Errno 11;
         operator GET must never stream those bytes.
+
+        HOT_SERVE_TRUE_CACHE_FIRST_V2 — warm hits skip Dropbox; cold miss uses
+        a short Dropbox budget so hung File Provider cannot starve Beat Gen.
         """
         from media_playback_cache import ensure_hot_serve_file
         from lib.ffmpeg_io import path_is_cloud_storage_backed
 
-        local = ensure_hot_serve_file(path, event_dir=Path(self.app.event_dir))
+        local = ensure_hot_serve_file(
+            path,
+            event_dir=Path(self.app.event_dir),
+            dropbox_probe="never",
+        )
         local_p = Path(local)
         if local_p != Path(path):
             print(

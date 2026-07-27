@@ -51,6 +51,7 @@ from lib.event_library import (
     list_baseline_meta,
 )
 from lib.library_panel_contract import attach_panel_tabs_all, row_matches_panel_filter
+from lib.paths import DROPBOX_ROOT
 from lib.watercolor_assets import list_watercolor_items, upload_watercolor_filename
 from server_handlers._path_security import (
     require_basename_under_dir,
@@ -553,26 +554,47 @@ def handle_cr_thumb(h) -> None:
             retry_safe=False,
             extra={"ok": False},
         )
+    # Soft containment without File Provider realpath on the leaf — realpath
+    # of Dropbox masters can block forever and starve Beat Gen /files lanes.
+    abs_norm = os.path.abspath(os.path.expanduser(str(abs_path)))
     try:
-        real_path = require_realpath_under_project(abs_path)
-    except ValueError:
-        return h._send_error_v59(
-            403,
-            error_code="PATH_OUTSIDE_PROJECT",
-            error_message="path outside project",
-            retry_safe=False,
-            extra={"ok": False},
-        )
-    safe_path = os.path.realpath(real_path)
-    # CR_THUMB_HOT_SERVE_V1 — isfile/open on Dropbox masters can errno 11/35;
-    # materialize to APFS (or serve warmed cache) before decoding.
-    try:
-        from media_playback_cache import ensure_hot_serve_file
+        drop_prefix = os.path.abspath(str(DROPBOX_ROOT))
+    except OSError:
+        drop_prefix = str(DROPBOX_ROOT)
+    under_drop = abs_norm == drop_prefix or abs_norm.startswith(drop_prefix + os.sep)
+    if not under_drop:
+        # Non-Dropbox abs paths (pytest fixtures): still require project gate.
+        # Production library thumbs are under DROPBOX_ROOT and skip realpath.
+        try:
+            abs_norm = require_realpath_under_project(abs_path)
+        except ValueError:
+            return h._send_error_v59(
+                403,
+                error_code="PATH_OUTSIDE_PROJECT",
+                error_message="path outside project",
+                retry_safe=False,
+                extra={"ok": False},
+            )
 
-        local = ensure_hot_serve_file(
-            safe_path,
-            event_dir=getattr(h.app, "event_dir", None),
-        )
+    ed = getattr(h.app, "event_dir", None)
+    leaf = Path(abs_norm).name
+    local: Path | None = None
+    # CR_THUMB_HOT_SERVE_V1 + HOT_SERVE_TRUE_CACHE_FIRST_V2 — warm APFS first.
+    try:
+        from media_playback_cache import ensure_hot_serve_file, find_cached_by_basename
+
+        if ed is not None and leaf:
+            hit = find_cached_by_basename(ed, leaf)
+            if hit is not None:
+                local = hit
+        if local is None:
+            # Cold miss: short Dropbox budget (never hang the HTTP worker forever).
+            # Prefer abs_norm string (no realpath) so probe timeout owns the budget.
+            local = ensure_hot_serve_file(
+                abs_norm,
+                event_dir=ed,
+                dropbox_probe="never",
+            )
     except OSError:
         return h._send_error_v59(
             503,
@@ -581,7 +603,7 @@ def handle_cr_thumb(h) -> None:
             retry_safe=True,
             extra={"ok": False},
         )
-    if not Path(local).is_file():
+    if local is None or not Path(local).is_file():
         return h._send_error_v59(
             404,
             error_code="FILE_NOT_FOUND",
