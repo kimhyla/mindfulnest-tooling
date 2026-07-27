@@ -63,16 +63,31 @@ def handle_playback_resolve(h, body: dict) -> None:
             continue
         event_id = ed.name
         playback_url = f"{server_base}/api/media/playback/{event_id}/{token}"
-        # Skip ffprobe on the warm path — 40 concurrent resolves on Beat Gen
-        # load must stay near-instant. duration_s=0 → client keeps /files URL
-        # (also APFS cache-first); non-zero would swap onto /api/media/playback.
+        # Local APFS ffprobe only — never touch Dropbox. Duration is required for
+        # Beat Gen cut/trim UI (auto-load baked preview needs overlayTimelineDurationS > 0).
+        duration_s = 0.0
+        try:
+            import subprocess
+
+            out = subprocess.check_output(
+                [
+                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(hit),
+                ],
+                text=True,
+                stderr=subprocess.DEVNULL,
+                timeout=3,
+            ).strip()
+            duration_s = float(out) if out else 0.0
+        except (subprocess.SubprocessError, ValueError, OSError):
+            duration_s = 0.0
         payload = {
             "ok": True,
             "code": "PLAYBACK_CACHE_V1",
             "playback_url": playback_url,
             "cache_token": token,
-            "duration_s": 0.0,
-            "raw_duration_s": 0.0,
+            "duration_s": duration_s,
+            "raw_duration_s": duration_s,
             "from_cache": True,
             "cache_path": str(hit),
             "source_path": path,

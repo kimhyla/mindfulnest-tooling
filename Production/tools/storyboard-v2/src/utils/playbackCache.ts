@@ -30,8 +30,14 @@ export async function resolveClipPlaybackTruth(
   if (!res.ok || !res.data?.playback_url) return null;
   const url = resolveServerMediaUrl(res.data.playback_url);
   const rawDurationS = res.data.raw_duration_s ?? res.data.duration_s;
-  if (rawDurationS == null || !(rawDurationS > 0)) return null;
-  const truth: ClipPlaybackTruth = { playbackUrl: url, rawDurationS };
+  // PLAYBACK_DURATION_OPTIONAL_V1 — accept URL even if duration missing so
+  // <video> can load; callers that need trim math still check rawDurationS > 0.
+  if (rawDurationS == null || !(Number(rawDurationS) > 0)) {
+    const truthNoDur: ClipPlaybackTruth = { playbackUrl: url, rawDurationS: 0 };
+    playbackUrlCache.set(key, url);
+    return truthNoDur;
+  }
+  const truth: ClipPlaybackTruth = { playbackUrl: url, rawDurationS: Number(rawDurationS) };
   // Server token = sha256(path+mtime+size); always refetch so in-place clip swaps reach the tile.
   const cacheKey = res.data.cache_token ? `${key}|${res.data.cache_token}` : key;
   if (res.data.cache_token) {

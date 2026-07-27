@@ -98,6 +98,7 @@ def test_materialize_and_playback_resolve_are_cache_first() -> None:
         "PLAYBACK_CACHE_FAILED"
     )
     assert "_stitch_resolve_path" not in resolve.split("Cold miss", 1)[0]
+    assert "ffprobe" in resolve.split("Cold miss", 1)[0]
 
 
 def test_peaks_and_stitch_audio_use_durable_dropbox_reads() -> None:
