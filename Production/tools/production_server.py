@@ -12159,7 +12159,7 @@ body {{padding-top:44px!important;}}
         local = ensure_hot_serve_file(
             path,
             event_dir=Path(self.app.event_dir),
-            dropbox_probe="short",
+            dropbox_probe="never",
         )
         local_p = Path(local)
         if local_p != Path(path):

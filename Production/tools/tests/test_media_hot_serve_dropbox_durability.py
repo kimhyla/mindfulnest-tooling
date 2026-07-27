@@ -58,12 +58,12 @@ def test_files_resolve_tries_apfs_cache_before_dropbox_realpath() -> None:
     assert cache_idx < drop_idx
 
 
-def test_request_path_ensure_uses_short_dropbox_probe() -> None:
+def test_request_path_ensure_uses_never_dropbox_probe() -> None:
     text = SERVER.read_text(encoding="utf-8")
     ensure = text.split("def _ensure_local_file_for_serve", 1)[1].split(
         "def _ensure_local_mp4_for_serve", 1,
     )[0]
-    assert 'dropbox_probe="short"' in ensure
+    assert 'dropbox_probe="never"' in ensure
 
 
 def test_cr_thumb_warm_cache_before_dropbox_realpath() -> None:
@@ -72,12 +72,27 @@ def test_cr_thumb_warm_cache_before_dropbox_realpath() -> None:
         "def handle_cr_library", 1,
     )[0]
     assert "find_cached_by_basename" in thumb
-    assert 'dropbox_probe="short"' in thumb
+    assert 'dropbox_probe="never"' in thumb
     # Production Dropbox thumbs use soft abspath first; realpath only as fallback.
     soft_idx = thumb.index("under_drop")
     real_idx = thumb.index("require_realpath_under_project")
     assert soft_idx < real_idx
     assert "THUMB_MATERIALIZE_FAILED" in thumb
+
+
+def test_materialize_and_playback_resolve_are_cache_first() -> None:
+    text = CACHE.read_text(encoding="utf-8")
+    mat = text.split("def materialize_playback_cache", 1)[1].split(
+        "def resolve_playback_url", 1,
+    )[0]
+    assert "cached_hit = find_cached_by_basename" in mat
+    assert mat.index("cached_hit = find_cached_by_basename") < mat.index(
+        "path_isfile_durable"
+    )
+    pb = (TOOLS / "server_handlers" / "media_playback.py").read_text(encoding="utf-8")
+    avail = pb.split("def _src_available", 1)[1].split("if not _src_available", 1)[0]
+    assert "find_cached_by_basename" in avail
+    assert avail.index("find_cached_by_basename") < avail.index("path_isfile_durable")
 
 
 def test_peaks_and_stitch_audio_use_durable_dropbox_reads() -> None:

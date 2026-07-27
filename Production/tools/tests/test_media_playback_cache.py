@@ -260,6 +260,48 @@ def test_ensure_hot_serve_warm_hit_never_probes_dropbox(
     assert probes == [], f"warm hit must not probe Dropbox; got {probes}"
 
 
+def test_materialize_warm_hit_never_probes_dropbox(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CATEGORY: materialize/playback_resolve must not Dropbox-probe warm pb_*."""
+    import media_playback_cache as mpc
+
+    hot = tmp_path / "hot-media"
+    monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    monkeypatch.setenv("MN_MEDIA_PATH_ROOTS", str(tmp_path))
+    event = (
+        tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
+        / "Production" / "Event_6"
+    )
+    src = event / "kling_o3_clips" / "bg_arc1_event6_pre_beat_01_g1_element_o3_master_delivery.mp4"
+    src.parent.mkdir(parents=True)
+    payload = b"\x00\x00\x00\x20ftypmp42" + b"mat-warm" * 40
+    src.write_bytes(payload)
+    warmed = materialize_playback_cache(event, src)
+
+    probes: list[str] = []
+
+    def ban(name: str):
+        def _ban(*_a, **_k):
+            probes.append(name)
+            raise AssertionError(f"forbidden Dropbox probe: {name}")
+        return _ban
+
+    monkeypatch.setattr(mpc, "path_isfile_durable", ban("path_isfile_durable"))
+    monkeypatch.setattr(mpc, "path_stat_durable", ban("path_stat_durable"))
+    monkeypatch.setattr(mpc, "copy_file_durable", ban("copy_file_durable"))
+
+    again = materialize_playback_cache(event, src)
+    assert again == warmed
+    assert probes == []
+    resolved = resolve_playback_url(
+        src, event_dir=event, event_id="Event_6", server_base="http://localhost:5116",
+    )
+    assert resolved["cache_token"]
+    assert probes == []
+    assert "playback" in resolved["playback_url"]
+
+
 def test_ensure_hot_serve_never_probe_raises_without_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

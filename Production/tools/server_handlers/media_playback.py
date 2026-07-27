@@ -62,12 +62,9 @@ def handle_playback_resolve(h, body: dict) -> None:
     roots = _operator_media_roots()
 
     def _src_available(candidate: Path) -> bool:
-        try:
-            if path_isfile_durable(candidate, roots=roots):
-                return True
-        except (OSError, PermissionError):
-            pass
-        # HOT_SERVE_CACHE_FIRST_V1 — Dropbox may flake while APFS cache is warm.
+        # HOT_SERVE_TRUE_CACHE_FIRST_V2 — APFS warm hit before Dropbox isfile.
+        # Dozens of Beat Gen tiles call playback_resolve on load; Dropbox-first
+        # starved /files and left videos gray.
         try:
             ed = playback_event_dir_for_source(
                 candidate,
@@ -76,7 +73,14 @@ def handle_playback_resolve(h, body: dict) -> None:
             )
         except Exception:
             ed = Path(h.app.event_dir)
-        return find_cached_by_basename(ed, candidate) is not None
+        if find_cached_by_basename(ed, candidate) is not None:
+            return True
+        try:
+            if path_isfile_durable(candidate, roots=roots):
+                return True
+        except (OSError, PermissionError):
+            pass
+        return False
 
     if not _src_available(src):
         lib = getattr(h.app, "milestone_library_event_dir", None)

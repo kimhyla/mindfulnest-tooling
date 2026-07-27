@@ -593,7 +593,7 @@ def handle_cr_thumb(h) -> None:
             local = ensure_hot_serve_file(
                 abs_norm,
                 event_dir=ed,
-                dropbox_probe="short",
+                dropbox_probe="never",
             )
     except OSError:
         return h._send_error_v59(

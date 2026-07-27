@@ -402,6 +402,13 @@ def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
     from lib.ffmpeg_io import path_is_cloud_storage_backed
 
     src_s = _norm_source_path(source_path)
+    # HOT_SERVE_TRUE_CACHE_FIRST_V2 — warm pb_* before any Dropbox isfile/stat.
+    # Beat Gen fires dozens of playback_resolve calls on load; probing Dropbox
+    # first hung HTTP workers and left option <video> tiles gray (readyState 0).
+    cached_hit = find_cached_by_basename(event_dir, source_path)
+    if cached_hit is not None:
+        return cached_hit
+
     cloud = path_is_cloud_storage_backed(src_s)
     roots = _operator_media_roots() if cloud else []
     try:
@@ -414,9 +421,6 @@ def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
     except (OSError, PermissionError):
         present = False
     if not present:
-        cached = find_cached_by_basename(event_dir, source_path)
-        if cached is not None:
-            return cached
         raise FileNotFoundError(f"missing playback source: {src_s}")
     src = Path(src_s)
 
@@ -434,23 +438,12 @@ def materialize_playback_cache(event_dir: Path, source_path: Path) -> Path:
                     return dest
             except OSError:
                 pass
-        # Basename hit with matching size — avoid Dropbox rematerialize.
-        cached = find_cached_by_basename(event_dir, src)
-        if cached is not None:
-            try:
-                if cached.stat().st_size == src_size:
-                    return cached
-            except OSError:
-                pass
         copy_file_durable(src, dest)
         playback_cache_lru_cleanup(event_dir)
         return dest
     except OSError as exc:
         if not dropbox_io_transient(exc):
             raise
-        cached = find_cached_by_basename(event_dir, src)
-        if cached is not None:
-            return cached
         raise
 
 
@@ -465,10 +458,11 @@ def resolve_playback_url(
     src = Path(_norm_source_path(source_path))
     # Always materialize into pb_* cache — /api/media/playback/{token} looks up
     # by token there. ensure_hot_serve alone leaves local paths uncached.
+    # materialize is cache-first (HOT_SERVE_TRUE_CACHE_FIRST_V2).
     try:
         cached = materialize_playback_cache(event_dir, src)
     except OSError:
-        cached = ensure_hot_serve_file(src, event_dir=event_dir)
+        cached = ensure_hot_serve_file(src, event_dir=event_dir, dropbox_probe="never")
     # PLAYBACK_TOKEN_MATCHES_CACHE_FILE_V1 — GET /api/media/playback/{token}
     # looks up pb_{token}_*. The URL token MUST be the token embedded in the
     # materialized leaf. Recomputing playback_cache_token(src) after a basename
@@ -495,7 +489,7 @@ def resolve_playback_url(
             ],
             text=True,
             stderr=subprocess.DEVNULL,
-            timeout=30,
+            timeout=8,
         ).strip()
         duration_s = float(out) if out else 0.0
     except (subprocess.SubprocessError, ValueError, OSError):
