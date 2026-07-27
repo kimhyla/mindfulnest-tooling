@@ -4533,13 +4533,10 @@ function BeatGenCard({
           const optionTrim = resolveO3OptionTrimFields(opt, beat);
           return (
           <BgOptionTile
-            // 2026-05-11 Rule 26 fix — key is INDEX-stable, not opt.key. With
-            // the prior `opt?.key ?? slot-${i}` key, dropping a library image
-            // changed the key from "slot-N" to lib_key, which unmount/remount
-            // sequence triggered a brief "no thumb" flash before next render.
-            // Stable index keys + optimistic onPatchOptionTile guarantee the
-            // tile re-renders in place with thumb_b64 immediately.
-            key={`bg-opt-${index}-${i}`}
+            // Stable per beat+slot (not opt.key) so library drops do not remount
+            // (Rule 26). Must include beat_id — container-index-only keys remount
+            // on ↑/↓ reorder and storm playback_resolve /files under Dropbox load.
+            key={`bg-opt-${beat.beat_id}-${i}`}
             optionIndex={i}
             beatIndex={index}
             beatId={beat.beat_id}
@@ -5225,10 +5222,11 @@ function BgOptionTile({
   useEffect(() => {
     setVideoLoadError(false);
     setLoadedDuration(null);
-    if (!selected) {
-      setPlaybackUrl(null);
-      setSourceDurationS(null);
-    }
+    // Always drop cached playback URL when the clip path changes (incl. ↑/↓
+    // reorder remount races). Keeping the prior token left the <video> on a
+    // wrong/404 URL until resolve finished — or forever if resolve failed.
+    setPlaybackUrl(null);
+    setSourceDurationS(null);
   }, [sourceVideoPath, selected]);
 
   useEffect(() => {
