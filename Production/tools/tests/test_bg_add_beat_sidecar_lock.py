@@ -50,9 +50,10 @@ def test_handle_bg_delete_beat_uses_delete_beat_locked():
     assert "with bg._sidecar_lock:" not in block
 
 
-def test_handle_bg_reorder_beats_uses_mutate_sidecar_locked():
+def test_handle_bg_reorder_beats_uses_index_only_locked():
     block = _handler_block("handle_bg_reorder_beats")
-    assert "mutate_sidecar_locked(_reorder" in block
+    assert "reorder_segment_beats_locked" in block
+    assert "migrate=True" not in block
     assert "sidecar_file_lock" not in block
     assert "with bg._sidecar_lock:" not in block
 

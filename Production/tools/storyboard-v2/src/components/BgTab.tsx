@@ -2920,15 +2920,22 @@ export function BgTab() {
     [nextIds[idx], nextIds[swapIdx]] = [nextIds[swapIdx], nextIds[idx]];
     setReorderBusyBeatId(beatId);
     try {
-      const result = await pathappPatch(activeScope.value, 'bg_reorder_beats', {
-        beat_ids: nextIds,
-        arc_number: arcNumber,
-        event_id,
-        phase,
-        ...activeScopeQueryParams(),
-        scope_phase: phase,
-        scope_arc_number: arcNumber,
-      });
+      // BG_REORDER_INDEX_ONLY_V1 — skip pre-write snapshot (was flooding +
+      // starving ↑/↓) and bound wait so the button cannot look permanently stuck.
+      const result = await pathappPatch(
+        activeScope.value,
+        'bg_reorder_beats',
+        {
+          beat_ids: nextIds,
+          arc_number: arcNumber,
+          event_id,
+          phase,
+          ...activeScopeQueryParams(),
+          scope_phase: phase,
+          scope_arc_number: arcNumber,
+        },
+        { skipSnapshot: true, fetchTimeoutMs: 45_000 },
+      );
       if (result.ok) {
         updateBgBeats((bs) => {
           const byId = new Map(bs.map((b) => [b.beat_id, b]));
@@ -2948,9 +2955,14 @@ export function BgTab() {
           source: 'bg-reorder',
         });
       } else {
+        const timedOut =
+          result.error_code === 'TIMEOUT'
+          || /timeout|aborted|abort/i.test(String(result.error || ''));
         pushToast({
           kind: 'error',
-          message: formatMutationError(result, 'Reorder beats failed'),
+          message: timedOut
+            ? 'Move beat timed out — hard refresh and try again'
+            : formatMutationError(result, 'Reorder beats failed'),
           source: 'bg-reorder-error',
         });
       }

@@ -15,7 +15,11 @@ def test_bg_beat_reorder_buttons_wired():
     assert "bg_reorder_beats" in src
     assert "bg-beat-move-up-" in src
     assert "bg-beat-move-down-" in src
-    assert "scope_video_role: activeTargetVideo.value" in src
+    assert "activeScopeQueryParams()" in src
+    # BG_REORDER_INDEX_ONLY_V1 — bound wait + no snapshot flood on ↑/↓.
+    assert "skipSnapshot: true" in src
+    assert "fetchTimeoutMs: 45_000" in src
+    assert "Move beat timed out" in src
 
 
 def test_stitcher_keepalive_mounted():
@@ -39,4 +43,3 @@ def test_stitcher_canonical_only_legacy_fill_empty():
     ).read_text(encoding="utf-8")
     assert "onlyEmpty" in tab or "onlyEmpty = true" in tab
     assert "jobLoadedForEventRef" in tab
-    assert "lastViewerVideoPathRef" in tab

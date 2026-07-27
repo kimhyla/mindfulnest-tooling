@@ -435,6 +435,73 @@ class BeatgenStore:
                 raise
         return True
 
+    def reorder_segment_beats(
+        self,
+        *,
+        arc_key: str,
+        segment_key: str,
+        beat_ids: list[str],
+    ) -> tuple[bool, str | None]:
+        """Reorder a segment by updating ``beat_index`` only — no beat_json rewrite.
+
+        Category fix for hung ↑/↓: full ``replace_full`` + heavy migrate rewrote every
+        beat blob and stalled under Dropbox/session load. Order is index metadata.
+        """
+        incoming = [str(bid).strip() for bid in beat_ids if str(bid or "").strip()]
+        if not incoming:
+            return False, "empty_beat_ids"
+        if len(incoming) != len(set(incoming)):
+            return False, "duplicate_beat_ids"
+        conn = self.connect()
+        with self._lock:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT beat_id FROM beats
+                    WHERE arc_key=? AND segment_key=?
+                    ORDER BY beat_index
+                    """,
+                    (str(arc_key), str(segment_key)),
+                ).fetchall()
+                existing = [str(r["beat_id"]) for r in rows]
+                if len(incoming) != len(existing):
+                    conn.execute("ROLLBACK")
+                    return False, "count_mismatch"
+                if set(incoming) != set(existing):
+                    conn.execute("ROLLBACK")
+                    return False, "set_mismatch"
+                if incoming == existing:
+                    conn.execute("COMMIT")
+                    return True, None
+                now = _utc_now_iso()
+                # Two-phase index rewrite avoids UNIQUE(arc,segment,beat_index) collisions.
+                for idx, beat_id in enumerate(incoming):
+                    conn.execute(
+                        """
+                        UPDATE beats SET beat_index=?, updated_at=?
+                        WHERE beat_id=? AND arc_key=? AND segment_key=?
+                        """,
+                        (-(idx + 1), now, beat_id, str(arc_key), str(segment_key)),
+                    )
+                for idx, beat_id in enumerate(incoming):
+                    conn.execute(
+                        """
+                        UPDATE beats SET beat_index=?, updated_at=?
+                        WHERE beat_id=? AND arc_key=? AND segment_key=?
+                        """,
+                        (idx, now, beat_id, str(arc_key), str(segment_key)),
+                    )
+                conn.execute(
+                    "INSERT OR REPLACE INTO sidecar_meta(key, value) VALUES ('_last_updated', ?)",
+                    (now,),
+                )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+        return True, None
+
     def replace_full(self, data: dict) -> None:
         self.import_from_dict(data, replace=True)
 
