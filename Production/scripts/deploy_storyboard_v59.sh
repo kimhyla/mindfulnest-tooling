@@ -577,7 +577,7 @@ echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA,
 # ----------------------------------------------------------------
 FLEET_PARITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_storyboard_fleet_bundle_parity.sh"
 if [[ -x "$FLEET_PARITY_SCRIPT" ]]; then
-    echo "[deploy] (g.2) fleet bundle parity (Dropbox fanout + :5111–:5116 live) ..."
+    echo "[deploy] (g.2) fleet bundle parity (Dropbox fanout + :5111–:5117 live) ..."
     MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" MN_EXPECT_BUILD_SHA="$BUILD_SHA" \
         bash "$FLEET_PARITY_SCRIPT" || exit 1
     echo "[deploy] (g.2) fleet bundle parity ok"

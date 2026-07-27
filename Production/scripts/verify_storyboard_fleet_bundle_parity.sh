@@ -53,7 +53,7 @@ check_waveform_markers_html() {
     || fail "${label} missing WAVEFORM_DROP_CAPTURE_V1 drop marker"
 }
 
-FLEET_EVENTS=(Event_1 Event_2 Event_3 Event_4 Event_5 Event_6)
+FLEET_EVENTS=(Event_1 Event_2 Event_3 Event_4 Event_5 Event_6 Event_7)
 fanout_count=0
 
 echo "[fleet-bundle-parity] HEAD=${HEAD} canonical_sha256=${CANONICAL_SHA:0:12}..."
