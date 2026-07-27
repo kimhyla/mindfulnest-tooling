@@ -20,6 +20,9 @@ def test_bg_beat_reorder_buttons_wired():
     assert "skipSnapshot: true" in src
     assert "fetchTimeoutMs: 45_000" in src
     assert "Move beat timed out" in src
+    # Option tiles must key by beat_id+slot so ↑/↓ does not remount-storm media.
+    assert "bg-opt-${beat.beat_id}-${i}" in src
+    assert "setPlaybackUrl(null)" in src
 
 
 def test_stitcher_keepalive_mounted():
