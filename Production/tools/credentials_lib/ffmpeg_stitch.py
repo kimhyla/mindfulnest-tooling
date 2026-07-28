@@ -1844,11 +1844,29 @@ def assert_stitch_export_clips_av_aligned(
 
 
 def ffprobe_duration(path: Path) -> float:
-    out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-         "-of", "default=noprint_wrappers=1:nokey=1", str(path.resolve())],
-        check=True, capture_output=True, timeout=30,
-    )
+    """Format duration via ffprobe. Never raise CalledProcessError (File Provider noise).
+
+    KLING_O3_EXPORT_LOCAL_CLIP_V1 defense-in-depth: callers should probe APFS
+    hot-serve paths, but if a CloudStorage path slips through, ``check=True``
+    used to surface as opaque ``BG_EXPORT_STITCHER_EXCEPTION`` after Send to
+    Stitcher already said "starting". Soft-fail with a clear RuntimeError.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(path.resolve())],
+            capture_output=True, timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffprobe not found on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffprobe duration timed out for {path}") from exc
+    if out.returncode != 0:
+        err = (out.stderr or b"").decode("utf-8", errors="replace").strip()[:240]
+        raise RuntimeError(
+            f"ffprobe duration unreadable for {path.name}"
+            + (f": {err}" if err else " (exit nonzero)"),
+        )
     raw = out.stdout.decode("utf-8", errors="replace").strip()
     try:
         return float(raw)

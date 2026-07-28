@@ -37,10 +37,11 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
     clip_a.write_bytes(b"\x00\x00\x00\x20ftypmp42" + b"\x00" * 64)
     clip_b.write_bytes(b"\x00\x00\x00\x20ftypmp42" + b"\x00" * 64)
 
-    def _fake_duration(_path):
+    def _fake_duration(_path, **_kwargs):
         return 2.0
 
     monkeypatch.setattr(bg, "_ffprobe_duration", _fake_duration)
+    monkeypatch.setattr(bg, "ffprobe_media_duration", lambda *_a, **_k: 2.0)
     monkeypatch.setattr(bg, "_ffprobe_ok", lambda _p: True)
     def _norm(src, dst):
         import shutil
