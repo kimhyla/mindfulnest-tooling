@@ -8400,6 +8400,30 @@ def materialize_kling_o3_trimmed_clip(
     return dest
 
 
+def _export_baked_path_is_hot_reusable(baked: Path) -> bool:
+    """True when a prior Apply-Trim bake may be reused on the Send-to-Stitcher hot path.
+
+    KLING_O3_EXPORT_LOCAL_CLIP_V1: sidecar can still point at Dropbox
+    ``assembled/_kling_o3_trim_scratch/*_baked.mp4`` from before hot-scratch.
+    Reusing those paths lets concat/A/V assert ffprobe File Provider and fail
+    after the button already said "starting" (preflight was green via #130).
+    """
+    try:
+        if not baked.is_file():
+            return False
+    except OSError:
+        return False
+    try:
+        from lib.ffmpeg_io import path_is_cloud_storage_backed  # noqa: PLC0415
+
+        if path_is_cloud_storage_backed(baked):
+            return False
+    except Exception:
+        # Fail closed: unknown path class → rematerialize to hot scratch.
+        return False
+    return True
+
+
 def _kling_o3_export_clip_path(
     beat: dict,
     event_dir: str | Path,
@@ -8413,7 +8437,7 @@ def _kling_o3_export_clip_path(
     src = Path(beat.get("kling_o3_video_path") or "")
     if not src.is_file():
         raise FileNotFoundError(f"missing clip for {beat.get('beat_id')}: {src}")
-    raw_dur = _ffprobe_duration(src)
+    raw_dur = ffprobe_media_duration(src, event_dir=event_dir, dropbox_probe="short")
     beat_id = beat.get("beat_id") or "beat"
     gen = int(beat.get("kling_o3_generation") or 0)
 
@@ -8430,7 +8454,7 @@ def _kling_o3_export_clip_path(
             baked_token=str(opt_token or "") or None,
         ):
             bp = Path(str(opt_baked))
-            if bp.is_file():
+            if _export_baked_path_is_hot_reusable(bp):
                 return bp.resolve()
 
     baked_path = beat.get("kling_o3_baked_path")
@@ -8443,7 +8467,7 @@ def _kling_o3_export_clip_path(
         baked_token=str(baked_token or "") or None,
     ):
         bp = Path(str(baked_path))
-        if bp.is_file():
+        if _export_baked_path_is_hot_reusable(bp):
             return bp.resolve()
 
     if kling_o3_trim_is_active(beat, raw_dur=raw_dur):
@@ -8458,8 +8482,7 @@ def _kling_o3_export_clip_path(
         return materialize_o3_cut_out_clip(
             beat, dest, source_path=src, event_dir=event_dir,
         )
-    return src.resolve()
-
+    return ensure_local_media(src, event_dir=event_dir, dropbox_probe="short")
 
 def resolve_magic_video_source_path(
     beat: dict,
@@ -15296,7 +15319,10 @@ def resolve_segment_stitch_export_clip_paths(
             progress_cb(i + 1, beat_total, str(beat.get("beat_id") or ""))
         is_last = i == len(beats) - 1
         if is_last and canonical_tail is not None:
-            clip_paths.append(canonical_tail.resolve())
+            local_tail = ensure_local_media(
+                canonical_tail, event_dir=event_dir, dropbox_probe="short",
+            )
+            clip_paths.append(local_tail.resolve())
             still_insert_flags.append(False)
         else:
             raw_clip = materialize_beat_export_clip_with_retry(
@@ -15305,16 +15331,20 @@ def resolve_segment_stitch_export_clip_paths(
                 scratch_dir,
                 event_id=event_id,
             )
+            # KLING_O3_EXPORT_LOCAL_CLIP_V1 — concat + A/V assert must never ffprobe
+            # Dropbox File Provider (stale *_baked.mp4 / delivery masters).
+            local_clip = ensure_local_media(
+                raw_clip, event_dir=event_dir, dropbox_probe="short",
+            )
             from o3_gallery_option_identity import assert_beat_export_audio_contract  # noqa: PLC0415
 
-            assert_beat_export_audio_contract(beat, raw_clip)
+            assert_beat_export_audio_contract(beat, local_clip)
             # FF-042 / KLING_O3_EXPORT_BG_PASSTHROUGH_V1 — Send to Stitcher concat uses the
             # same per-beat MP4 authority as Beat Gen preview (approved delivery or trim
             # bake). No per-beat loudnorm, normalize, or ambient — those run at Bake Final.
-            clip_paths.append(raw_clip.resolve())
+            clip_paths.append(local_clip.resolve())
             still_insert_flags.append(beat_is_still_insert(beat))
     return clip_paths, still_insert_flags, scratch_dir
-
 
 def concat_kling_o3_approved_beats(
     beats: list[dict],
