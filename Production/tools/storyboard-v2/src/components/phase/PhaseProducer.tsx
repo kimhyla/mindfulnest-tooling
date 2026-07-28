@@ -525,14 +525,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const onSendForLipsync = async () => {
     const lipsyncClipId =
       phase === 'a'
-        ? baseClipPicker.selectedClipId || stateSlice.chipper_sitting_clip_id
+        ? baseClipPicker.selectedClipId || stateSlice.chipper_sitting_clip_id || null
         : baseClipPicker.selectedClipId || stateSlice.cedric_base_clip_id;
-    if (!lipsyncClipId) {
-      setStatusMsg(
-        phase === 'a'
-          ? 'Pick an Arlo base clip first (Regen base clip or picker below).'
-          : 'Pick a Cedric base clip (any length — send auto-sizes idle to stem).',
-      );
+    if (phase === 'b' && !lipsyncClipId) {
+      setStatusMsg('Pick a Cedric base clip (any length — send auto-sizes idle to stem).');
       return;
     }
     if (!stateSlice.voice_stem_file) {
@@ -542,12 +538,17 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setBusyAction('lipsync');
     setStatusMsg('Sending for lipsync…');
     const lipsyncEp = phase === 'a' ? 'phase_a_lipsync' : 'phase_b_lipsync';
-    const res = await pathappPatch(activeScope.value, lipsyncEp, {
-      phase,
-      base_clip_id: phase === 'a'
-        ? coercePhaseAArloBaseClipId(lipsyncClipId)
-        : coercePhaseBCedricBaseClipId(lipsyncClipId),
-    }, { fetchTimeoutMs: 180_000 });
+    const payload: Record<string, string> = { phase };
+    if (phase === 'a') {
+      if (lipsyncClipId) {
+        payload.base_clip_id = coercePhaseAArloBaseClipId(lipsyncClipId);
+      }
+    } else {
+      payload.base_clip_id = coercePhaseBCedricBaseClipId(lipsyncClipId as string);
+    }
+    const res = await pathappPatch(activeScope.value, lipsyncEp, payload, {
+      fetchTimeoutMs: 180_000,
+    });
     setBusyAction(null);
     if (res.ok) {
       if (res.status === 202) {
@@ -1317,13 +1318,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             disabled={
               busyAction !== null ||
               lipsyncInFlight ||
-              !effectiveBaseClipId ||
+              (phase === 'b' && !effectiveBaseClipId) ||
               !stateSlice.voice_stem_file
             }
             title={
               phase === 'b'
-                ? 'Kling Sync: auto-sizes Cedric idle to stem + 2s (bookend loop or trim). Stems >185s use segmented chunks.'
-                : 'Kling Sync (Phase A) or ByteDance on base clip (Phase A).'
+                ? 'Path A layered Cedric lipsync: reusable blue idle units + silence-aligned chunks.'
+                : 'Path A layered Arlo lipsync: reusable full-body green idle + silence-aligned chunks. Base clip is optional metadata.'
             }
           >
             {busyAction === 'lipsync'

@@ -1458,6 +1458,20 @@ class StateManager:
             os.close(fd)
 
     # ---- state ----
+    def ensure_event_instance_id(self) -> str:
+        """Return the event's durable identity, creating it under state locks."""
+        result: dict[str, str] = {}
+
+        def _ensure(state: dict) -> None:
+            value = state.get("event_instance_id")
+            if not isinstance(value, str) or not value.strip():
+                value = str(_stdlib_uuid.uuid4())
+                state["event_instance_id"] = value
+            result["event_instance_id"] = value
+
+        self.mutate_state(_ensure)
+        return result["event_instance_id"]
+
     def read_state(self) -> dict:
         with self.lock:
             fd = self._acquire_file_lock()
@@ -2314,10 +2328,22 @@ class LipsyncPollingThread(threading.Thread):
         try:
             from server_handlers.phases import sweep_phase_module_lipsync_polls
             sweep_phase_module_lipsync_polls(self.state, self.client)
-            from server_handlers.phases import sweep_phase_a_lipsync_resume
-            sweep_phase_a_lipsync_resume(self.state)
+            # Phase A layered default (orphan + reconcile); ByteDance resume
+            # only when MN_PHASE_A_BYTEDANCE=1. Phase B keeps Path A orphan sweep.
+            from server_handlers.phases import (
+                reconcile_phase_a_layered_lipsync,
+                sweep_phase_a_lipsync_orphan,
+                sweep_phase_b_lipsync_orphan,
+            )
+            import os as _os_phase_a_flag
+            reconcile_phase_a_layered_lipsync(self.state, self.client)
+            sweep_phase_a_lipsync_orphan(self.state)
+            if _os_phase_a_flag.environ.get("MN_PHASE_A_BYTEDANCE", "").strip() in {
+                "1", "true", "TRUE", "yes", "YES",
+            }:
+                from server_handlers.phases import sweep_phase_a_lipsync_resume
+                sweep_phase_a_lipsync_resume(self.state)
             # PHASE_B_PATH_A_ORPHAN_SWEEP_V1 — clear wedged Phase B running state.
-            from server_handlers.phases import sweep_phase_b_lipsync_orphan
             sweep_phase_b_lipsync_orphan(self.state)
         except Exception as exc:  # noqa: BLE001
             print(f"[lipsync-poller] phase module sweep error: {exc}", flush=True)

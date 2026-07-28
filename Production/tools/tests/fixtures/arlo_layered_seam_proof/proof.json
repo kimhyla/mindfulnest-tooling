@@ -1,0 +1,10 @@
+{
+  "join_mode": "hard_cut_same_unit",
+  "duration_s": 60.0,
+  "head_trim": 1.75,
+  "tail_trim": 1.08,
+  "xfade_profile": 0.35,
+  "join_s": 27.17,
+  "still_spans": [],
+  "units": 3
+}
