@@ -541,10 +541,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     const payload: Record<string, string> = { phase };
     if (phase === 'a') {
       if (lipsyncClipId) {
-        payload.base_clip_id = coercePhaseAArloBaseClipId(lipsyncClipId);
+        payload['base_clip_id'] = coercePhaseAArloBaseClipId(lipsyncClipId);
       }
     } else {
-      payload.base_clip_id = coercePhaseBCedricBaseClipId(lipsyncClipId as string);
+      payload['base_clip_id'] = coercePhaseBCedricBaseClipId(lipsyncClipId as string);
     }
     const res = await pathappPatch(activeScope.value, lipsyncEp, payload, {
       fetchTimeoutMs: 180_000,
