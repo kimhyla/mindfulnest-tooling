@@ -4566,7 +4566,11 @@ def ffprobe_media_duration(
             return 0.0
     except OSError:
         return 0.0
-    return _ffprobe_duration(src, timeout_s=timeout_s)
+    try:
+        return _ffprobe_duration(src, timeout_s=timeout_s)
+    except TypeError:
+        # Monkeypatches that only accept ``path`` (legacy tests / hooks).
+        return float(_ffprobe_duration(src) or 0.0)
 
 
 def assemble_group(sidecar, group_id, output_dir):
