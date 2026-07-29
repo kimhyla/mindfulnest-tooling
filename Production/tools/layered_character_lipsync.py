@@ -259,9 +259,9 @@ ARLO_PROFILE = LayeredLipsyncProfile(
     idle_body_qc=QCRegion(Crop(650, 530, 600, 430), 12, 0.25, 0.5),
     # 1024x576 composition Crop(346,282,322,230) scaled by 1.25 to 1280x720.
     composite_body_qc=QCRegion(Crop(432, 352, 403, 288), 12, 0.25, 0.5),
-    # Match Beat Gen Arlo voice-first face-return padding (not the short 0.5/0.5
-    # chunk-context defaults used by Cedric Path A).
-    boundary_pad_start=0.7,
+    # Lead-in 1.0s (Kim 2026-07-29) + 2.5s face-return tail (Beat Gen parity).
+    # Cedric Path A keeps short 0.5/0.5 chunk-context defaults.
+    boundary_pad_start=1.0,
     boundary_pad_end=2.5,
 )
 

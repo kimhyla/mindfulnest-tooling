@@ -73,7 +73,8 @@ def test_arlo_uses_cedric_whole_character_contract() -> None:
     assert profile.idle_units[0].tail_trim == 1.08
     assert profile.xfade_seconds == 0.35
     # Beat Gen voice-first face-return padding (not Cedric's short 0.5/0.5).
-    assert profile.boundary_pad_start == 0.7
+    assert profile.boundary_pad_start == 1.0
+    assert profile.boundary_pad_end == 2.5
     assert profile.boundary_pad_end == 2.5
     engine.validate_profile(profile)
 
