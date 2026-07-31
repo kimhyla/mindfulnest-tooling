@@ -4158,6 +4158,31 @@ def handle_phase_b_lipsync(h, body: dict)-> None:
     })
 
 
+def _warm_phase_lipsync_hot_serve(out_path: Path) -> None:
+    """Copy delivery MP4 into APFS .playback_cache so /files is warm on first play.
+
+    Dropbox remains durable cold store; operator WaveSurfer + <video> must not
+    sit on HOT_SERVE_MATERIALIZE_FAILED after every new lipsync write.
+    """
+    try:
+        from media_playback_cache import ensure_hot_serve_file  # noqa: PLC0415
+        from media_playback_cache import event_dir_from_media_path  # noqa: PLC0415
+
+        ed = event_dir_from_media_path(out_path) or out_path.parent
+        local = ensure_hot_serve_file(
+            out_path, event_dir=ed, dropbox_probe="when_needed"
+        )
+        print(
+            f"[phase_lipsync] hot-serve warm ✓ {out_path.name} → {Path(local).name}",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — never fail terminal write on cache warm
+        print(
+            f"[phase_lipsync] hot-serve warm failed (non-fatal): {out_path.name}: {exc}",
+            flush=True,
+        )
+
+
 def _finalize_phase_a_lipsync_delivery(out_path: Path, *, method: str) -> dict:
     """V2 letterbox delivery encode — parity with Phase B module lipsync terminal write."""
     from phase_module_lipsync_delivery import (  # noqa: PLC0415
@@ -4178,6 +4203,9 @@ def _finalize_phase_a_lipsync_delivery(out_path: Path, *, method: str) -> dict:
         f"({meta.get('delivery_recipe')})",
         flush=True,
     )
+    # HOT_SERVE: materialize delivery into APFS playback cache so /files
+    # + WaveSurfer can play immediately (Dropbox is cold store only).
+    _warm_phase_lipsync_hot_serve(out_path)
     return meta
 
 
@@ -4209,6 +4237,7 @@ def _write_phase_b_lipsync_complete(
         f"({delivery_meta.get('delivery_profile')})",
         flush=True,
     )
+    _warm_phase_lipsync_hot_serve(out_path)
     charge = spend_usd if spend_usd is not None else COST_PER_LIPSYNC
     app.state.add_spend("lipsync", charge)
     mtime = int(os.path.getmtime(str(out_path)))

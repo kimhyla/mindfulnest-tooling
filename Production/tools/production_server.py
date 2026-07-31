@@ -12182,10 +12182,14 @@ body {{padding-top:44px!important;}}
         from media_playback_cache import ensure_hot_serve_file
         from lib.ffmpeg_io import path_is_cloud_storage_backed
 
+        # Cold miss: short Dropbox budget (not "never") — Phase A lipsync /
+        # stems land on Dropbox first; without a short materialize, /files
+        # 503s forever and WaveSurfer stays on "waveform still loading".
+        # Warm hits still return APFS cache with zero Dropbox I/O.
         local = ensure_hot_serve_file(
             path,
             event_dir=Path(self.app.event_dir),
-            dropbox_probe="never",
+            dropbox_probe="short",
         )
         local_p = Path(local)
         if local_p != Path(path):
