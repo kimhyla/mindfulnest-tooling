@@ -3508,7 +3508,7 @@ def _handle_phase_a_lipsync_layered(h, body: dict) -> None:
         "base_clip_file": None,
         "message": (
             "Arlo layered Path A lipsync is processing "
-            f"({chunk_jobs} chunks, reusable full-body idle). "
+            f"({chunk_jobs} chunks, Gate0 headshot idle). "
             "Phase A will stop for visual review after media gates pass."
         ),
     })
