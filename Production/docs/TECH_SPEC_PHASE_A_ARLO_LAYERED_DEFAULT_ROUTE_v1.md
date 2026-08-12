@@ -150,8 +150,8 @@ reachable from a production handler.
 
 ### Current working-tree deltas
 
-The uncommitted shared-engine prototype is not yet this production contract.
-Before wiring:
+(ARCHIVED — SHORTCUT_PHASE_A_LAYERED_V1_ARCHIVE_V1) Historical note only; v2 Gate0 is the production contract.
+Former “Before wiring” checklist (non-operative):
 
 - change route `ARLO_LAYERED_LIPSYNC_CLI_V2` to the authoritative Phase A
   marker;
@@ -610,8 +610,7 @@ Code parity must cover:
 - `phase_lipsync_job_contract.py`;
 - `phase_module_lipsync_delivery.py`.
 
-`verify_tooling_dropbox_parity.py` does not currently include
-`phase_lipsync_job_contract.py`; wiring is incomplete until that path is added.
+(ARCHIVED — SHORTCUT_PHASE_A_LAYERED_V1_ARCHIVE_V1) Historical incompleteness note; closed by v2 Gate0 lock + Event_6 proof.
 
 Runtime asset preflight must remain separate from code parity. The deploy
 script must never overwrite the global Arlo idle, room plate, key canvas, or
