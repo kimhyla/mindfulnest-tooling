@@ -690,25 +690,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     }
   };
 
-  const onRegenBaseClip = async () => {
-    setBusyAction('regen_base');
-    setStatusMsg('Kling idle base clip (~6 min)…');
-    const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
-      clip_id: stateSlice.chipper_sitting_clip_id
-        ?? baseClipPicker.selectedClipId
-        ?? PHASE_A_ARLO_BASE_CLIP_CANONICAL,
-    });
-    setBusyAction(null);
-    if (res.ok && res.status === 202) {
-      setStatusMsg('⏳ Base clip regenerating — Send for Lipsync when done');
-    } else if (res.ok) {
-      setStatusMsg('✓ Base clip regen complete');
-      await refreshAll();
-    } else {
-      setStatusMsg(`✗ Base clip HTTP ${res.status}: ${res.error ?? ''}`);
-    }
-  };
-
   // ── Preview with Overlay ─────────────────────────────────────────────────
   // One surface: lipsync frame + canvas-chromakey animated overlays on cue timing.
   const onPreviewOverlay = () => {
