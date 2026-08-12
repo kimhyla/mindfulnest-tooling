@@ -19,15 +19,15 @@ def test_phase_a_handler_uses_arlo_layered_not_bytedance_default() -> None:
     layered = src.split("def _handle_phase_a_lipsync_layered", 1)[1].split(
         "\ndef _handle_phase_a_lipsync_bytedance", 1
     )[0]
+    dispatch = block.split("def _handle_phase_a_lipsync_layered", 1)[0]
     assert "submit_avatar_pro" not in block
     assert "run_phase_a_arlo_idle_lipsync_startend_still" not in block
-    assert "PHASE_A_ARLO_LAYERED_ROUTE_V1" in block
+    assert "PHASE_A_ARLO_LAYERED_ROUTE_V2" in block
     assert "execute_layered_job" in layered
-    assert "layered_fullbody_greenscreen_kling_lipsync_v2" in layered or "ARLO_PROFILE" in layered
-    assert "return _handle_phase_a_lipsync_layered" in block
-    # ByteDance remains opt-in, not Send default.
-    assert "_handle_phase_a_lipsync_bytedance" in block
-    assert "MN_PHASE_A_BYTEDANCE" in block
+    assert "ARLO_PROFILE" in layered
+    assert "return _handle_phase_a_lipsync_layered" in dispatch
+    assert "MN_PHASE_A_BYTEDANCE" not in dispatch
+    assert "bytedance" not in dispatch.lower()
 
 
 def test_bytedance_chaining_is_not_default() -> None:

@@ -36,7 +36,7 @@ def test_phases_handler_uses_arlo_layered_not_startend_still():
     block = block.split("\ndef handle_phase_b_lipsync", 1)[0]
     assert "submit_avatar_pro" not in block
     assert "run_phase_a_arlo_idle_lipsync_startend_still" not in block
-    assert "PHASE_A_ARLO_LAYERED_ROUTE_V1" in block
+    assert "PHASE_A_ARLO_LAYERED_ROUTE_V2" in block
     assert "create_layered_job" in block
     assert "execute_layered_job" in block
     assert "plan_layered_lipsync" in block
@@ -49,14 +49,20 @@ def test_phase_a_reconcile_and_orphan_wired():
     assert "def sweep_phase_a_lipsync_orphan" in phases
     assert "def reconcile_phase_a_layered_lipsync" in phases
     assert "def _handle_phase_a_lipsync_layered" in phases
-    # ByteDance kept as opt-in helper + resume, not Send default.
-    assert "def _handle_phase_a_lipsync_bytedance" in phases
-    assert "def sweep_phase_a_lipsync_resume" in phases
-    assert "MN_PHASE_A_BYTEDANCE" in phases
+    # Legacy ByteDance helper may remain in tree but is not on Send.
+    dispatch = phases.split("def handle_phase_a_lipsync", 1)[1].split(
+        "def _handle_phase_a_lipsync_layered", 1
+    )[0]
+    assert "MN_PHASE_A_BYTEDANCE" not in dispatch
+    assert "bytedance" not in dispatch.lower()
     server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
     assert "reconcile_phase_a_layered_lipsync" in server
     assert "sweep_phase_a_lipsync_orphan" in server
-    assert "MN_PHASE_A_BYTEDANCE" in server
+    poller = server.split("sweep_phase_module_lipsync_polls", 1)[1].split(
+        "except Exception as exc", 1
+    )[0]
+    assert "MN_PHASE_A_BYTEDANCE" not in poller
+    assert "sweep_phase_a_lipsync_resume" not in poller
 
 
 def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
@@ -194,12 +200,12 @@ class TestPhaseALayeredHttp(unittest.TestCase):
         plan = SimpleNamespace(chunk_count=1, chunks=[{"index": 0}])
         durable_job = {
             "job_id": "job-arlo-test",
-            "method": "layered_fullbody_greenscreen_kling_lipsync_v2",
-            "route": "PHASE_A_ARLO_LAYERED_ROUTE_V1",
+            "method": "layered_headshot_gate0_kling_lipsync_v1",
+            "route": "PHASE_A_ARLO_LAYERED_ROUTE_V2",
             "chunks": [{"index": 0}],
             "delivery": {
                 "output_file": "phase_a_lipsync_test.mp4",
-                "base_clip_id": "arlo_idle_wizard_desk_v8",
+                "base_clip_id": "arlo_idle_kim_gate0_headshot_v1",
             },
             "context": {"event_dir": str(self.event_dir)},
         }
@@ -262,9 +268,9 @@ class TestPhaseALayeredHttp(unittest.TestCase):
             self.assertEqual(resp.get("status"), "running")
             self.assertEqual(
                 resp.get("vendor"),
-                "layered_fullbody_greenscreen_kling_lipsync_v2",
+                "layered_headshot_gate0_kling_lipsync_v1",
             )
-            self.assertEqual(resp.get("route"), "PHASE_A_ARLO_LAYERED_ROUTE_V1")
+            self.assertEqual(resp.get("route"), "PHASE_A_ARLO_LAYERED_ROUTE_V2")
 
             for _ in range(80):
                 state = self.app.state.read_state()
@@ -276,9 +282,9 @@ class TestPhaseALayeredHttp(unittest.TestCase):
         self.assertEqual(state.get("phase_a_lipsync_status"), "needs_manual_visual_review")
         self.assertEqual(
             state.get("phase_a_lipsync_method"),
-            "layered_fullbody_greenscreen_kling_lipsync_v2",
+            "layered_headshot_gate0_kling_lipsync_v1",
         )
-        self.assertEqual(state.get("phase_a_lipsync_route"), "PHASE_A_ARLO_LAYERED_ROUTE_V1")
+        self.assertEqual(state.get("phase_a_lipsync_route"), "PHASE_A_ARLO_LAYERED_ROUTE_V2")
         self.assertTrue(state.get("phase_a_lipsync_file", "").startswith("phase_a_lipsync_"))
 
 

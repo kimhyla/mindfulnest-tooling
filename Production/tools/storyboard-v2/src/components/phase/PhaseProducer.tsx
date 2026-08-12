@@ -1287,29 +1287,40 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
         {/* Action row: Base clip select + Send for Lipsync + Mix Audio (B) + Export */}
         <div class="mn-phase-row">
-          <label class="mn-dim" for={`phase-${phase}-baseclip`}>Base clip:</label>
-          <select
-            id={`phase-${phase}-baseclip`}
-            data-testid={`phase-${phase}-baseclip-select`}
-            value={effectiveBaseClipId}
-            onFocus={() => { void ensureBaseClipsLoaded(); }}
-            onChange={(e: Event) => {
-              const clipId = (e.target as HTMLSelectElement).value;
-              void baseClipPicker.pickClip(
-                clipId,
-                phase === 'b' ? 'phase_b_cedric_base_clip_id' : 'phase_a_chipper_sitting_clip_id',
-              );
-            }}
-          >
-            <option value="">— select —</option>
-            {phaseBaseClipSelectOptions(phase, baseClips).map((c) => (
-              <option key={c.id} value={c.id}>
-                {phase === 'b'
-                  ? `${c.id} (${c.duration_s ?? '?'}s ref)`
-                  : `${c.id} (${c.duration_s ?? '?'}s)`}
+          <label class="mn-dim" for={`phase-${phase}-baseclip`}>
+            {phase === 'a' ? 'Speak idle:' : 'Base clip:'}
+          </label>
+          {phase === 'a' ? (
+            <select
+              id={`phase-${phase}-baseclip`}
+              data-testid={`phase-${phase}-baseclip-select`}
+              value={PHASE_A_ARLO_BASE_CLIP_CANONICAL}
+              disabled
+              title="Locked: Kim Gate0 headshot idle — Send always uses this Speak asset"
+            >
+              <option value={PHASE_A_ARLO_BASE_CLIP_CANONICAL}>
+                {PHASE_A_ARLO_BASE_CLIP_CANONICAL} (locked)
               </option>
-            ))}
-          </select>
+            </select>
+          ) : (
+            <select
+              id={`phase-${phase}-baseclip`}
+              data-testid={`phase-${phase}-baseclip-select`}
+              value={effectiveBaseClipId}
+              onFocus={() => { void ensureBaseClipsLoaded(); }}
+              onChange={(e: Event) => {
+                const clipId = (e.target as HTMLSelectElement).value;
+                void baseClipPicker.pickClip(clipId, 'phase_b_cedric_base_clip_id');
+              }}
+            >
+              <option value="">— select —</option>
+              {phaseBaseClipSelectOptions(phase, baseClips).map((c) => (
+                <option key={c.id} value={c.id}>
+                  {`${c.id} (${c.duration_s ?? '?'}s ref)`}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             type="button"
             class="mn-btn"
@@ -1324,7 +1335,7 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             title={
               phase === 'b'
                 ? 'Path A layered Cedric lipsync: reusable blue idle units + silence-aligned chunks.'
-                : 'Path A layered Arlo lipsync: reusable full-body green idle + silence-aligned chunks. Base clip is optional metadata.'
+                : 'Path A layered Arlo: Gate0 headshot green idle (locked) + Kling LipSync over headshot plate.'
             }
           >
             {busyAction === 'lipsync'
@@ -1536,16 +1547,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 title="Normalize dry lipsync into phase_a_stitched_file (no ambient)"
               >
                 {busyAction === 'restitch' ? 'Normalizing…' : 'Normalize for export'}
-              </button>
-              <button
-                type="button"
-                class="mn-btn mn-btn-small"
-                data-testid="phase-a-regen-base-clip-btn"
-                onClick={onRegenBaseClip}
-                disabled={busyAction !== null}
-                title="Regenerate Arlo wizard-desk idle base from still (~6 min Kling)"
-              >
-                Regen base clip
               </button>
             </div>
             <BaseClipPicker

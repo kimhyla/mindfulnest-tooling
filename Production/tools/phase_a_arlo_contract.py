@@ -1,25 +1,24 @@
 """Phase A Arlo base-clip contract — canonical preset for all events.
 
-Send for Lipsync default is PHASE_A_ARLO_LAYERED_ROUTE_V1 (green full_loop_30s
-idle + room plate chroma composite). Base-clip ID is compatibility metadata
-only on that route — it does not select the layered render asset.
+Send for Lipsync is PHASE_A_ARLO_LAYERED_ROUTE_V2 only: Kim Gate0 pinned
+headshot idle + headshot plate chroma composite (1280×720 delivery).
 
-``arlo_idle_wizard_desk_v8`` is the recorded compatibility preset. ByteDance
-on ``arlo_idle_wizard_desk_v7`` remains available via MN_PHASE_A_BYTEDANCE=1
-or body route=bytedance. Prior v1–v7 coerce to v8 on read/submit for the
-layered default path.
+Base-clip ID is compatibility metadata only — it does not select the layered
+render asset. Speak always uses ``arlo_gesture_idle_kim_gate0_pinned_15s_v1.mp4``.
 
-Never use NEW STYLE CHARACTERS/BACKGROUND stills for Arlo idle — wrong asset class.
+Canonical metadata ID: ``arlo_idle_kim_gate0_headshot_v1``.
+Prior wizard-desk / chipper IDs coerce to that on read/submit.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
-PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_wizard_desk_v8"
+PHASE_A_ARLO_BASE_CLIP_CANONICAL = "arlo_idle_kim_gate0_headshot_v1"
 
-# Medium close-up 16:9 wizard-desk still — optional still path (Regen / start+end helpers).
+# Optional still path for offline Gate0 / archive helpers (not Send).
 PHASE_A_ARLO_CANONICAL_STILL_REL = (
-    "NEW STYLE CHARACTERS/ARLO/arlo_still_medium_16x9_v1.png"
+    "NEW STYLE CHARACTERS/ARLO/"
+    "arlo_still_green_headshot_openmouth_trimmed_1920x1080_v1.png"
 )
 PHASE_A_ARLO_EVENT_STILL_NAME = "phase_a_arlo_canonical_still.png"
 
@@ -31,6 +30,7 @@ _DEPRECATED_EXACT = frozenset({
     "arlo_idle_wizard_desk_v5",
     "arlo_idle_wizard_desk_v6",
     "arlo_idle_wizard_desk_v7",
+    "arlo_idle_wizard_desk_v8",
     "chipper_idle_closeup_v1",
     "chipper_idle_closeup_v2",
 })
@@ -38,6 +38,7 @@ _DEPRECATED_EXACT = frozenset({
 _DEPRECATED_PREFIXES = (
     "chipper_idle_",
     "placeholder_arlo_",
+    "arlo_idle_wizard_desk_",
 )
 
 
@@ -45,6 +46,8 @@ def phase_a_arlo_base_clip_deprecated(clip_id: str | None) -> bool:
     if not clip_id or not str(clip_id).strip():
         return True
     cid = str(clip_id).strip()
+    if cid == PHASE_A_ARLO_BASE_CLIP_CANONICAL:
+        return False
     if cid in _DEPRECATED_EXACT:
         return True
     return any(cid.startswith(p) for p in _DEPRECATED_PREFIXES)
@@ -61,7 +64,7 @@ def _path_has_background_folder(path: Path) -> bool:
 
 
 def validate_phase_a_arlo_idle_still_path(path: Path) -> Path:
-    """Reject fantasy BACKGROUND library stills mistaken for Arlo wizard desk."""
+    """Reject fantasy BACKGROUND library stills mistaken for Arlo assets."""
     p = path.expanduser().resolve()
     if not p.is_file():
         raise FileNotFoundError(f"Arlo idle still missing: {p}")
@@ -94,7 +97,8 @@ def resolve_phase_a_arlo_idle_still(
         if candidate.is_file():
             return validate_phase_a_arlo_idle_still_path(candidate)
     raise FileNotFoundError(
-        f"No Arlo wizard-desk still under {event_dir} or {prod_root}/Arlo/poses"
+        f"No Arlo still under {event_dir} or {prod_root} "
+        f"(expected {PHASE_A_ARLO_CANONICAL_STILL_REL})"
     )
 
 

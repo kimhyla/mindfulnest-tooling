@@ -56,6 +56,8 @@ def test_phase_a_layered_orphan_reconcile_markers() -> None:
     assert "reconcile_phase_a_layered_lipsync" in src
     assert "phase_a_lipsync_pending_output" in src
     assert "phase_a_lipsync_job_id" in src
-    # ByteDance opt-in retained for rollback.
-    assert "_handle_phase_a_lipsync_bytedance" in src
-    assert "MN_PHASE_A_BYTEDANCE" in src
+    dispatch = src.split("def handle_phase_a_lipsync", 1)[1].split(
+        "def _handle_phase_a_lipsync_layered", 1
+    )[0]
+    assert "MN_PHASE_A_BYTEDANCE" not in dispatch
+    assert "return _handle_phase_a_lipsync_layered" in dispatch

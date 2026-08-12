@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Offline Phase A Arlo green Path A lipsync proof (scratch only — not Send).
 
-Uses trimmed still lineage idle (choke_tail6_v4) + full_size_3 plate + KEY
-(3,241,5). profile_id is NOT \"arlo\" so validate_arlo_idle_contract does not
-force the old full_loop_30s asset.
+Uses openmouth trimmed still lineage idle + full_size_3 plate.
+profile_id is NOT \"arlo\" so validate_arlo_idle_contract does not force
+the old full_loop_30s asset.
 
 Build local-first under /tmp, then copy into Event_6/_proof_arlo_green_path_a/.
 Never writes phase_a_lipsync_* / production_state.
@@ -37,8 +37,8 @@ PROFILE_ID = "arlo_green_path_a"
 KEY_CANVAS_REL = (
     "NEW STYLE CHARACTERS/ARLO/arlo_key_canvas_green_path_a_1920x1080_v1.png"
 )
-# 0x03F105 == KEY_RGB (3,241,5)
-CHROMA = "chromakey=0x03F105:0.20:0.06"
+# 0x02EA08 == KEY_RGB (2,234,8) open-mouth pin; closed archive was 0x03F105.
+CHROMA = "chromakey=0x{:02X}{:02X}{:02X}:0.20:0.06".format(*KEY_RGB)
 
 
 def green_path_a_profile() -> LayeredLipsyncProfile:
@@ -56,7 +56,7 @@ def green_path_a_profile() -> LayeredLipsyncProfile:
         cutout_relative_path=KEY_CANVAS_REL,
         idle_units=(
             IdleUnit(
-                "choke_tail6_v4",
+                "openmouth_choke_v5",
                 IDLE_FROM_TRIMMED_REL,
                 10.041667,
                 0.35,

@@ -3077,31 +3077,19 @@ def _spawn_module_lipsync_worker(owner, target, *args, **kwargs) -> bool:
 
 
 def handle_phase_a_lipsync(h, body: dict) -> None:
-    """POST /api/phase_a/lipsync — PHASE_A_ARLO_LAYERED_ROUTE_V1 (Send default).
+    """POST /api/phase_a/lipsync — PHASE_A_ARLO_LAYERED_ROUTE_V2 (Send only).
 
-    Lipsync against the approved green full_loop_30s idle, then chroma-composite
-    onto the room plate. ByteDance/v7 remains available via MN_PHASE_A_BYTEDANCE=1
-    or body {"route": "bytedance"}.
+    Gate0 headshot green idle (pinned) → Kling LipSync → chroma over headshot
+    plate → 1280×720 module delivery. Avatar Pro is not a Send route.
     """
-    import os as _os_phase_a_route
-
-    body = body or {}
-    route = str(body.get("route") or "").strip().lower()
-    bytedance_opt_in = (
-        route in {"bytedance", "base_clip_bytedance", "v7"}
-        or _os_phase_a_route.environ.get("MN_PHASE_A_BYTEDANCE", "").strip()
-        in {"1", "true", "TRUE", "yes", "YES"}
-    )
-    if bytedance_opt_in:
-        return _handle_phase_a_lipsync_bytedance(h, body)
-    return _handle_phase_a_lipsync_layered(h, body)
+    return _handle_phase_a_lipsync_layered(h, body or {})
 
 
 
 def _handle_phase_a_lipsync_layered(h, body: dict) -> None:
-    """POST /api/phase_a/lipsync — PHASE_A_ARLO_LAYERED_ROUTE_V1.
+    """POST /api/phase_a/lipsync — PHASE_A_ARLO_LAYERED_ROUTE_V2.
 
-    Reuses the versioned full-body green Arlo idle through the shared layered
+    Reuses the Kim Gate0 pinned headshot idle through the shared layered
     engine. Stops at needs_manual_visual_review after media gates pass.
     """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Verify Mac readiness for Phase A layered Send (PHASE_A_ARLO_LAYERED_ROUTE_V1).
+# Verify Mac readiness for Phase A layered Send (PHASE_A_ARLO_LAYERED_ROUTE_V2).
 # Usage: bash Production/scripts/verify_phase_a_layered_mac.sh [Event_N]
 # Default event: Event_6
 set -euo pipefail
@@ -17,19 +17,16 @@ warn() { echo "WARN: $*"; }
 die() { echo "FAIL: $*"; fail=1; }
 ok() { echo "OK: $*"; }
 
-echo "=== Phase A layered Mac verify ==="
+echo "=== Phase A layered Mac verify (V2 Gate0 headshot) ==="
 echo "tooling=${TOOLING}"
 echo "dropbox=${DROPBOX}"
 echo "event=${EVENT}"
 
-# --- git / route ---
 cd "${TOOLING}"
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
 sha="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
-full="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 echo "branch=${branch} sha=${sha}"
 
-# Mac land may cherry-pick/surgical-merge rather than contain vacation tip SHA.
 if [[ -f "${TOOLING}/Production/tools/layered_character_lipsync.py" ]] \
   && [[ -f "${TOOLING}/Production/tools/layered_lipsync_jobs.py" ]]; then
   ok "layered engine modules present on disk"
@@ -43,7 +40,7 @@ else
   block="$(python3 - <<'PY' "${PHASES}"
 import pathlib, sys
 src = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-block = src.split("def handle_phase_a_lipsync", 1)[1].split("\ndef _handle_phase_a_lipsync_layered", 1)[0]
+block = src.split("def handle_phase_a_lipsync", 1)[1].split("def _handle_phase_a_lipsync_layered", 1)[0]
 print(block)
 PY
 )"
@@ -52,23 +49,22 @@ PY
   else
     die "handle_phase_a_lipsync does not default to layered"
   fi
-  if echo "${block}" | grep -q "MN_PHASE_A_BYTEDANCE"; then
-    ok "ByteDance remains opt-in via MN_PHASE_A_BYTEDANCE"
+  if echo "${block}" | grep -qi "bytedance\|MN_PHASE_A_BYTEDANCE"; then
+    die "ByteDance still present on Phase A Send dispatcher"
   else
-    warn "MN_PHASE_A_BYTEDANCE marker not found in handler block"
+    ok "ByteDance absent from Phase A Send dispatcher"
   fi
-  if echo "${block}" | grep -q "PHASE_A_ARLO_LAYERED_ROUTE_V1"; then
-    ok "PHASE_A_ARLO_LAYERED_ROUTE_V1 mentioned in handler"
+  if echo "${block}" | grep -q "PHASE_A_ARLO_LAYERED_ROUTE_V2"; then
+    ok "PHASE_A_ARLO_LAYERED_ROUTE_V2 mentioned in handler"
   else
-    die "PHASE_A_ARLO_LAYERED_ROUTE_V1 missing from handle_phase_a_lipsync"
+    die "PHASE_A_ARLO_LAYERED_ROUTE_V2 missing from handle_phase_a_lipsync"
   fi
 fi
 
-# --- Dropbox ARLO assets (Category-2, shared) ---
 need_arlo=(
-  "arlo_gesture_idle_full_loop_30s_green_1920x1080_v1.mp4"
-  "arlo_room_plate_chair_study_1280x720_v2.png"
-  "arlo_key_canvas_1280x720_v1.png"
+  "arlo_gesture_idle_kim_gate0_pinned_15s_v1.mp4"
+  "arlo_room_plate_headshot_close_1280x720_v1.png"
+  "arlo_key_canvas_headshot_1280x720_v1.png"
 )
 if [[ ! -d "${ARLO}" ]]; then
   die "ARLO asset dir missing: ${ARLO}"
@@ -79,50 +75,30 @@ else
       sz="$(wc -c < "${p}" | tr -d ' ')"
       ok "ARLO asset ${f} (${sz} bytes)"
     else
-      die "ARLO asset MISSING: ${p}"
+      die "missing ARLO asset ${p}"
     fi
   done
 fi
 
-# --- Event transfer media (optional but checked for Event_6) ---
 if [[ -d "${EVENT_DIR}" ]]; then
-  ok "event dir exists: ${EVENT_DIR}"
-  for f in \
-    "phase_a_voice_stem_20260723-094806.mp3" \
-    "phase_a_lipsync_20260723-110753.mp4" \
-    "phase_a_lipsync_20260723-110753.json"
-  do
-    p="${EVENT_DIR}/${f}"
-    if [[ -f "${p}" ]]; then
-      sz="$(wc -c < "${p}" | tr -d ' ')"
-      ok "event media ${f} (${sz} bytes)"
-    else
-      if [[ "${EVENT}" == "Event_6" ]]; then
-        die "Event_6 media missing: ${p} — copy from Production/_TRANSFER_TO_MAC/Event_6_phase_a_20260723/ or unzip Downloads zip"
-      else
-        warn "optional named media not present for ${EVENT}: ${f}"
-      fi
-    fi
-  done
+  ok "event dir ${EVENT_DIR}"
 else
-  die "event dir missing: ${EVENT_DIR}"
+  warn "event dir missing: ${EVENT_DIR}"
 fi
 
-# --- operator next steps ---
-echo ""
-echo "=== Next steps on Mac (cannot be done from Windows) ==="
-echo "1. Stay on feature/phase-a-arlo-layered-mac (Mac surgical land) or merge when ready"
-echo "2. bash Production/scripts/deploy_option_b.sh --event ${EVENT}"
-echo "   (or: bash Production/scripts/start_event_server.sh ${EVENT})"
-echo "3. Hard-refresh http://localhost:$((5110 + ${EVENT#Event_}))/?event=${EVENT}"
-echo "4. Do NOT set MN_PHASE_A_BYTEDANCE=1 unless intentionally testing ByteDance"
-echo "HEAD=${full}"
+export PYTHONPATH="${TOOLING}/Production:${TOOLING}/Production/tools:${PYTHONPATH:-}"
+python3 - <<'PY'
+from layered_character_lipsync import ARLO_PROFILE, validate_arlo_idle_contract, validate_profile
+assert ARLO_PROFILE.route_id == "PHASE_A_ARLO_LAYERED_ROUTE_V2"
+assert ARLO_PROFILE.idle_units[0].name == "kim_gate0_pinned"
+assert ARLO_PROFILE.key_rgb == (11, 243, 7)
+validate_arlo_idle_contract(ARLO_PROFILE)
+validate_profile(ARLO_PROFILE)
+print("OK: ARLO_PROFILE Gate0 contract validates")
+PY
 
 if [[ "${fail}" -ne 0 ]]; then
-  echo ""
-  echo "RESULT: FAIL — fix missing items above before Phase A Send"
+  echo "=== FAIL (${fail}) ==="
   exit 1
 fi
-echo ""
-echo "RESULT: PASS — layered Phase A assets + route look ready"
-exit 0
+echo "=== ALL OK ==="

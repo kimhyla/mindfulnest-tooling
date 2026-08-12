@@ -373,6 +373,21 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         notes="Bake preflight validates slot read-only; export/pin/save are the only write paths.",
     ),
     AuthorityConcept(
+        id="phase_a_lipsync_route",
+        status="shipped",
+        marker="PHASE_A_ARLO_LAYERED_ROUTE_V2",
+        question="Which pipeline generates the Phase A module lipsync MP4?",
+        authority_shape="disk",
+        server_module="server_handlers/phases.py",
+        server_read="PHASE_A_ARLO_LAYERED_ROUTE_V2",
+        server_write="_handle_phase_a_lipsync_layered",
+        spec_doc="Production/docs/TECH_SPEC_PHASE_A_ARLO_LAYERED_DEFAULT_ROUTE_v2.md",
+        notes=(
+            "Kim Gate0 pinned headshot green idle + headshot plate; "
+            "1280x720 module delivery; ByteDance/Avatar Pro not on Send."
+        ),
+    ),
+    AuthorityConcept(
         id="phase_b_lipsync_route",
         status="shipped",
         marker="PHASE_B_PATH_A_ROUTE_V1",

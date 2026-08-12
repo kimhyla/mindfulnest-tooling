@@ -37,7 +37,8 @@ def test_reject_background_folder_still(tmp_path: Path) -> None:
 def test_canonical_still_rel_is_arlo_folder() -> None:
     assert "ARLO" in PHASE_A_ARLO_CANONICAL_STILL_REL
     assert "BACKGROUND" not in PHASE_A_ARLO_CANONICAL_STILL_REL
-    assert "medium_16x9" in PHASE_A_ARLO_CANONICAL_STILL_REL
+    assert "headshot" in PHASE_A_ARLO_CANONICAL_STILL_REL
+    assert "openmouth" in PHASE_A_ARLO_CANONICAL_STILL_REL
 
 
 def test_horizontal_crop_bias_shifts_left_for_watercolor_margin() -> None:

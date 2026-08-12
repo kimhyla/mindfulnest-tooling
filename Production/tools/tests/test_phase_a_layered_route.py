@@ -1,4 +1,4 @@
-"""PHASE_A_ARLO_LAYERED_ROUTE_V1 ? orphan/reconcile wiring contracts."""
+"""PHASE_A_ARLO_LAYERED_ROUTE_V2 — orphan/reconcile wiring contracts."""
 from __future__ import annotations
 
 import time
@@ -24,16 +24,16 @@ def _layered_handler_block() -> str:
 def test_handler_block_is_arlo_layered_single_route():
     block = _handler_block()
     layered = _layered_handler_block()
-    assert "PHASE_A_ARLO_LAYERED_ROUTE_V1" in block
+    assert "PHASE_A_ARLO_LAYERED_ROUTE_V2" in block
     assert "execute_layered_job" in layered
     assert "create_layered_job" in layered
     assert "validate_arlo_layered_assets" in layered
     assert "run_phase_a_arlo_idle_lipsync_startend_still" not in block
     assert "submit_avatar_pro" not in block
-    # Dispatcher defaults to layered; ByteDance is opt-in only.
-    assert "MN_PHASE_A_BYTEDANCE" in block
-    assert "_handle_phase_a_lipsync_bytedance" in block
+    # Send is layered only — no ByteDance opt-in on the dispatcher.
+    assert "MN_PHASE_A_BYTEDANCE" not in block.split("def _handle_phase_a_lipsync_layered", 1)[0]
     assert "return _handle_phase_a_lipsync_layered" in block
+    assert "bytedance" not in block.split("def _handle_phase_a_lipsync_layered", 1)[0].lower()
 
 
 def test_handler_budget_gate_is_per_chunk():
@@ -48,24 +48,28 @@ def test_orphan_and_reconcile_wired_into_polling_thread():
     server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
     assert "sweep_phase_a_lipsync_orphan" in server
     assert "reconcile_phase_a_layered_lipsync" in server
-    # ByteDance resume remains available but only under MN_PHASE_A_BYTEDANCE.
-    assert "MN_PHASE_A_BYTEDANCE" in server
-    assert "sweep_phase_a_lipsync_resume" in server
+    # ByteDance resume must not be polled for Phase A Send.
+    poller = server.split("sweep_phase_module_lipsync_polls", 1)[1].split(
+        "except Exception as exc", 1
+    )[0]
+    assert "MN_PHASE_A_BYTEDANCE" not in poller
+    assert "sweep_phase_a_lipsync_resume" not in poller
 
 
-def test_profile_contract_full_loop_30s_rejects_full_also():
+def test_profile_contract_kim_gate0_rejects_full_also():
     import layered_character_lipsync as engine
 
     profile = engine.ARLO_PROFILE
-    assert profile.route_id == "PHASE_A_ARLO_LAYERED_ROUTE_V1"
-    assert [u.name for u in profile.idle_units] == ["full_loop_30s"]
+    assert profile.route_id == "PHASE_A_ARLO_LAYERED_ROUTE_V2"
+    assert [u.name for u in profile.idle_units] == ["kim_gate0_pinned"]
     assert profile.idle_units[0].relative_path.endswith(
-        "arlo_gesture_idle_full_loop_30s_green_1920x1080_v1.mp4"
+        "arlo_gesture_idle_kim_gate0_pinned_15s_v1.mp4"
     )
     assert profile.plate_relative_path.endswith(
-        "arlo_room_plate_chair_study_1280x720_v2.png"
+        "arlo_room_plate_headshot_close_1280x720_v1.png"
     )
-    assert "green" in profile.chroma_filter or profile.key_rgb[1] > 200
+    assert profile.key_rgb == (11, 243, 7)
+    assert "0BF307" in profile.chroma_filter.upper() or "0x0BF307" in profile.chroma_filter
     engine.validate_arlo_idle_contract(profile)
     with pytest.raises(ValueError, match="rejected Arlo idle"):
         engine.assert_idle_path_not_rejected(

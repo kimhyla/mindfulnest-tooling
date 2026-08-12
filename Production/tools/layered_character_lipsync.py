@@ -28,11 +28,14 @@ SILENCE_DETECT_ARGS = "silencedetect=noise=-35dB:d=0.45"
 # Arlo idle SSoT — single looped first-clip unit only. Rejected two-clip
 # stitch (red hands in second half) must never be selectable via profile,
 # trial CLI, or Phase A prepare/validate.
-ARLO_CANONICAL_IDLE_NAME = "full_loop_30s"
+# Kim-approved Gate0 headshot idle (pinned chroma) — Phase A Speak default.
+ARLO_CANONICAL_IDLE_NAME = "kim_gate0_pinned"
 ARLO_CANONICAL_IDLE_RELATIVE_PATH = (
     "NEW STYLE CHARACTERS/ARLO/"
-    "arlo_gesture_idle_full_loop_30s_green_1920x1080_v1.mp4"
+    "arlo_gesture_idle_kim_gate0_pinned_15s_v1.mp4"
 )
+ARLO_CANONICAL_IDLE_DURATION_S = 15.041667
+ARLO_KEY_RGB = (11, 243, 7)
 ARLO_REJECTED_IDLE_PATH_MARKERS = (
     "full_also",
     "also_27s",
@@ -207,60 +210,51 @@ CEDRIC_PROFILE = LayeredLipsyncProfile(
     composite_body_qc=QCRegion(Crop(346, 302, 534, 232), 12, 0.31, 0.5),
 )
 
-# Arlo's green idle is a complete-character Path A asset, equivalent to
-# Cedric's complete-character blue idle. Provider framing and final placement
-# therefore preserve the full 16:9 frame, delivered on the module 1280x720 canvas.
+# Arlo Phase A Speak (Kim 2026-08-11 lock-in): Gate0-trimmed headshot green
+# idle + static headshot plate. Provider stays 1920x1080; module delivery is
+# 1280x720 (Phase B / stitcher parity). Do not regenerate Kling motion idle
+# on Send — pin file is Cat-2 prep via Gate0 recipe.
 ARLO_PROFILE = LayeredLipsyncProfile(
     profile_id="arlo",
-    route_id="PHASE_A_ARLO_LAYERED_ROUTE_V1",
-    method_id="layered_fullbody_greenscreen_kling_lipsync_v2",
+    route_id="PHASE_A_ARLO_LAYERED_ROUTE_V2",
+    method_id="layered_headshot_gate0_kling_lipsync_v1",
     provider_content="whole_character",
     placement_mode="full_canvas",
     cutout_mode="key_canvas",
-    key_rgb=(6, 239, 10),
-    # Chair-study plate at canvas resolution (scaled from Kim still; chair
-    # kept centered/prominent). Engine scales plate to canvas_size anyway.
+    key_rgb=ARLO_KEY_RGB,
     plate_relative_path=(
         "NEW STYLE CHARACTERS/ARLO/"
-        "arlo_room_plate_chair_study_1280x720_v2.png"
+        "arlo_room_plate_headshot_close_1280x720_v1.png"
     ),
     cutout_relative_path=(
-        "NEW STYLE CHARACTERS/ARLO/arlo_key_canvas_1280x720_v1.png"
+        "NEW STYLE CHARACTERS/ARLO/arlo_key_canvas_headshot_1280x720_v1.png"
     ),
-    # Single approved full_loop_30s unit — looped for any stem length.
-    # Trims (2026-07-28): still-ramp floor + pose-match search on 12fps gray
-    # 320x180 (minimize join-frame MSE so 0.35s xfade does not double-expose).
-    # Prior 0.2/0.2 + 0.30s xfade left visible jumps/ghosts at self-loop joins.
+    # Single Kim Gate0 pinned idle — looped for any stem length.
     idle_units=(
         IdleUnit(
             ARLO_CANONICAL_IDLE_NAME,
             ARLO_CANONICAL_IDLE_RELATIVE_PATH,
-            30.0,
-            1.75,
-            1.08,
+            ARLO_CANONICAL_IDLE_DURATION_S,
+            0.25,
+            0.25,
         ),
     ),
     source_size=Size(1920, 1080),
     canvas_size=Size(1280, 720),
-    # Like Cedric Path A, the provider frame contains the complete character.
-    # The green idle is already spatially aligned to the canonical 16:9 still.
     provider_crop=Crop(0, 0, 1920, 1080),
     provider_input_size=Size(1920, 1080),
     provider_output_size=Size(832, 464),
     placement=Crop(0, 0, 1280, 720),
     xfade_seconds=0.35,
-    # Measured from the installed idle's corner pixels (median RGB 6,239,10).
-    # The tighter tolerance preserves Arlo's olive vest while removing the key.
-    chroma_filter="chromakey=0x06EF0A:0.18:0.05",
+    # Pin RGB (11,243,7) from Gate0 constant-key idle.
+    chroma_filter="chromakey=0x{:02X}{:02X}{:02X}:0.20:0.06".format(*ARLO_KEY_RGB),
     despill_filter="despill=type=green",
     post_filters="cas=0.4,eq=contrast=1.02:saturation=1.02",
-    # Eyes occupy this band after the complete 1920x1080 frame maps to 832x464.
-    provider_eye_qc=QCRegion(Crop(350, 125, 150, 95), 6, 0.4, 0.33),
-    idle_body_qc=QCRegion(Crop(650, 530, 600, 430), 12, 0.25, 0.5),
-    # 1024x576 composition Crop(346,282,322,230) scaled by 1.25 to 1280x720.
-    composite_body_qc=QCRegion(Crop(432, 352, 403, 288), 12, 0.25, 0.5),
-    # Lead-in 1.0s (Kim 2026-07-29) + 2.5s face-return tail (Beat Gen parity).
-    # Cedric Path A keeps short 0.5/0.5 chunk-context defaults.
+    # Headshot eye/body QC (proven on kim_gate0 12s offline + Cedric headshot band).
+    provider_eye_qc=QCRegion(Crop(280, 70, 270, 140), 6, 0.4, 0.33),
+    idle_body_qc=QCRegion(Crop(560, 200, 800, 700), 12, 0.25, 0.5),
+    # 1920 headshot body crop scaled by 1280/1920 for module canvas.
+    composite_body_qc=QCRegion(Crop(373, 133, 533, 467), 12, 0.25, 0.5),
     boundary_pad_start=1.0,
     boundary_pad_end=2.5,
 )
@@ -378,12 +372,12 @@ def assert_idle_path_not_rejected(path: str) -> None:
 
 
 def validate_arlo_idle_contract(profile: LayeredLipsyncProfile) -> None:
-    """Arlo must use exactly the single full_loop_30s idle — never full_also."""
+    """Arlo Speak must use exactly the Kim Gate0 pinned headshot idle."""
     if profile.profile_id != "arlo":
         return
     if len(profile.idle_units) != 1:
         raise ValueError(
-            "Arlo idle_units must be exactly one full_loop_30s unit "
+            "Arlo idle_units must be exactly one kim_gate0_pinned unit "
             f"(got {len(profile.idle_units)})"
         )
     unit = profile.idle_units[0]
@@ -396,11 +390,11 @@ def validate_arlo_idle_contract(profile: LayeredLipsyncProfile) -> None:
         )
     if rel != ARLO_CANONICAL_IDLE_RELATIVE_PATH:
         raise ValueError(
-            "Arlo idle path must be canonical loop idle "
+            "Arlo idle path must be canonical Gate0 pinned idle "
             f"{ARLO_CANONICAL_IDLE_RELATIVE_PATH!r}, got {rel!r}"
         )
-    if not rel.endswith("full_loop_30s_green_1920x1080_v1.mp4"):
-        raise ValueError(f"Arlo idle path must end with full_loop_30s: {rel!r}")
+    if "kim_gate0_pinned" not in Path(rel).name:
+        raise ValueError(f"Arlo idle path must be kim_gate0_pinned: {rel!r}")
 
 
 def validate_profile(profile: LayeredLipsyncProfile) -> None:
