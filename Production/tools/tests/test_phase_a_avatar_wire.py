@@ -1,4 +1,4 @@
-"""Phase A Avatar Pro wire — handler contract + HTTP integration."""
+"""Phase A Arlo layered route ? handler contract + HTTP integration."""
 from __future__ import annotations
 
 import json
@@ -13,6 +13,7 @@ import unittest.mock as mock
 import urllib.error
 import urllib.request
 from pathlib import Path
+from types import SimpleNamespace
 
 TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS))
@@ -25,22 +26,43 @@ os.environ.pop("MINDFULNEST_WRITE_PATH", None)
 import production_server as PS  # noqa: E402
 from phase_a_arlo_contract import PHASE_A_ARLO_CANONICAL_STILL_REL  # noqa: E402
 
+# Module may already be imported by earlier tests without the env flag.
+PS.SINGLE_MACHINE_MODE = True
 
-def test_phases_handler_uses_arlo_startend_kling_not_avatar_pro():
+
+def test_phases_handler_uses_arlo_layered_not_startend_still():
     src = TOOLS / "server_handlers" / "phases.py"
     block = src.read_text(encoding="utf-8").split("def handle_phase_a_lipsync", 1)[1]
     block = block.split("\ndef handle_phase_b_lipsync", 1)[0]
     assert "submit_avatar_pro" not in block
-    assert "run_phase_a_arlo_idle_lipsync_startend_still" in block
+    assert "run_phase_a_arlo_idle_lipsync_startend_still" not in block
+    assert "PHASE_A_ARLO_LAYERED_ROUTE_V2" in block
+    assert "create_layered_job" in block
+    assert "execute_layered_job" in block
+    assert "plan_layered_lipsync" in block
     assert "_finalize_phase_a_lipsync_delivery" in block
-    assert 'lipsync_method = "idle_kling_lipsync_startend_still"' in block
+    assert 'terminal_status="needs_manual_visual_review"' in block
 
 
-def test_sweep_resume_arlo_startend_not_bytedance():
-    src = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
-    resume = src.split("def sweep_phase_a_lipsync_resume", 1)[1].split("\ndef handle_phase_a_lipsync", 1)[0]
-    assert "run_phase_a_arlo_idle_lipsync_startend_still" in resume
-    assert "resubmit with Avatar Pro" not in resume
+def test_phase_a_reconcile_and_orphan_wired():
+    phases = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
+    assert "def sweep_phase_a_lipsync_orphan" in phases
+    assert "def reconcile_phase_a_layered_lipsync" in phases
+    assert "def _handle_phase_a_lipsync_layered" in phases
+    # Legacy ByteDance helper may remain in tree but is not on Send.
+    dispatch = phases.split("def handle_phase_a_lipsync", 1)[1].split(
+        "def _handle_phase_a_lipsync_layered", 1
+    )[0]
+    assert "MN_PHASE_A_BYTEDANCE" not in dispatch
+    assert "bytedance" not in dispatch.lower()
+    server = (TOOLS / "production_server.py").read_text(encoding="utf-8")
+    assert "reconcile_phase_a_layered_lipsync" in server
+    assert "sweep_phase_a_lipsync_orphan" in server
+    poller = server.split("sweep_phase_module_lipsync_polls", 1)[1].split(
+        "except Exception as exc", 1
+    )[0]
+    assert "MN_PHASE_A_BYTEDANCE" not in poller
+    assert "sweep_phase_a_lipsync_resume" not in poller
 
 
 def _make_event_fixture(tmp: Path) -> tuple[Path, Path, str]:
@@ -136,9 +158,9 @@ def _http_post(port: int, path: str, body: dict, timeout: float = 30.0):
         return e.code, payload, dict(e.headers or {})
 
 
-class TestPhaseAAvatarProHttp(unittest.TestCase):
+class TestPhaseALayeredHttp(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix="phase_a_avatar_"))
+        self.tmp = Path(tempfile.mkdtemp(prefix="phase_a_layered_"))
         self.event_dir, self.storyboard, self.event_id = _make_event_fixture(self.tmp)
         self.port = _find_free_port()
         self.server, self.thread, self.app = _start_server(
@@ -149,7 +171,7 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
         self.server.shutdown()
         self.thread.join(timeout=2)
 
-    def test_lipsync_submits_arlo_startend_worker(self):
+    def test_lipsync_submits_arlo_layered_worker(self):
         vs = self.event_dir / "phase_a_voice_stem_test.mp3"
         vs.write_bytes(b"\x00fakevoice\x00")
 
@@ -175,14 +197,50 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
                 out.write_bytes(b"\x00trim\x00")
             return _R()
 
-        def _fake_arlo_startend(_audio, out_path, **_kw):
-            Path(out_path).write_bytes(b"\x00arlo_startend_out\x00")
-            return {"method": "idle_kling_lipsync_startend_still"}
+        plan = SimpleNamespace(chunk_count=1, chunks=[{"index": 0}])
+        durable_job = {
+            "job_id": "job-arlo-test",
+            "method": "layered_headshot_gate0_kling_lipsync_v1",
+            "route": "PHASE_A_ARLO_LAYERED_ROUTE_V2",
+            "chunks": [{"index": 0}],
+            "delivery": {
+                "output_file": "phase_a_lipsync_test.mp4",
+                "base_clip_id": "arlo_idle_kim_gate0_headshot_v1",
+            },
+            "context": {"event_dir": str(self.event_dir)},
+        }
+        job_path = self.event_dir / "_jobs" / "phase_a_job-arlo-test.json"
+        job_path.parent.mkdir(parents=True, exist_ok=True)
+        job_path.write_text("{}", encoding="utf-8")
+
+        def _fake_execute(_path, _profile, **kwargs):
+            out = self.event_dir / durable_job["delivery"]["output_file"]
+            source = self.event_dir / "_tmp_arlo_layered_source.mp4"
+            source.write_bytes(b"\x00arlo_layered_out\x00")
+            delivery_meta = kwargs["delivery_callback"](source, out, durable_job)
+            kwargs["state_commit_callback"](durable_job, {"ok": True}, delivery_meta)
+            return durable_job
 
         with mock.patch.object(PS.subprocess, "run", side_effect=dispatch), \
              mock.patch(
-                 "phase_a_arlo_idle_lipsync.run_phase_a_arlo_idle_lipsync_startend_still",
-                 side_effect=_fake_arlo_startend,
+                 "arlo_layered_lipsync.validate_arlo_layered_assets",
+                 return_value=None,
+             ), \
+             mock.patch(
+                 "layered_character_lipsync.plan_layered_lipsync",
+                 return_value=plan,
+             ), \
+             mock.patch(
+                 "layered_lipsync_jobs.create_layered_job",
+                 return_value=(job_path, durable_job),
+             ), \
+             mock.patch(
+                 "layered_lipsync_jobs.execute_layered_job",
+                 side_effect=_fake_execute,
+             ), \
+             mock.patch(
+                 "layered_lipsync_jobs.verify_captured_event",
+                 return_value=None,
              ), \
              mock.patch(
                  "phase_a_av_post.av_duration_gap",
@@ -204,13 +262,17 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
             status, resp, _ = _http_post(
                 self.port,
                 "/api/phase_a/lipsync",
-                {"phase": "a", "base_clip_id": "arlo_idle_wizard_desk_v8"},
+                {"phase": "a"},
             )
             self.assertEqual(status, 202, resp)
             self.assertEqual(resp.get("status"), "running")
-            self.assertEqual(resp.get("vendor"), "idle_kling_lipsync_startend_still")
+            self.assertEqual(
+                resp.get("vendor"),
+                "layered_headshot_gate0_kling_lipsync_v1",
+            )
+            self.assertEqual(resp.get("route"), "PHASE_A_ARLO_LAYERED_ROUTE_V2")
 
-            for _ in range(50):
+            for _ in range(80):
                 state = self.app.state.read_state()
                 if state.get("phase_a_lipsync_status") == "needs_manual_visual_review":
                     break
@@ -218,7 +280,11 @@ class TestPhaseAAvatarProHttp(unittest.TestCase):
 
         state = self.app.state.read_state()
         self.assertEqual(state.get("phase_a_lipsync_status"), "needs_manual_visual_review")
-        self.assertEqual(state.get("phase_a_lipsync_method"), "idle_kling_lipsync_startend_still")
+        self.assertEqual(
+            state.get("phase_a_lipsync_method"),
+            "layered_headshot_gate0_kling_lipsync_v1",
+        )
+        self.assertEqual(state.get("phase_a_lipsync_route"), "PHASE_A_ARLO_LAYERED_ROUTE_V2")
         self.assertTrue(state.get("phase_a_lipsync_file", "").startswith("phase_a_lipsync_"))
 
 

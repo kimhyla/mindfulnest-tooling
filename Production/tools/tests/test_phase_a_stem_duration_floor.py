@@ -50,8 +50,14 @@ def test_ensure_stem_duration_floor_pads_short_output(tmp_path: Path) -> None:
     assert abs(_ffprobe_duration(dst) - 2.5) < 0.12
 
 
-def test_sweep_phase_a_resume_exports_marker() -> None:
+def test_phase_a_layered_orphan_reconcile_markers() -> None:
     src = (HERE / "server_handlers" / "phases.py").read_text(encoding="utf-8")
-    assert "sweep_phase_a_lipsync_resume" in src
+    assert "sweep_phase_a_lipsync_orphan" in src
+    assert "reconcile_phase_a_layered_lipsync" in src
     assert "phase_a_lipsync_pending_output" in src
-    assert "resume=True" in src
+    assert "phase_a_lipsync_job_id" in src
+    dispatch = src.split("def handle_phase_a_lipsync", 1)[1].split(
+        "def _handle_phase_a_lipsync_layered", 1
+    )[0]
+    assert "MN_PHASE_A_BYTEDANCE" not in dispatch
+    assert "return _handle_phase_a_lipsync_layered" in dispatch

@@ -83,6 +83,8 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_playback_url** — composer video when SFX exist | derived | `resolveSlotPlaybackPreviewUrl` | mux artifact bake | shipped | `TECH_SPEC_STITCH_SFX_PLAYBACK_TRUTH_V1.md` |
 | **stitch_single_owner** — who mutates slot video post-export | disk | `STITCH_SINGLE_OWNER_V1` load_job read-only | export path owns ingest | shipped | `TECH_SPEC_STITCH_SINGLE_OWNER_V1.md` |
 | **stitch_bake_slot_authority** — phase_b MP4 at module bake | disk | `validate_phase_b_stitch_slot_authority` | `stitch_upsert_event_slot` (export/pin/save only; bake never writes) | shipped | `TECH_SPEC_STITCH_BAKE_SLOT_AUTHORITY_V1.md` |
+| **phase_a_lipsync_route** — which pipeline generates the Phase A module lipsync MP4 | disk | `PHASE_A_ARLO_LAYERED_ROUTE_V2` (handle_phase_a_lipsync → layered only) | `_handle_phase_a_lipsync_layered` / durable layered jobs | shipped | `TECH_SPEC_PHASE_A_ARLO_LAYERED_DEFAULT_ROUTE_v2.md` + `CANON_PHASE_A_GATE0_SPEAK_LOCK_v1.md` |
+| **stitch_mix_local_inputs** — Export ambient/SFX ffmpeg input roots | derived | `ensure_hot_serve_file` + speech mono before `amix` | `_stitch_mix_slot_audio` | shipped | `CANON_PHASE_A_GATE0_SPEAK_LOCK_v1.md` (`STITCH_MIX_LOCAL_INPUTS_V1`) |
 | **phase_b_lipsync_route** — which pipeline generates the Phase B module lipsync MP4 | disk | `PHASE_B_PATH_A_ROUTE_V1` (handle_phase_b_lipsync) | `run_phase_b_path_a_lipsync` → `_write_phase_b_lipsync_complete` | shipped | `TECH_SPEC_PHASE_B_PATH_A_DEFAULT_ROUTE_v1.md` |
 
 ### Phase producer (Tier D — operator edit surfaces)

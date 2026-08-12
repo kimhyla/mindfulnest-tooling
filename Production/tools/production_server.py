@@ -1458,6 +1458,20 @@ class StateManager:
             os.close(fd)
 
     # ---- state ----
+    def ensure_event_instance_id(self) -> str:
+        """Return the event's durable identity, creating it under state locks."""
+        result: dict[str, str] = {}
+
+        def _ensure(state: dict) -> None:
+            value = state.get("event_instance_id")
+            if not isinstance(value, str) or not value.strip():
+                value = str(_stdlib_uuid.uuid4())
+                state["event_instance_id"] = value
+            result["event_instance_id"] = value
+
+        self.mutate_state(_ensure)
+        return result["event_instance_id"]
+
     def read_state(self) -> dict:
         with self.lock:
             fd = self._acquire_file_lock()
@@ -2314,10 +2328,15 @@ class LipsyncPollingThread(threading.Thread):
         try:
             from server_handlers.phases import sweep_phase_module_lipsync_polls
             sweep_phase_module_lipsync_polls(self.state, self.client)
-            from server_handlers.phases import sweep_phase_a_lipsync_resume
-            sweep_phase_a_lipsync_resume(self.state)
+            # Phase A layered Send only (orphan + reconcile). Phase B Path A orphan.
+            from server_handlers.phases import (
+                reconcile_phase_a_layered_lipsync,
+                sweep_phase_a_lipsync_orphan,
+                sweep_phase_b_lipsync_orphan,
+            )
+            reconcile_phase_a_layered_lipsync(self.state, self.client)
+            sweep_phase_a_lipsync_orphan(self.state)
             # PHASE_B_PATH_A_ORPHAN_SWEEP_V1 — clear wedged Phase B running state.
-            from server_handlers.phases import sweep_phase_b_lipsync_orphan
             sweep_phase_b_lipsync_orphan(self.state)
         except Exception as exc:  # noqa: BLE001
             print(f"[lipsync-poller] phase module sweep error: {exc}", flush=True)
@@ -12156,10 +12175,14 @@ body {{padding-top:44px!important;}}
         from media_playback_cache import ensure_hot_serve_file
         from lib.ffmpeg_io import path_is_cloud_storage_backed
 
+        # Cold miss: short Dropbox budget (not "never") — Phase A lipsync /
+        # stems land on Dropbox first; without a short materialize, /files
+        # 503s forever and WaveSurfer stays on "waveform still loading".
+        # Warm hits still return APFS cache with zero Dropbox I/O.
         local = ensure_hot_serve_file(
             path,
             event_dir=Path(self.app.event_dir),
-            dropbox_probe="never",
+            dropbox_probe="short",
         )
         local_p = Path(local)
         if local_p != Path(path):
@@ -12957,29 +12980,59 @@ body {{padding-top:44px!important;}}
             atomic_ffmpeg_output,
             run_stitch_cache_build,
         )
+        from media_playback_cache import ensure_hot_serve_file  # noqa: PLC0415
 
-        # Build ffmpeg command: video from norm_path, audio sources = ambient + SFX
-        input_args: list[str] = ["-i", str(norm_path)]
+        # STITCH_MIX_LOCAL_INPUTS_V1 — ffmpeg reads APFS hot-serve copies, not Dropbox
+        # File Provider paths (same class as HOT_SERVE: Dropbox mid-read → Audio mix failed).
+        event_dir = Path(self.app.event_dir)
+        mix_norm = ensure_hot_serve_file(
+            norm_path, event_dir=event_dir, dropbox_probe="when_needed",
+        )
+        mix_ambient = ""
+        if ambient_path:
+            mix_ambient = str(
+                ensure_hot_serve_file(
+                    ambient_path, event_dir=event_dir, dropbox_probe="when_needed",
+                )
+            )
+        mix_cues: list[dict] = []
+        for cue in sfx_cues:
+            cue_local = dict(cue)
+            src = (cue.get("source_path") or "").strip()
+            if src:
+                cue_local["source_path"] = str(
+                    ensure_hot_serve_file(
+                        src, event_dir=event_dir, dropbox_probe="when_needed",
+                    )
+                )
+            mix_cues.append(cue_local)
+
+        # Build ffmpeg command: video from norm, audio = speech + ambient + SFX
+        input_args: list[str] = ["-i", str(mix_norm)]
         filter_lanes: list[str] = []
-        base_audio = "[0:a]"  # original video audio
+        # STITCH_MIX_SPEECH_MONO_V1 — match ambient/SFX mono so amix cannot fail on layout.
+        filter_lanes.append(
+            "[0:a]aresample=44100,aformat=channel_layouts=mono[speech]"
+        )
+        base_audio = "[speech]"
 
         next_input_idx = 1
 
-        if ambient_path:
-            input_args += ["-i", ambient_path]
+        if mix_ambient:
+            input_args += ["-i", mix_ambient]
             aidx = next_input_idx
             next_input_idx += 1
-            bed_dur_ms = self._ffprobe_duration_ms(Path(ambient_path))
+            bed_dur_ms = self._ffprobe_duration_ms(Path(mix_ambient))
             bed_dur_s = bed_dur_ms / 1000.0 if bed_dur_ms else 0.0
             from server_handlers.stitch_ambient_loop import build_ambient_bed_filter_lane_for_file  # noqa: PLC0415
 
             filter_lanes.append(
                 build_ambient_bed_filter_lane_for_file(
-                    aidx, ambient_path, bed_dur_s, slot_dur_s, ambient_volume, out_label="bed",
+                    aidx, mix_ambient, bed_dur_s, slot_dur_s, ambient_volume, out_label="bed",
                 )
             )
 
-        for idx, cue in enumerate(sfx_cues):
+        for idx, cue in enumerate(mix_cues):
             input_args += ["-i", cue["source_path"]]
             cidx = next_input_idx
             next_input_idx += 1
@@ -13007,9 +13060,9 @@ body {{padding-top:44px!important;}}
 
         # Assemble amix inputs
         mix_inputs = [base_audio]
-        if ambient_path:
+        if mix_ambient:
             mix_inputs.append("[bed]")
-        mix_inputs += [f"[cue{i}]" for i in range(len(sfx_cues))]
+        mix_inputs += [f"[cue{i}]" for i in range(len(mix_cues))]
 
         n_mix = len(mix_inputs)
         filter_lanes.append(
@@ -13039,17 +13092,31 @@ body {{padding-top:44px!important;}}
             return out_path.is_file() and stitch_cached_mp4_playable(out_path, expected_s=slot_dur_s)
 
         def _build_mix() -> None:
-            try:
-                atomic_ffmpeg_output(
-                    cmd,
-                    out_path,
-                    expected_duration_s=slot_dur_s,
-                    validator=lambda p, exp: stitch_cached_mp4_playable(p, expected_s=exp),
-                    timeout=300,
-                )
-            except subprocess.CalledProcessError as exc:
-                stderr = (exc.stderr or b"")[:600].decode("utf-8", errors="replace")
-                raise RuntimeError(f"Audio mix failed: {stderr}") from exc
+            last_exc: BaseException | None = None
+            # One retry: Dropbox/File Provider transient read failures during mix.
+            for attempt in range(2):
+                try:
+                    atomic_ffmpeg_output(
+                        cmd,
+                        out_path,
+                        expected_duration_s=slot_dur_s,
+                        validator=lambda p, exp: stitch_cached_mp4_playable(p, expected_s=exp),
+                        timeout=300,
+                    )
+                    return
+                except subprocess.CalledProcessError as exc:
+                    last_exc = exc
+                    if attempt == 0:
+                        print(
+                            "[stitch] Audio mix ffmpeg failed — retrying once "
+                            "(STITCH_MIX_LOCAL_INPUTS_V1)",
+                            flush=True,
+                        )
+                        continue
+            raw_err = getattr(last_exc, "stderr", None) or b""
+            # Prefer tail — ffmpeg banners eat the first bytes of stderr.
+            stderr = raw_err[-2500:].decode("utf-8", errors="replace")
+            raise RuntimeError(f"Audio mix failed: {stderr}") from last_exc
 
         run_stitch_cache_build(cache_dir, ready=_mix_ready, build=_build_mix)
 

@@ -58,12 +58,33 @@ def test_files_resolve_tries_apfs_cache_before_dropbox_realpath() -> None:
     assert cache_idx < drop_idx
 
 
-def test_request_path_ensure_uses_never_dropbox_probe() -> None:
+def test_request_path_ensure_uses_short_dropbox_probe_on_cold_miss() -> None:
+    """Warm hits skip Dropbox; cold miss must short-materialize (not never).
+
+    ``never`` left new Phase A lipsync /files on permanent 503 → black video
+    + WaveSurfer \"Audio waveform still loading\".
+    """
     text = SERVER.read_text(encoding="utf-8")
     ensure = text.split("def _ensure_local_file_for_serve", 1)[1].split(
         "def _ensure_local_mp4_for_serve", 1,
     )[0]
-    assert 'dropbox_probe="never"' in ensure
+    assert 'dropbox_probe="short"' in ensure
+    assert 'dropbox_probe="never"' not in ensure
+    assert "HOT_SERVE_TRUE_CACHE_FIRST_V2" in ensure
+
+
+def test_phase_lipsync_finalize_warms_hot_serve_cache() -> None:
+    """New delivery MP4 must land in .playback_cache before operator refresh."""
+    phases = (TOOLS / "server_handlers" / "phases.py").read_text(encoding="utf-8")
+    assert "def _warm_phase_lipsync_hot_serve" in phases
+    a = phases.split("def _finalize_phase_a_lipsync_delivery", 1)[1].split(
+        "def _write_phase_b_lipsync_complete", 1
+    )[0]
+    assert "_warm_phase_lipsync_hot_serve(out_path)" in a
+    b = phases.split("def _write_phase_b_lipsync_complete", 1)[1].split(
+        "def _apply", 1
+    )[0]
+    assert "_warm_phase_lipsync_hot_serve(out_path)" in b
 
 
 def test_cr_thumb_warm_cache_before_dropbox_realpath() -> None:

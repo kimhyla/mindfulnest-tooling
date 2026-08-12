@@ -1,0 +1,13 @@
+---
+description: Phase A Gate0 Speak route and Export→Stitcher mix — do not regress
+alwaysApply: true
+---
+
+# Phase A Gate0 Speak — forever lock
+
+When working on Phase A Speak / lipsync / Export to Stitcher:
+
+- **Canon:** `Production/docs/CANON_PHASE_A_GATE0_SPEAK_LOCK_v1.md`
+- **Route:** `PHASE_A_ARLO_LAYERED_ROUTE_V2` only (Gate0 headshot idle + plate, 1280×720)
+- **Never on Send:** Avatar Pro, ByteDance, Kling motion-idle regen, ffmpeg-only halo “fixes”
+- **Export:** ambient mix must use `STITCH_MIX_LOCAL_INPUTS_V1` + `STITCH_MIX_SPEECH_MONO_V1`; Stitcher Phase A duration must match the approved stem

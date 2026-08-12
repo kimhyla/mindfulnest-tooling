@@ -525,14 +525,10 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
   const onSendForLipsync = async () => {
     const lipsyncClipId =
       phase === 'a'
-        ? baseClipPicker.selectedClipId || stateSlice.chipper_sitting_clip_id
+        ? baseClipPicker.selectedClipId || stateSlice.chipper_sitting_clip_id || null
         : baseClipPicker.selectedClipId || stateSlice.cedric_base_clip_id;
-    if (!lipsyncClipId) {
-      setStatusMsg(
-        phase === 'a'
-          ? 'Pick an Arlo base clip first (Regen base clip or picker below).'
-          : 'Pick a Cedric base clip (any length — send auto-sizes idle to stem).',
-      );
+    if (phase === 'b' && !lipsyncClipId) {
+      setStatusMsg('Pick a Cedric base clip (any length — send auto-sizes idle to stem).');
       return;
     }
     if (!stateSlice.voice_stem_file) {
@@ -542,12 +538,17 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
     setBusyAction('lipsync');
     setStatusMsg('Sending for lipsync…');
     const lipsyncEp = phase === 'a' ? 'phase_a_lipsync' : 'phase_b_lipsync';
-    const res = await pathappPatch(activeScope.value, lipsyncEp, {
-      phase,
-      base_clip_id: phase === 'a'
-        ? coercePhaseAArloBaseClipId(lipsyncClipId)
-        : coercePhaseBCedricBaseClipId(lipsyncClipId),
-    }, { fetchTimeoutMs: 180_000 });
+    const payload: Record<string, string> = { phase };
+    if (phase === 'a') {
+      if (lipsyncClipId) {
+        payload['base_clip_id'] = coercePhaseAArloBaseClipId(lipsyncClipId);
+      }
+    } else {
+      payload['base_clip_id'] = coercePhaseBCedricBaseClipId(lipsyncClipId as string);
+    }
+    const res = await pathappPatch(activeScope.value, lipsyncEp, payload, {
+      fetchTimeoutMs: 180_000,
+    });
     setBusyAction(null);
     if (res.ok) {
       if (res.status === 202) {
@@ -686,25 +687,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
       await refreshAll();
     } else {
       setStatusMsg(`✗ Restitch HTTP ${res.status}: ${res.error ?? ''}`);
-    }
-  };
-
-  const onRegenBaseClip = async () => {
-    setBusyAction('regen_base');
-    setStatusMsg('Kling idle base clip (~6 min)…');
-    const res = await pathappPatch(activeScope.value, 'phase_a_regen_base_clip', {
-      clip_id: stateSlice.chipper_sitting_clip_id
-        ?? baseClipPicker.selectedClipId
-        ?? PHASE_A_ARLO_BASE_CLIP_CANONICAL,
-    });
-    setBusyAction(null);
-    if (res.ok && res.status === 202) {
-      setStatusMsg('⏳ Base clip regenerating — Send for Lipsync when done');
-    } else if (res.ok) {
-      setStatusMsg('✓ Base clip regen complete');
-      await refreshAll();
-    } else {
-      setStatusMsg(`✗ Base clip HTTP ${res.status}: ${res.error ?? ''}`);
     }
   };
 
@@ -1286,29 +1268,40 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
 
         {/* Action row: Base clip select + Send for Lipsync + Mix Audio (B) + Export */}
         <div class="mn-phase-row">
-          <label class="mn-dim" for={`phase-${phase}-baseclip`}>Base clip:</label>
-          <select
-            id={`phase-${phase}-baseclip`}
-            data-testid={`phase-${phase}-baseclip-select`}
-            value={effectiveBaseClipId}
-            onFocus={() => { void ensureBaseClipsLoaded(); }}
-            onChange={(e: Event) => {
-              const clipId = (e.target as HTMLSelectElement).value;
-              void baseClipPicker.pickClip(
-                clipId,
-                phase === 'b' ? 'phase_b_cedric_base_clip_id' : 'phase_a_chipper_sitting_clip_id',
-              );
-            }}
-          >
-            <option value="">— select —</option>
-            {phaseBaseClipSelectOptions(phase, baseClips).map((c) => (
-              <option key={c.id} value={c.id}>
-                {phase === 'b'
-                  ? `${c.id} (${c.duration_s ?? '?'}s ref)`
-                  : `${c.id} (${c.duration_s ?? '?'}s)`}
+          <label class="mn-dim" for={`phase-${phase}-baseclip`}>
+            {phase === 'a' ? 'Speak idle:' : 'Base clip:'}
+          </label>
+          {phase === 'a' ? (
+            <select
+              id={`phase-${phase}-baseclip`}
+              data-testid={`phase-${phase}-baseclip-select`}
+              value={PHASE_A_ARLO_BASE_CLIP_CANONICAL}
+              disabled
+              title="Locked: Kim Gate0 headshot idle — Send always uses this Speak asset"
+            >
+              <option value={PHASE_A_ARLO_BASE_CLIP_CANONICAL}>
+                {PHASE_A_ARLO_BASE_CLIP_CANONICAL} (locked)
               </option>
-            ))}
-          </select>
+            </select>
+          ) : (
+            <select
+              id={`phase-${phase}-baseclip`}
+              data-testid={`phase-${phase}-baseclip-select`}
+              value={effectiveBaseClipId}
+              onFocus={() => { void ensureBaseClipsLoaded(); }}
+              onChange={(e: Event) => {
+                const clipId = (e.target as HTMLSelectElement).value;
+                void baseClipPicker.pickClip(clipId, 'phase_b_cedric_base_clip_id');
+              }}
+            >
+              <option value="">— select —</option>
+              {phaseBaseClipSelectOptions(phase, baseClips).map((c) => (
+                <option key={c.id} value={c.id}>
+                  {`${c.id} (${c.duration_s ?? '?'}s ref)`}
+                </option>
+              ))}
+            </select>
+          )}
           <button
             type="button"
             class="mn-btn"
@@ -1317,13 +1310,13 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
             disabled={
               busyAction !== null ||
               lipsyncInFlight ||
-              !effectiveBaseClipId ||
+              (phase === 'b' && !effectiveBaseClipId) ||
               !stateSlice.voice_stem_file
             }
             title={
               phase === 'b'
-                ? 'Kling Sync: auto-sizes Cedric idle to stem + 2s (bookend loop or trim). Stems >185s use segmented chunks.'
-                : 'Kling Sync (Phase A) or ByteDance on base clip (Phase A).'
+                ? 'Path A layered Cedric lipsync: reusable blue idle units + silence-aligned chunks.'
+                : 'Path A layered Arlo: Gate0 headshot green idle (locked) + Kling LipSync over headshot plate.'
             }
           >
             {busyAction === 'lipsync'
@@ -1535,16 +1528,6 @@ export function PhaseProducer({ phase }: PhaseProducerProps) {
                 title="Normalize dry lipsync into phase_a_stitched_file (no ambient)"
               >
                 {busyAction === 'restitch' ? 'Normalizing…' : 'Normalize for export'}
-              </button>
-              <button
-                type="button"
-                class="mn-btn mn-btn-small"
-                data-testid="phase-a-regen-base-clip-btn"
-                onClick={onRegenBaseClip}
-                disabled={busyAction !== null}
-                title="Regenerate Arlo wizard-desk idle base from still (~6 min Kling)"
-              >
-                Regen base clip
               </button>
             </div>
             <BaseClipPicker

@@ -41,7 +41,7 @@ export function phaseLipsyncIsTerminal(status: string | undefined | null): boole
 export function phaseLipsyncProgressMessage(phase: 'a' | 'b'): string {
   if (phase === 'a') {
     return (
-      '⏳ Kling Phase A lipsync (~8–20 min: still idle + LipSync). ' +
+      '⏳ Kling Phase A lipsync (~8–20 min: Gate0 headshot idle + LipSync). ' +
       'Safe to switch tabs — will auto-update when done.'
     );
   }
