@@ -1,6 +1,6 @@
 # CANON — Phase A Gate0 Speak lock (forever)
 
-**Status:** CANON 2026-08-12 (Kim: “perfect” on full stem; Export→Stitcher green)  
+**Status:** CANON 2026-08-12 [CONFIRMED against Event_6 live Speak + Export audit OK / Stitcher Phase A 55.5s]  
 **Markers:** `PHASE_A_ARLO_LAYERED_ROUTE_V2`, `arlo_idle_kim_gate0_headshot_v1`, `STITCH_MIX_LOCAL_INPUTS_V1`
 
 ## What we locked
@@ -23,7 +23,7 @@ Phase A **Speak** is Gate0 headshot green idle → Kling LipSync → chromakey o
 2. Do **not** swap Gate0 idle/plate for full-body chair assets without a new Kim visual lock + v3 tech spec.
 3. Halo = Gate0 recipe (`spillkill_warm_edge_vj` + choke + hard matte) — not ffmpeg chromakey-only shortcuts.
 4. Export→Stitcher must land `phase_a` with full stem duration (not empty/2.5s stub). Mix uses local hot-serve inputs + speech mono (`STITCH_MIX_*`).
-5. Proof: Event_6 Stitcher shows **Phase A ~55.5 s** after Export; audit JSONL ends `OK`.
+5. Proof [CONFIRMED against Event_6 Stitcher UI + `_phase_export_stitcher_audit.jsonl`]: Phase A ~55.5 s after Export; audit ends `OK`.
 
 ## Specs
 

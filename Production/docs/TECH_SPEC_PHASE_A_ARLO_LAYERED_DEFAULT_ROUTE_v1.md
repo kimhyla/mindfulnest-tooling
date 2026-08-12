@@ -1,9 +1,10 @@
 # TECH SPEC — Phase A Arlo layered default route (v1)
 
-Status: implemented in tooling; live Event_3 deploy/visual QA still required  
-Marker: `PHASE_A_ARLO_LAYERED_ROUTE_V1`  
-Authority concept: `phase_a_lipsync_route`  
-Companion precedent: `TECH_SPEC_PHASE_B_PATH_A_DEFAULT_ROUTE_v1.md`
+**Status:** ARCHIVED / SUPERSEDED 2026-08-11 by `TECH_SPEC_PHASE_A_ARLO_LAYERED_DEFAULT_ROUTE_v2.md` (`PHASE_A_ARLO_LAYERED_ROUTE_V2` Gate0 headshot Speak). Historical only — do not implement from this document.  
+**SHORTCUT_PHASE_A_LAYERED_V1_ARCHIVE_V1:** deferred live Event_3 deploy/parity wiring and incomplete verify-path notes in this v1 draft are closed by the v2 Gate0 lock + Event_6 proof; remaining v1 checklist text is non-operative.  
+Marker: `PHASE_A_ARLO_LAYERED_ROUTE_V1` (superseded)  
+Authority concept: `phase_a_lipsync_route` (now V2)  
+Companion precedent: `TECH_SPEC_PHASE_B_PATH_A_DEFAULT_ROUTE_v1.md`  
 Cross-system durability: `TECH_SPEC_PAID_PROVIDER_JOB_DURABILITY_V1.md`
 
 ## 1. Decision

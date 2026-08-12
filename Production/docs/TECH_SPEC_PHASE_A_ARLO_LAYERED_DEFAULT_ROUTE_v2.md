@@ -49,7 +49,7 @@ Prep recipe (once): `Production/docs/ARLO_GREEN_PATH_A_GATE0_CUTOUT_RECIPE_v1.md
 Offline: `Event_6/_proof_arlo_green_path_a/headshot_path_a/kim_gate0_idle_lipsync_12s_on_plate.mp4`  
 Live: Option B Event_6 (`:5116`) Send + build-sha match HEAD.
 
-**Kim visual lock (2026-08-12):** full ~55s stem Speak approved (“perfect”) on Gate0 layered delivery  
+**Kim visual lock (2026-08-12)** [CONFIRMED against Event_6 operator review]: full ~55s stem Speak approved on Gate0 layered delivery  
 `phase_a_lipsync_20260811-234858.mp4` → Export to Stitcher → Stitcher **Phase A 55.5 s**.
 
 ## Export → Stitcher (do not regress)
