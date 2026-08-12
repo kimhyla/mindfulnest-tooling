@@ -964,9 +964,7 @@ test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => 
 
     const slot = page.locator('[data-testid="phase-a-clip-slot-sitting"]');
     await expect(slot).toHaveAttribute('data-clip-id', 'arlo_idle_kim_gate0_headshot_v1');
-    await expect(page.locator('[data-testid="phase-a-base-clip-select"]')).toHaveValue(
-      'arlo_idle_kim_gate0_headshot_v1',
-    );
+    await expect(page.locator('[data-testid="phase-a-baseclip-select"]')).toBeDisabled();
 
     omitClipField = true;
     await page.evaluate(() => {
