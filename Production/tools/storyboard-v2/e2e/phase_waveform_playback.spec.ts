@@ -917,7 +917,7 @@ test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase B ambient preset hydrate', (
 });
 
 test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => {
-  test('PHASE-CLIP-HYDRATE-1 — focus refresh with omitted server field keeps picked clip', async ({
+  test('PHASE-CLIP-HYDRATE-1 — Gate0 Speak idle stays locked across focus refresh', async ({
     page,
   }) => {
     await mockAudioFiles(page);
@@ -949,6 +949,7 @@ test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => 
         phase_a_lipsync_file: 'fix_lipsync.mp4',
       };
       if (!omitClipField) {
+        // Stale server field must still coerce to Gate0 Speak idle.
         body.phase_a_chipper_sitting_clip_id = 'arlo_idle_wizard_desk_v1';
       }
       await route.fulfill({
@@ -962,11 +963,10 @@ test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => 
     await openPhaseA(page);
 
     const slot = page.locator('[data-testid="phase-a-clip-slot-sitting"]');
-    await expect(slot).toHaveAttribute('data-clip-id', 'arlo_idle_wizard_desk_v8');
-
-    await page.locator('[data-testid="phase-a-clip-pick-sitting"]').click();
-    await page.locator('[data-testid="base-clip-option-chipper_sitting_alt_v2"]').click();
-    await expect(slot).toHaveAttribute('data-clip-id', 'chipper_sitting_alt_v2');
+    await expect(slot).toHaveAttribute('data-clip-id', 'arlo_idle_kim_gate0_headshot_v1');
+    await expect(page.locator('[data-testid="phase-a-base-clip-select"]')).toHaveValue(
+      'arlo_idle_kim_gate0_headshot_v1',
+    );
 
     omitClipField = true;
     await page.evaluate(() => {
@@ -975,7 +975,7 @@ test.describe('OPERATOR_EDIT_AUTHORITY_V1 — Phase A base clip hydrate', () => 
     });
     await page.waitForTimeout(400);
 
-    await expect(slot).toHaveAttribute('data-clip-id', 'chipper_sitting_alt_v2');
+    await expect(slot).toHaveAttribute('data-clip-id', 'arlo_idle_kim_gate0_headshot_v1');
   });
 });
 
