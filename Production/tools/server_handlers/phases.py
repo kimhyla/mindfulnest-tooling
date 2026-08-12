@@ -4729,6 +4729,13 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             },
         )
     except (OSError, RuntimeError) as exc:
+        _phase_export_stitcher_audit(
+            h,
+            "PLAYBACK_BAKE_FAILED",
+            phase=phase,
+            error=str(exc)[:2000],
+            dry_video_rel=video_rel,
+        )
         return h._send_error_v59(
             500,
             error_code="STITCH_PLAYBACK_BAKE_FAILED",

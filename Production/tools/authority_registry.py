@@ -384,7 +384,23 @@ CONCEPTS: tuple[AuthorityConcept, ...] = (
         spec_doc="Production/docs/TECH_SPEC_PHASE_A_ARLO_LAYERED_DEFAULT_ROUTE_v2.md",
         notes=(
             "Kim Gate0 pinned headshot green idle + headshot plate; "
-            "1280x720 module delivery; ByteDance/Avatar Pro not on Send."
+            "1280x720 module delivery; ByteDance/Avatar Pro not on Send. "
+            "Canon: CANON_PHASE_A_GATE0_SPEAK_LOCK_v1.md (2026-08-12 visual lock)."
+        ),
+    ),
+    AuthorityConcept(
+        id="stitch_mix_local_inputs",
+        status="shipped",
+        marker="STITCH_MIX_LOCAL_INPUTS_V1",
+        question="Where does stitch ambient/SFX ffmpeg read media during Export bake?",
+        authority_shape="derived",
+        server_module="production_server.py",
+        server_read="ensure_hot_serve_file",
+        server_write="_stitch_mix_slot_audio",
+        spec_doc="Production/docs/CANON_PHASE_A_GATE0_SPEAK_LOCK_v1.md",
+        notes=(
+            "Hot-serve APFS inputs + speech mono before amix; "
+            "prevents Dropbox mid-read Audio mix failed on Phase A Export."
         ),
     ),
     AuthorityConcept(
