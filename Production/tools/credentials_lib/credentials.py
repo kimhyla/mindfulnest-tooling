@@ -3,7 +3,8 @@ Centralized credential loading for MindfulNest production pipeline.
 
 PRIORITY (post LD-227 Phase 1, 2026-05-08):
   1. Environment variables (Doppler injects these via `doppler run -- python3 ...`)
-  2. API_KEYS_MASTER.md fallback (LD-227 SHORTCUT_CREDSTORE_MD_FALLBACK_20260418)
+  2. ~/.mindfulnest/secrets/elevenlabs_api_key (APFS; beats Dropbox markdown)
+  3. API_KEYS_MASTER.md fallback (LD-227 SHORTCUT_CREDSTORE_MD_FALLBACK_20260418)
 
 ENV-VAR NAME RESOLUTION:
   Each env-backed key reads the Doppler-canonical name FIRST, then falls back to a
@@ -42,6 +43,11 @@ def load_credentials(keys_file=None):
         ValueError: if required Directus keys are missing from BOTH env and MD.
     """
     creds = _from_env()
+    # APFS secrets beat Dropbox markdown — File Provider can serve a stale
+    # key ID while ~/.mindfulnest/secrets holds the real sk_ value.
+    for k, v in _from_local_secrets().items():
+        if v and not creds.get(k):
+            creds[k] = v
 
     required = ("directus_url", "directus_email", "directus_password")
     if not all(creds.get(k) for k in required):
@@ -175,6 +181,25 @@ def _emit_fallback_warning():
 # Closure trigger: 14 consecutive days with zero MD fallback warnings observed
 # in production logs (post-Phase-1 launchd/server runs all under doppler run --).
 # ============================================================================
+
+def _from_local_secrets() -> dict:
+    """Plain files under ~/.mindfulnest/secrets (APFS, not Dropbox)."""
+    root = os.path.join(os.path.expanduser("~"), ".mindfulnest", "secrets")
+    mapping = {
+        "elevenlabs_api_key": "elevenlabs_key",
+        "ELEVENLABS_API_KEY": "elevenlabs_key",
+    }
+    out = {}
+    for fname, dest in mapping.items():
+        path = os.path.join(root, fname)
+        try:
+            val = open(path, encoding="utf-8").read().strip()
+        except OSError:
+            continue
+        if val:
+            out[dest] = val
+    return out
+
 
 def _from_md_fallback(keys_file=None):
     """Parse API_KEYS_MASTER.md and return credentials dict, or None if not found."""

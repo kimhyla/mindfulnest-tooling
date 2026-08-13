@@ -8713,7 +8713,11 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
         slot_index = int(body.get("slot_index") or 0)
     except (TypeError, ValueError):
         slot_index = 0
-    production_state = h.app.state.read_state()
+    # Still+TTS does not persist production_state; Dropbox read_state() can
+    # block the click path for minutes (File Provider). Empty dict is enough
+    # because TTS uses speaker_override + persist_production_state=False.
+    production_state: dict = {}
+    print(f"[still-clip] start {beat_id} method={method} role={video_role}", flush=True)
 
     import copy
 
