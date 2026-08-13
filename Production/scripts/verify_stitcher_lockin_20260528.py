@@ -69,6 +69,16 @@ CHECKS: list[tuple[str, Path, str]] = [
         _REPO / "Production/tools/tests/test_stitch_canonical_job.py",
         "test_upsert_does_not_drop_other_slots",
     ),
+    (
+        "playback bake durable Dropbox commit",
+        _REPO / "Production/tools/server_handlers/stitch_slot_playback.py",
+        "STITCH_PLAYBACK_BAKE_LOCAL_COMMIT_V1",
+    ),
+    (
+        "playback bake uses copy_file_durable",
+        _REPO / "Production/tools/server_handlers/stitch_slot_playback.py",
+        "copy_file_durable",
+    ),
 ]
 
 FAIL = 0
