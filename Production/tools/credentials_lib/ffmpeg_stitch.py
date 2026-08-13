@@ -1761,8 +1761,8 @@ def remux_mp4_video_timeline_authority(
     video_s = ffprobe_stream_duration_s(src, "v")
     if video_s <= 0.0:
         if src.resolve() != dst.resolve():
-            import shutil
-            shutil.copy2(src, dst)
+            from lib.ffmpeg_io import copy_file_durable  # noqa: PLC0415
+            copy_file_durable(src, dst)
         return
     video_start_s = ffprobe_video_start_time(src)
     fuse_ss_args: list[str] = []
