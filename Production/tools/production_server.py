@@ -4361,8 +4361,27 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
                 "speaker": speaker, "voice_id": profile["voice_id"]}
     if status_code >= 400:
         detail = audio_bytes[:400].decode("utf-8", errors="replace")
+        print(
+            f"[tts-regen] {beat_id} ElevenLabs HTTP {status_code}: {detail[:240]}",
+            flush=True,
+        )
+        friendly = detail
+        try:
+            parsed = json.loads(detail)
+            msg = str(((parsed.get("detail") or {}) if isinstance(parsed, dict) else {}).get("message") or "")
+            code = str(((parsed.get("detail") or {}) if isinstance(parsed, dict) else {}).get("code") or "")
+            if code == "invalid_api_key" or "API key ID used as API key" in msg:
+                friendly = (
+                    "ElevenLabs voice key is invalid (stored value is a key ID, not the "
+                    "secret). Put the real key (starts with sk_) in Doppler / credentials "
+                    "and retry Build still video."
+                )
+            elif msg:
+                friendly = f"ElevenLabs HTTP {status_code}: {msg}"
+        except Exception:
+            friendly = f"ElevenLabs HTTP {status_code}: {detail[:200]}"
         return {"ok": False,
-                "error": f"ElevenLabs HTTP {status_code}: {detail}",
+                "error": friendly,
                 "speaker": speaker, "voice_id": profile["voice_id"]}
     elapsed_call = time.time() - t0
     print(

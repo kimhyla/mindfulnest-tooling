@@ -98,6 +98,39 @@ def test_tts_regen_writes_hot_dir_skips_dropbox_state(tmp_path: Path, monkeypatc
     assert found.resolve() == hot_mp3.resolve()
 
 
+def test_tts_regen_invalid_api_key_is_logged_and_friendly(tmp_path: Path, monkeypatch) -> None:
+    import tools.production_server as ps
+
+    app = MagicMock()
+    app.event_dir = tmp_path / "Event_6"
+    app.event_dir.mkdir()
+    app.storyboard_stem = ""
+    app.state = MagicMock()
+
+    body = (
+        b'{"detail":{"type":"authentication_error","code":"invalid_api_key",'
+        b'"message":"API key ID used as API key - only valid API keys can be used."}}'
+    )
+    monkeypatch.setattr(
+        "kling_startend_pipeline.robust_https_request",
+        lambda **_k: (400, body),
+    )
+    result = ps._tts_regenerate_for_beat(
+        app,
+        "bg_arc1_event6_post_beat_01",
+        "hello",
+        "not-a-real-key",
+        video_role="resolution",
+        speaker_override="Tessa",
+        storyboard_beat_id="beat_01",
+        voice_profile_override={"voice_id": "cgSgspJ2msm6clMCkdW9"},
+        persist_production_state=False,
+    )
+    assert result["ok"] is False
+    assert "sk_" in result["error"]
+    assert "key ID" in result["error"]
+
+
 def test_resolve_still_tts_prefers_hot_over_missing_dropbox(tmp_path: Path, monkeypatch) -> None:
     hot = tmp_path / "hot"
     monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
