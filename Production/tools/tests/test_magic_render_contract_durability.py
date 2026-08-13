@@ -552,6 +552,12 @@ class MagicStyleResolverTests(unittest.TestCase):
         self.assertLess(resolve_idx, bind_idx)
         magic_btn = BEAT_MAGIC_TSX.read_text()
         self.assertIn("resolveBgMagicPreviewDiskPath", magic_btn)
+        # Resolve helper must NOT return /files fallback (gray 0:00 class).
+        helper = text.split("const resolveMagicHotPreviewUrl", 1)[1].split(
+            "useEffect(() => {", 1,
+        )[0]
+        self.assertIn("return null", helper)
+        self.assertNotIn("return filesUrl", helper)
 
     def test_stitch_export_uses_magic_on_beat_contract(self):
         text = (TOOLS / "beat_generator.py").read_text()

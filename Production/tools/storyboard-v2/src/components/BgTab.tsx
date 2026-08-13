@@ -4095,21 +4095,23 @@ function BeatGenCard({
     const rel = kind === 'still' ? beat.magic_still_path : beat.magic_video_path;
     const disk = resolveBgMagicPreviewDiskPath(rel, eventId);
     if (!disk) return null;
+    // MAGIC_PREVIEW_HOT_SERVE_V1 — ONLY bind /api/media/playback/… (APFS).
+    // Never return a /files URL: that reintroduces gray 0:00 during deploy
+    // restarts / Dropbox storms (Event_6 2026-08-12 hard-refresh regression).
     const truth = await resolveClipPlaybackTruth(disk);
     if (truth?.playbackUrl) return truth.playbackUrl;
-    // Legacy clips produced before warm-on-write: poke /files to materialize
-    // APFS, then resolve again so <video> binds /api/media/playback/… not cold Dropbox.
+    // Legacy clips: poke /files only to warm cache, then resolve again.
     const filesUrl = kind === 'still'
       ? resolveBgMagicStillPreviewUrl(beat, eventId)
       : resolveBgMagicVideoPreviewUrl(beat, eventId);
     if (filesUrl) {
       try {
         await fetch(filesUrl, { method: 'GET', headers: { Range: 'bytes=0-1' } });
-      } catch { /* warm best-effort */ }
+      } catch { /* warm best-effort during server restart */ }
       const warmed = await resolveClipPlaybackTruth(disk);
       if (warmed?.playbackUrl) return warmed.playbackUrl;
     }
-    return filesUrl;
+    return null;
   }, [
     beat.magic_still_path,
     beat.magic_video_path,
@@ -4589,7 +4591,9 @@ function BeatGenCard({
         ) : (
           <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
             <p class="mn-dim">
-              {magicPreviewResolving ? 'Warming magic preview…' : 'Magic preview unavailable — retry Preview magic.'}
+              {magicPreviewResolving
+                ? 'Warming magic preview…'
+                : 'Magic preview not ready (server may be restarting) — click Preview magic again.'}
             </p>
           </div>
         )
@@ -4608,7 +4612,9 @@ function BeatGenCard({
         ) : (
           <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
             <p class="mn-dim">
-              {magicPreviewResolving ? 'Warming magic preview…' : 'Magic preview unavailable — retry Preview magic.'}
+              {magicPreviewResolving
+                ? 'Warming magic preview…'
+                : 'Magic preview not ready (server may be restarting) — click Preview magic again.'}
             </p>
           </div>
         )
@@ -4626,7 +4632,9 @@ function BeatGenCard({
         ) : (
           <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-video-${index}`}>
             <p class="mn-dim">
-              {magicPreviewResolving ? 'Warming magic preview…' : 'Magic preview unavailable — retry Preview magic.'}
+              {magicPreviewResolving
+                ? 'Warming magic preview…'
+                : 'Magic preview not ready (server may be restarting) — click Preview magic again.'}
             </p>
           </div>
         )
