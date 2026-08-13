@@ -9,6 +9,7 @@ video_path; client Web Audio preview (superseded for event slots by FF-036).
 from __future__ import annotations
 
 import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -396,6 +397,19 @@ def _commit_playback_file(src: Path, dest: Path) -> None:
     copy_file_durable(src, dest)
 
 
+def _bake_scratch_dir(h) -> Path:
+    """Normalize/mix scratch must not be Dropbox stitch_editor_cache."""
+    from lib.ffmpeg_io import path_is_cloud_storage_backed  # noqa: PLC0415
+
+    cache = Path(h._stitch_cache_dir())
+    if not path_is_cloud_storage_backed(cache):
+        cache.mkdir(parents=True, exist_ok=True)
+        return cache
+    d = Path(tempfile.gettempdir()) / "mn_ffmpeg_scratch" / "stitch_bake"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def bake_slot_playback_mp4(
     h,
     slot: dict,
@@ -416,7 +430,7 @@ def bake_slot_playback_mp4(
     if not dry_video_path.is_file():
         raise FileNotFoundError(f"dry export missing: {dry_video_path}")
 
-    cache_dir = h._stitch_cache_dir()
+    cache_dir = _bake_scratch_dir(h)
     speech_src = _prepare_dry_concat_for_slot_bake(h, dry_video_path, cache_dir)
     baked_src = speech_src
     if slot_has_playback_mix_layers(slot):

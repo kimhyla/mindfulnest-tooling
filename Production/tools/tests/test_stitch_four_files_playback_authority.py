@@ -105,6 +105,18 @@ def test_assembled_media_commits_never_use_shutil_copy2() -> None:
         assert "copy_file_durable" in text, path.name
 
 
+def test_bake_scratch_dir_leaves_dropbox_cache() -> None:
+    from server_handlers.stitch_slot_playback import _bake_scratch_dir
+
+    h = MagicMock()
+    h._stitch_cache_dir.return_value = Path(
+        "/Users/me/Library/CloudStorage/Dropbox/Production/stitch_editor_cache",
+    )
+    d = _bake_scratch_dir(h)
+    assert "CloudStorage" not in str(d)
+    assert "mn_ffmpeg_scratch" in str(d)
+
+
 def test_bake_slot_playback_commits_cloud_dest(tmp_path: Path) -> None:
     """Event_6 job 58c02a2d: concat ok, shutil.copy2 onto Dropbox assembled → EDEADLK."""
     dry = tmp_path / "dry.mp4"

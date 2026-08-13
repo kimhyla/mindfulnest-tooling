@@ -9,6 +9,44 @@ import pytest
 from lib import ffmpeg_io as fio
 
 
+def test_copy_file_durable_cloud_dest_never_os_replace(tmp_path: Path, monkeypatch) -> None:
+    """Event_6 job 94b7e1f4: os.replace onto assembled/ → EDEADLK after concat."""
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"playback-bytes")
+    dest = tmp_path / "CloudStorage" / "Dropbox" / "assembled" / "resolution_playback.mp4"
+    dest.parent.mkdir(parents=True)
+
+    def boom_replace(*_a, **_k):
+        raise AssertionError("os.replace must not run onto Dropbox File Provider")
+
+    monkeypatch.setattr(fio.os, "replace", boom_replace)
+    fio.copy_file_durable(src, dest)
+    assert dest.read_bytes() == b"playback-bytes"
+
+
+def test_copy_file_durable_cloud_retries_errno11_on_write(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"ok")
+    dest = tmp_path / "CloudStorage" / "Dropbox" / "out.bin"
+    dest.parent.mkdir(parents=True)
+    calls = {"n": 0}
+    real_chunked = fio._copy_file_chunked
+
+    def flaky(s, d, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError(11, "Resource deadlock avoided")
+        return real_chunked(s, d, **kwargs)
+
+    monkeypatch.setattr(fio, "_copy_file_chunked", flaky)
+    monkeypatch.setattr(fio.time, "sleep", lambda _s: None)
+    fio.copy_file_durable(src, dest)
+    assert dest.read_bytes() == b"ok"
+    assert calls["n"] == 2
+
+
 def test_path_is_cloud_storage_backed_detects_dropbox():
     p = "/Users/me/Library/CloudStorage/Dropbox/Production/Event_2/foo.mp4"
     assert fio.path_is_cloud_storage_backed(p) is True
