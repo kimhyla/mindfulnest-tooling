@@ -10,6 +10,8 @@ CROPPER="${REPO_ROOT}/Production/tools/server_handlers/cropper.py"
 META_TEST="${REPO_ROOT}/Production/tools/tests/test_cr_library_metadata_only.py"
 TEST="${REPO_ROOT}/Production/tools/tests/test_event_library_scoping.py"
 APP_CTX_TEST="${REPO_ROOT}/Production/tools/tests/test_app_context_library_roots.py"
+HOT_SERVE_TEST="${REPO_ROOT}/Production/tools/tests/test_media_hot_serve_dropbox_durability.py"
+PLAYBACK_CACHE_TEST="${REPO_ROOT}/Production/tools/tests/test_media_playback_cache.py"
 SMOKE="${SCRIPT_DIR}/smoke_per_event_library.sh"
 
 fail() { echo "[per-event-library-durability] FAIL: $1" >&2; exit 1; }
@@ -20,6 +22,8 @@ fail() { echo "[per-event-library-durability] FAIL: $1" >&2; exit 1; }
 [[ -f "$META_TEST" ]] || fail "missing test_cr_library_metadata_only.py"
 [[ -f "$TEST" ]] || fail "missing test_event_library_scoping.py"
 [[ -f "$APP_CTX_TEST" ]] || fail "missing test_app_context_library_roots.py"
+[[ -f "$HOT_SERVE_TEST" ]] || fail "missing test_media_hot_serve_dropbox_durability.py"
+[[ -f "$PLAYBACK_CACHE_TEST" ]] || fail "missing test_media_playback_cache.py"
 [[ -x "$SMOKE" ]] || fail "missing smoke_per_event_library.sh"
 
 grep -q 'library/images' "$PATHS" \
@@ -36,6 +40,25 @@ grep -q 'CR_THUMB_HOT_SERVE_V1' "$CROPPER" \
   || fail "cropper thumb must hot-serve before PIL decode (CR_THUMB_HOT_SERVE_V1)"
 grep -q 'ensure_hot_serve_file' "$CROPPER" \
   || fail "cropper thumb must call ensure_hot_serve_file"
+# Cold-miss must short-materialize (same class as /files). ``never`` → permanent
+# 503 broken Library tiles for uncached Dropbox stills.
+thumb_block="$(python3 - "$CROPPER" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+thumb = text.split("def handle_cr_thumb", 1)[1].split("def handle_cr_library", 1)[0]
+print(thumb)
+PY
+)"
+echo "$thumb_block" | grep -q 'dropbox_probe="short"' \
+  || fail "handle_cr_thumb cold miss must use dropbox_probe=short"
+if echo "$thumb_block" | grep -q 'dropbox_probe="never"'; then
+  fail "handle_cr_thumb must not use dropbox_probe=never (broken Library tiles)"
+fi
+grep -q 'CR_LIBRARY_THUMB_WARM_V1' "$CROPPER" \
+  || fail "library list must schedule APFS thumb warm (CR_LIBRARY_THUMB_WARM_V1)"
+grep -q 'def _schedule_library_thumb_warm' "$CROPPER" \
+  || fail "cropper missing _schedule_library_thumb_warm"
 grep -q 'Canonical registry images are intentionally excluded' "$CROPPER" \
   || fail "cropper must exclude canonical registry from library grid"
 grep -q 'apply_to_all_events' "${REPO_ROOT}/Production/canonical_image_registry.json" \
@@ -43,7 +66,16 @@ grep -q 'apply_to_all_events' "${REPO_ROOT}/Production/canonical_image_registry.
 grep -q 'apply_to_all_events' "$EVENT_LIB" \
   || fail "event_library canonical_meta_for_arc must honor apply_to_all_events"
 
-python3 -m pytest "$TEST" "$APP_CTX_TEST" "$META_TEST" -q
+# HOT_SERVE_TRUE_CACHE_FIRST_V2 + CR_LIBRARY_THUMB_WARM_V1 — lock the class that
+# left Library tiles on permanent 503 when thumbs used dropbox_probe=never, and
+# the ThreadPoolExecutor shutdown hang that pinned HTTP workers on cold miss.
+python3 -m pytest \
+  "$TEST" \
+  "$APP_CTX_TEST" \
+  "$META_TEST" \
+  "$HOT_SERVE_TEST" \
+  "$PLAYBACK_CACHE_TEST" \
+  -q
 
 if curl -sf --max-time 5 "http://localhost:${MN_SERVER_PORT:-5111}/api/event/current" >/dev/null 2>&1; then
   export MN_SERVER_PORT="${MN_SERVER_PORT:-5111}"

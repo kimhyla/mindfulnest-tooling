@@ -58,6 +58,25 @@ def test_files_resolve_tries_apfs_cache_before_dropbox_realpath() -> None:
     assert cache_idx < drop_idx
 
 
+def test_short_dropbox_probe_does_not_wait_on_executor_shutdown() -> None:
+    """Timeout must free the caller even if File Provider never returns.
+
+    ``with ThreadPoolExecutor`` + fut.result(timeout) still hangs on
+    ``shutdown(wait=True)`` when the worker thread is stuck in Dropbox I/O.
+    """
+    text = CACHE.read_text(encoding="utf-8")
+    short = text.split("def _ensure_hot_serve_dropbox_short", 1)[1].split(
+        "def playback_cache_token", 1,
+    )[0]
+    assert "shutdown(wait=False" in short
+    assert "cancel_futures=True" in short
+    # Context-manager form reintroduces the hang class.
+    assert "with concurrent.futures.ThreadPoolExecutor" not in short
+    assert "_materialize_open_first" in short
+    assert "def _materialize_open_first" in text
+    assert "LIBRARY_THUMB_DROPBOX_PROBE_S" in text
+
+
 def test_request_path_ensure_uses_short_dropbox_probe_on_cold_miss() -> None:
     """Warm hits skip Dropbox; cold miss must short-materialize (not never).
 
@@ -87,13 +106,49 @@ def test_phase_lipsync_finalize_warms_hot_serve_cache() -> None:
     assert "_warm_phase_lipsync_hot_serve(out_path)" in b
 
 
+def test_magic_still_and_video_warm_hot_serve_on_write() -> None:
+    """MAGIC_PREVIEW_HOT_SERVE_V1 — new magic MP4 must warm APFS before Preview.
+
+    Cold Dropbox /files on first Preview Magic left a gray 0:00 player (Event_6
+    resolution beat_01 2026-08-12). Same class as Phase A lipsync warm-on-write.
+    """
+    bg = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    assert "def _warm_magic_delivery_hot_serve" in bg
+    assert "MAGIC_PREVIEW_HOT_SERVE_V1" in bg
+    still = bg.split("def handle_magic_still", 1)[1].split("def handle_magic_video", 1)[0]
+    assert "_warm_magic_delivery_hot_serve" in still
+    video = bg.split("def handle_magic_video", 1)[1].split(
+        "def handle_storyboard_video_frame", 1,
+    )[0]
+    assert "_warm_magic_delivery_hot_serve" in video
+
+
+def test_cr_library_schedules_apfs_thumb_warm() -> None:
+    """Library list must background-warm stills so tiles are not all cold."""
+    text = CROPPER.read_text(encoding="utf-8")
+    assert "CR_LIBRARY_THUMB_WARM_V1" in text
+    assert "def _schedule_library_thumb_warm" in text
+    lib = text.split("def handle_cr_library", 1)[1].split(
+        "def _store_cr_library_cache", 1,
+    )[0]
+    assert "_schedule_library_thumb_warm" in lib
+
+
 def test_cr_thumb_warm_cache_before_dropbox_realpath() -> None:
+    """Library thumbs: warm APFS first; cold miss uses short probe (not never).
+
+    ``never`` left uncached Dropbox library stills on permanent 503 → broken
+    Library tiles (same class as /files black video before short probe).
+    """
     text = CROPPER.read_text(encoding="utf-8")
     thumb = text.split("def handle_cr_thumb", 1)[1].split(
         "def handle_cr_library", 1,
     )[0]
     assert "find_cached_by_basename" in thumb
-    assert 'dropbox_probe="never"' in thumb
+    assert 'dropbox_probe="short"' in thumb
+    assert 'dropbox_probe="never"' not in thumb
+    assert "LIBRARY_THUMB_DROPBOX_PROBE_S" in thumb
+    assert "dropbox_probe_timeout_s" in thumb
     # Production Dropbox thumbs use soft abspath first; realpath only as fallback.
     soft_idx = thumb.index("under_drop")
     real_idx = thumb.index("require_realpath_under_project")

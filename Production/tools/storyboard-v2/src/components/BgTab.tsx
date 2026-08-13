@@ -70,6 +70,7 @@ import { ensureStitchJobSession } from '../state/stitchJobSessionStore';
 import { stitcherRefreshTick } from '../state/refreshSignals';
 import {
   BeatMagicButtons,
+  resolveBgMagicPreviewDiskPath,
   resolveBgMagicStillPreviewUrl,
   resolveBgMagicVideoPreviewUrl,
   resolveBgMagicStillSourcePath,
@@ -3872,7 +3873,11 @@ function BgMagicStillPreview({
     if (!vid || !aud) return;
     try { aud.currentTime = 0; } catch { /* defensive */ }
     try { vid.currentTime = 0; } catch { /* defensive */ }
-    await Promise.all([vid.play(), aud.play().catch(() => {})]);
+    // MAGIC_PREVIEW_HOT_SERVE_V1 — never reject the whole preview if TTS 404s.
+    await Promise.all([
+      vid.play().catch(() => {}),
+      aud.play().catch(() => {}),
+    ]);
   }, []);
 
   const syncPause = useCallback(() => {
@@ -3882,7 +3887,26 @@ function BgMagicStillPreview({
 
   useLayoutEffect(() => {
     if (!autoPlayOnMount) return;
-    void syncPlay();
+    const vid = videoRef.current;
+    if (!vid) return;
+    let cancelled = false;
+    const run = async () => {
+      // Wait for warm playback_url bytes before play() — avoids gray 0:00 race.
+      if (vid.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            vid.removeEventListener('loadeddata', done);
+            vid.removeEventListener('error', done);
+            resolve();
+          };
+          vid.addEventListener('loadeddata', done);
+          vid.addEventListener('error', done);
+        });
+      }
+      if (!cancelled) await syncPlay();
+    };
+    void run();
+    return () => { cancelled = true; };
   }, [autoPlayOnMount, videoUrl, storyboardBeatId, syncPlay]);
 
   const onVideoPlay = () => { void syncPlay(); };
@@ -3901,7 +3925,7 @@ function BgMagicStillPreview({
       <video
         ref={videoRef}
         controls
-        preload="metadata"
+        preload="auto"
         src={videoUrl}
         class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
         onPlay={onVideoPlay}
@@ -4060,6 +4084,50 @@ function BeatGenCard({
   const magicVideoPreviewUrl = resolveBgMagicVideoPreviewUrl(beat, eventId);
   const [magicPreviewMode, setMagicPreviewMode] = useState<'still' | 'video' | null>(null);
   const [stillPreviewAutoplay, setStillPreviewAutoplay] = useState(false);
+  // MAGIC_PREVIEW_HOT_SERVE_V1 — bind <video> only after playback_resolve (APFS).
+  const [magicStillHotUrl, setMagicStillHotUrl] = useState<string | null>(null);
+  const [magicVideoHotUrl, setMagicVideoHotUrl] = useState<string | null>(null);
+  const [magicPreviewResolving, setMagicPreviewResolving] = useState(false);
+
+  const resolveMagicHotPreviewUrl = useCallback(async (
+    kind: 'still' | 'video',
+  ): Promise<string | null> => {
+    const rel = kind === 'still' ? beat.magic_still_path : beat.magic_video_path;
+    const disk = resolveBgMagicPreviewDiskPath(rel, eventId);
+    if (!disk) return null;
+    // MAGIC_PREVIEW_HOT_SERVE_V1 — ONLY bind /api/media/playback/… (APFS).
+    // Never return a /files URL: that reintroduces gray 0:00 during deploy
+    // restarts / Dropbox storms (Event_6 2026-08-12 hard-refresh regression).
+    const truth = await resolveClipPlaybackTruth(disk);
+    if (truth?.playbackUrl) return truth.playbackUrl;
+    // Legacy clips: poke /files only to warm cache, then resolve again.
+    const filesUrl = kind === 'still'
+      ? resolveBgMagicStillPreviewUrl(beat, eventId)
+      : resolveBgMagicVideoPreviewUrl(beat, eventId);
+    if (filesUrl) {
+      try {
+        await fetch(filesUrl, { method: 'GET', headers: { Range: 'bytes=0-1' } });
+      } catch { /* warm best-effort during server restart */ }
+      const warmed = await resolveClipPlaybackTruth(disk);
+      if (warmed?.playbackUrl) return warmed.playbackUrl;
+    }
+    return null;
+  }, [
+    beat.magic_still_path,
+    beat.magic_video_path,
+    beat.magic_still_path_exists,
+    beat.magic_video_path_exists,
+    eventId,
+  ]);
+
+  useEffect(() => {
+    // Redo magic writes a new leaf — drop stale hot URLs.
+    setMagicStillHotUrl(null);
+    setMagicVideoHotUrl(null);
+    setMagicPreviewMode(null);
+    setMagicPreviewResolving(false);
+  }, [beat.magic_still_path, beat.magic_video_path]);
+
   const generationMode = effectiveGenerationMode(beat, eventId);
   const charRefDisplay = displayCharRef(beat);
   const bgRefDisplay = displayBgRef(beat, stillInsert);
@@ -4482,49 +4550,94 @@ function BeatGenCard({
         onPreviewMagicStill={magicStillPreviewUrl ? () => {
           setStillPreviewAutoplay(true);
           setMagicPreviewMode('still');
+          setMagicStillHotUrl(null);
+          setMagicPreviewResolving(true);
+          void resolveMagicHotPreviewUrl('still').then((url) => {
+            setMagicStillHotUrl(url);
+            setMagicPreviewResolving(false);
+          });
         } : undefined}
         onPreviewMagicVideo={magicVideoPreviewUrl ? () => {
           setMagicPreviewMode('video');
-          requestAnimationFrame(() => {
-            document.querySelector(`[data-testid="bg-magic-preview-video-${index}"]`)
-              ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          setMagicVideoHotUrl(null);
+          setMagicPreviewResolving(true);
+          void resolveMagicHotPreviewUrl('video').then((url) => {
+            setMagicVideoHotUrl(url);
+            setMagicPreviewResolving(false);
+            requestAnimationFrame(() => {
+              document.querySelector(`[data-testid="bg-magic-preview-video-${index}"]`)
+                ?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            });
           });
         } : undefined}
         onMagicCleared={() => {
           setMagicPreviewMode(null);
           setStillPreviewAutoplay(false);
+          setMagicStillHotUrl(null);
+          setMagicVideoHotUrl(null);
+          setMagicPreviewResolving(false);
           onRefresh();
         }}
       />
       {magicPreviewMode === 'still' && magicStillPreviewUrl && beat.storyboard_beat_id ? (
-        <BgMagicStillPreview
-          index={index}
-          videoUrl={magicStillPreviewUrl}
-          storyboardBeatId={beat.storyboard_beat_id}
-          eventId={eventId}
-          autoPlayOnMount={stillPreviewAutoplay}
-        />
+        magicStillHotUrl ? (
+          <BgMagicStillPreview
+            index={index}
+            videoUrl={magicStillHotUrl}
+            storyboardBeatId={beat.storyboard_beat_id}
+            eventId={eventId}
+            autoPlayOnMount={stillPreviewAutoplay}
+          />
+        ) : (
+          <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
+            <p class="mn-dim">
+              {magicPreviewResolving
+                ? 'Warming magic preview…'
+                : 'Magic preview not ready (server may be restarting) — click Preview magic again.'}
+            </p>
+          </div>
+        )
       ) : null}
       {magicPreviewMode === 'still' && magicStillPreviewUrl && !beat.storyboard_beat_id ? (
-        <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
-          <video
-            controls
-            preload="metadata"
-            src={magicStillPreviewUrl}
-            class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
-          />
-          <p class="mn-dim">No storyboard beat id — TTS preview unavailable.</p>
-        </div>
+        magicStillHotUrl ? (
+          <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
+            <video
+              controls
+              preload="auto"
+              src={magicStillHotUrl}
+              class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
+            />
+            <p class="mn-dim">No storyboard beat id — TTS preview unavailable.</p>
+          </div>
+        ) : (
+          <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-still-${index}`}>
+            <p class="mn-dim">
+              {magicPreviewResolving
+                ? 'Warming magic preview…'
+                : 'Magic preview not ready (server may be restarting) — click Preview magic again.'}
+            </p>
+          </div>
+        )
       ) : null}
       {magicPreviewMode === 'video' && magicVideoPreviewUrl ? (
-        <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-video-${index}`}>
-          <video
-            controls
-            preload="metadata"
-            src={magicVideoPreviewUrl}
-            class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
-          />
-        </div>
+        magicVideoHotUrl ? (
+          <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-video-${index}`}>
+            <video
+              controls
+              preload="auto"
+              src={magicVideoHotUrl}
+              class={PLAYBACK_VIDEO_ANTI_BANDING_CLASS}
+            />
+          </div>
+        ) : (
+          <div class="mn-bg-magic-preview" data-testid={`bg-magic-preview-video-${index}`}>
+            <p class="mn-dim">
+              {magicPreviewResolving
+                ? 'Warming magic preview…'
+                : 'Magic preview not ready (server may be restarting) — click Preview magic again.'}
+            </p>
+          </div>
+        )
       ) : null}
 
       {/* 3-options row — 1×3 layout (NOT 3×3 matrix) */}
