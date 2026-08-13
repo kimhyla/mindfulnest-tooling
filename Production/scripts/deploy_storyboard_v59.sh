@@ -92,6 +92,7 @@ fi
 # ----------------------------------------------------------------
 DEPLOY_DIRTY_IGNORE_PATTERNS=(
     '.last_deploy'
+    '.deploy_pin'
     '.proof_curl.err'
     'doppler.env'
     'Production/Event_e2e_fixture/'
@@ -127,6 +128,65 @@ DEPLOY_DIRTY_IGNORE_PATTERNS=(
 ) || exit 1
 echo "[deploy] (pre-A) git-clean gate ok — tooling tree clean"
 
+# ----------------------------------------------------------------
+# DEPLOY_PIN_V1 — freeze git identity before npm build / rsync / verify.
+# Later `git rev-parse HEAD` is forbidden: another agent can switch the
+# checkout and make a live fleet look like a failed deploy.
+# ----------------------------------------------------------------
+PIN_PY="$SRC_TOOLING/Production/tools/deploy_pin.py"
+if [[ -z "${MN_EXPECT_BUILD_SHA:-}" ]]; then
+    MN_EXPECT_BUILD_SHA="$(python3 "$PIN_PY" capture --tooling "$SRC_TOOLING")"
+fi
+export MN_EXPECT_BUILD_SHA
+export MN_DEPLOY_PINNED_SHA="${MN_DEPLOY_PINNED_SHA:-$MN_EXPECT_BUILD_SHA}"
+export BUILD_SHA="$MN_EXPECT_BUILD_SHA"
+python3 - "$SRC_TOOLING" "$MN_EXPECT_BUILD_SHA" <<'PY'
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(sys.argv[1]) / "Production" / "tools"))
+from deploy_pin import pin_file_for, write_pin
+write_pin(pin_file_for(Path(sys.argv[1])), sys.argv[2])
+PY
+echo "[deploy] (pre-A.1) DEPLOY_PIN_V1 sha=$MN_EXPECT_BUILD_SHA"
+
+# Early event id so we can compare UI source vs the live Dropbox HTML sha.
+_PIN_EVENT_DIR="${_ARG_EVENT_DIR:-${MN_EVENT_DIR:-}}"
+if [[ -z "$_PIN_EVENT_DIR" ]]; then
+    _PIN_EVENT_DIR="Production/Event_1"
+fi
+if [[ "$_PIN_EVENT_DIR" == "$DEST_DROPBOX/"* ]]; then
+    _PIN_EVENT_DIR="${_PIN_EVENT_DIR#"$DEST_DROPBOX/"}"
+elif [[ "$_PIN_EVENT_DIR" == /* && "$_PIN_EVENT_DIR" =~ /Production/(Event_[^/]+)$ ]]; then
+    _PIN_EVENT_DIR="Production/${BASH_REMATCH[1]}"
+fi
+_PIN_EVENT_ID="$(basename "$_PIN_EVENT_DIR")"
+_LIVE_HTML="$DEST_DROPBOX/Production/${_PIN_EVENT_ID}/storyboard_v59_prod.html"
+_LIVE_BUNDLE_SHA=""
+if [[ -f "$_LIVE_HTML" ]]; then
+    _LIVE_BUNDLE_SHA="$(python3 "$PIN_PY" bundle-sha --html "$_LIVE_HTML")"
+fi
+_BUNDLE_STATUS="changed"
+if [[ "${MN_DEPLOY_FORCE_FLEET_RESTART:-}" == "1" ]]; then
+    echo "[deploy] (pre-A.1) MN_DEPLOY_FORCE_FLEET_RESTART=1 — treating UI bundle as changed"
+else
+    _BUNDLE_STATUS="$(python3 "$PIN_PY" bundle-changed --tooling "$SRC_TOOLING" --from-sha "${_LIVE_BUNDLE_SHA:-}" --to-sha "$MN_EXPECT_BUILD_SHA")"
+fi
+DIST_HTML_SRC="$SRC_TOOLING/Production/tools/storyboard-v2/dist/index.html"
+# STORYBOARD_FLEET_RESTART_SKIP_WHEN_BUNDLE_UNCHANGED_V1 — Python-only deploys
+# must not SIGKILL :5111–:5117. Skip rebuild too so HTML sha stays put and
+# open tabs do not trip build-sha drift auto-reload.
+if [[ "$_BUNDLE_STATUS" == "unchanged" && -f "$DIST_HTML_SRC" ]]; then
+    export MN_DEPLOY_SKIP_FLEET_RESTART=1
+    if [[ -z "${MN_DEPLOY_SKIP_BUILD:-}" ]]; then
+        export MN_DEPLOY_SKIP_BUILD=1
+        echo "[deploy] (pre-A.1) UI source unchanged vs live ${_LIVE_BUNDLE_SHA:-none} — skip npm rebuild + fleet restart"
+    else
+        echo "[deploy] (pre-A.1) UI source unchanged — skip fleet restart (build already skipped)"
+    fi
+else
+    echo "[deploy] (pre-A.1) UI bundle ${_BUNDLE_STATUS} — npm build + fleet restart"
+fi
+
 UTC_TS=$(date -u +%Y%m%dT%H%M%SZ)
 SNAPSHOT_DIR="$DEST_DROPBOX/.deploy_backups/$UTC_TS"
 LOG_DIR="$SNAPSHOT_DIR/logs"
@@ -146,10 +206,10 @@ echo "  snap: $SNAPSHOT_DIR"
 # already built dist).
 # ----------------------------------------------------------------
 if [[ -z "${MN_DEPLOY_SKIP_BUILD:-}" ]]; then
-    echo "[deploy] (a-pre) npm run build ..."
+    echo "[deploy] (a-pre) npm run build (BUILD_SHA=$MN_EXPECT_BUILD_SHA) ..."
     (
         cd "$SRC_TOOLING/Production/tools/storyboard-v2"
-        npm run build 2>&1 | tail -10
+        BUILD_SHA="$MN_EXPECT_BUILD_SHA" npm run build 2>&1 | tail -10
     )
 fi
 
@@ -529,9 +589,14 @@ echo "[deploy] (f) launchd server ready on :${SERVER_PORT}"
 # ----------------------------------------------------------------
 # (f.5) STORYBOARD_FLEET_RESTART_V1 — reload bundle on every dedicated port
 # Partial deploy class: fanout updated Event_5 only while :5111–:5114 stayed stale.
+# STORYBOARD_FLEET_RESTART_SKIP_WHEN_BUNDLE_UNCHANGED_V1 — Python-only must
+# not SIGKILL the fleet. Target event already restarted in (f).
 # ----------------------------------------------------------------
 FLEET_RESTART_SCRIPT="$SRC_TOOLING/Production/scripts/restart_storyboard_fleet.sh"
-if [[ -x "$FLEET_RESTART_SCRIPT" ]]; then
+if [[ "${MN_DEPLOY_SKIP_FLEET_RESTART:-}" == "1" ]]; then
+    echo "[deploy] (f.5) skip fleet restart — UI source unchanged (STORYBOARD_FLEET_RESTART_SKIP_WHEN_BUNDLE_UNCHANGED_V1); $event_id already restarted"
+    export MN_FLEET_PARITY_LIVE_EVENTS="${MN_FLEET_PARITY_LIVE_EVENTS:-$event_id}"
+elif [[ -x "$FLEET_RESTART_SCRIPT" ]]; then
     echo "[deploy] (f.5) fleet restart — all dedicated Event_N servers (STORYBOARD_FLEET_RESTART_V1) ..."
     MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" \
         bash "$FLEET_RESTART_SCRIPT" || exit 1
@@ -542,12 +607,15 @@ else
 fi
 
 # ----------------------------------------------------------------
-# (g) Post-deploy curl smoke — verify served HTML carries fresh build-sha
+# (g) Post-deploy curl smoke — verify served HTML carries the baked bundle sha
 # SERVER_PORT already set from event_id (EVENT_DEDICATED_PORT_V1).
+# DEPLOY_PIN_V1: never re-read git HEAD here. HTML may keep a prior bundle
+# sha on Python-only deploys; smoke the sha actually in dist/.
 # ----------------------------------------------------------------
-BUILD_SHA="$(cd "$SRC_TOOLING" && git rev-parse --short HEAD 2>/dev/null || git log -1 --pretty=%h 2>/dev/null || true)"
+BUNDLE_SHA="$(python3 "$PIN_PY" bundle-sha --html "$DIST")"
+BUILD_SHA="${BUNDLE_SHA:-$MN_EXPECT_BUILD_SHA}"
 if [[ -z "$BUILD_SHA" ]]; then
-    echo "FATAL: could not determine BUILD_SHA from git rev-parse or git log" >&2
+    echo "FATAL: could not determine BUILD_SHA from dist build-sha meta or deploy pin" >&2
     exit 1
 fi
 echo "[deploy] (g) post-deploy curl smoke: probing http://localhost:${SERVER_PORT}/ for build-sha=$BUILD_SHA"
@@ -577,8 +645,8 @@ echo "[deploy] (g) curl smoke ok — server serving fresh build (sha=$BUILD_SHA,
 # ----------------------------------------------------------------
 FLEET_PARITY_SCRIPT="$SRC_TOOLING/Production/scripts/verify_storyboard_fleet_bundle_parity.sh"
 if [[ -x "$FLEET_PARITY_SCRIPT" ]]; then
-    echo "[deploy] (g.2) fleet bundle parity (Dropbox fanout + :5111–:5117 live) ..."
-    MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" MN_EXPECT_BUILD_SHA="$BUILD_SHA" \
+    echo "[deploy] (g.2) fleet bundle parity (Dropbox fanout + live${MN_FLEET_PARITY_LIVE_EVENTS:+ target-only $MN_FLEET_PARITY_LIVE_EVENTS}) ..."
+    MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" MN_EXPECT_BUNDLE_SHA="$BUILD_SHA" \
         bash "$FLEET_PARITY_SCRIPT" || exit 1
     echo "[deploy] (g.2) fleet bundle parity ok"
 else

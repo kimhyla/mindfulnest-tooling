@@ -171,3 +171,6 @@ image_selector_cropper.html
 image_selector_cropper_*.html
 tts_review.html
 tts_review_*.html
+
+# Frozen deploy identity (DEPLOY_PIN_V1) — machine-local, never commit
+.deploy_pin

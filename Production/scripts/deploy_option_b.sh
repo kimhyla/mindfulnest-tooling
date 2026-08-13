@@ -58,11 +58,19 @@ export MN_DROPBOX_ROOT="$DEST_DROPBOX"
 export MN_EVENT_DIR="${DEST_DROPBOX}/Production/${EVENT_ID}"
 export MN_SERVER_PORT="$PORT"
 
+# DEPLOY_PIN_V1 — freeze git identity now. Verify must not re-read HEAD later.
+PIN_PY="$SRC_TOOLING/Production/tools/deploy_pin.py"
+export MN_EXPECT_BUILD_SHA
+MN_EXPECT_BUILD_SHA="$(python3 "$PIN_PY" capture --tooling "$SRC_TOOLING")"
+export MN_DEPLOY_PINNED_SHA="$MN_EXPECT_BUILD_SHA"
+export BUILD_SHA="$MN_EXPECT_BUILD_SHA"
+
 echo "=== STORYBOARD_OPTION_B_V1 deploy ==="
 echo "  tooling:  $SRC_TOOLING"
 echo "  dropbox:  $DEST_DROPBOX"
 echo "  event:    $EVENT_ID"
 echo "  port:     $PORT"
+echo "  pin:      $MN_EXPECT_BUILD_SHA  (DEPLOY_PIN_V1)"
 echo "  url:      $(event_storyboard_url "$EVENT_ID")"
 echo ""
 

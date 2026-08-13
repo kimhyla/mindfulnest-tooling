@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # verify_storyboard_fleet_bundle_parity.sh — STORYBOARD_FLEET_BUNDLE_PARITY_V1
 #
-# Every Production/Event_N/storyboard_v59_prod.html fanout and every live dedicated
-# port must match git HEAD build-sha and carry waveform drag-seek durability markers
-# (WTA + WAVEFORM_DRAG_SEEK_V2) on all Phase A/B waveforms.
+# Every Production/Event_N/storyboard_v59_prod.html fanout and live dedicated
+# ports must match the sha baked into dist/index.html (not live git HEAD —
+# DEPLOY_PIN_V1). Python-only deploys may pin a newer sha than the unchanged
+# bundle. MN_FLEET_PARITY_LIVE_EVENTS=Event_N limits live probes to the
+# restarted target (STORYBOARD_FLEET_RESTART_SKIP_WHEN_BUNDLE_UNCHANGED_V1).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -14,9 +16,11 @@ ROOT="${MN_TOOLING_ROOT:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
 DROPBOX="${MN_DROPBOX_ROOT:-${HOME}/Library/CloudStorage/Dropbox/Claude Mindfulnest Project Files}"
 DIST="${ROOT}/Production/tools/storyboard-v2/dist/index.html"
 
-HEAD="${MN_EXPECT_BUILD_SHA:-$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || true)}"
-[[ -n "$HEAD" ]] || { echo "[fleet-bundle-parity] FATAL: cannot resolve HEAD build-sha" >&2; exit 1; }
 [[ -f "$DIST" ]] || { echo "[fleet-bundle-parity] FATAL: missing dist/index.html" >&2; exit 1; }
+PIN_PY="${ROOT}/Production/tools/deploy_pin.py"
+HEAD="$(python3 "$PIN_PY" bundle-sha --html "$DIST")"
+[[ -n "$HEAD" ]] || HEAD="${MN_EXPECT_BUNDLE_SHA:-}"
+[[ -n "$HEAD" ]] || { echo "[fleet-bundle-parity] FATAL: cannot resolve dist build-sha" >&2; exit 1; }
 
 CANONICAL_SHA="$(shasum -a 256 "$DIST" | awk '{print $1}')"
 
@@ -54,6 +58,11 @@ check_waveform_markers_html() {
 }
 
 FLEET_EVENTS=(Event_1 Event_2 Event_3 Event_4 Event_5 Event_6 Event_7)
+LIVE_EVENTS=("${FLEET_EVENTS[@]}")
+if [[ -n "${MN_FLEET_PARITY_LIVE_EVENTS:-}" ]]; then
+  # shellcheck disable=SC2206
+  LIVE_EVENTS=(${MN_FLEET_PARITY_LIVE_EVENTS})
+fi
 fanout_count=0
 
 echo "[fleet-bundle-parity] HEAD=${HEAD} canonical_sha256=${CANONICAL_SHA:0:12}..."
@@ -77,7 +86,7 @@ done
 live_count=0
 live_tmp="$(mktemp -t mn-fleet-parity.XXXXXX)"
 trap 'rm -f "$live_tmp"' EXIT
-for event_id in "${FLEET_EVENTS[@]}"; do
+for event_id in "${LIVE_EVENTS[@]}"; do
   port="$(event_id_to_port "$event_id")" || continue
   [[ -d "${DROPBOX}/Production/${event_id}" ]] || continue
   if ! curl -sf --max-time 5 "http://localhost:${port}/api/event/current" >/dev/null 2>&1; then
