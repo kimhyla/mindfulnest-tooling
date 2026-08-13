@@ -119,6 +119,19 @@ def _data_root(h) -> Path:
     return runtime_production_root(h.app.event_dir)
 
 
+def _handler_event_dir(h) -> Path:
+    """Pinned event folder for the current request — bind once per handler.
+
+    Nested trim/cut helpers must close over this name. Passing
+    ``event_dir=event_dir`` without this assignment is a NameError
+    (PR #130 wired the kwarg, not the local).
+    """
+    event_dir = Path(getattr(h.app, "event_dir", _data_root(h)))
+    if not event_dir.is_absolute():
+        event_dir = _data_root(h) / event_dir
+    return event_dir
+
+
 # Project-internal modules imported the same way production_server.py does.
 # Handler bodies may reference any of these by bare name.
 from lib.atomic_json_write import atomic_json_write
@@ -1768,6 +1781,25 @@ def handle_magic_video(h, body: dict)-> None:
                    retry_safe=False,
                    extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_output": str(out_path)},
                )
+
+    # STITCH_EXPORT_HEAL_AAC_DRIFT_V1 — video re-encode + audio copy leaves ~50ms
+    # A/V drift (Event_6 resolution Container 1 = 0.052s). Heal the delivery
+    # master before hot-serve so Send to Stitcher does not fail the 50ms gate.
+    try:
+        _libdir = str(Path(__file__).resolve().parent.parent / "credentials_lib")
+        if _libdir not in sys.path:
+            sys.path.insert(0, _libdir)
+        from ffmpeg_stitch import (  # noqa: PLC0415
+            STITCH_EXPORT_NORM_AV_MAX_DRIFT_S,
+            heal_mp4_video_timeline_authority_if_needed,
+        )
+
+        heal_mp4_video_timeline_authority_if_needed(
+            out_path,
+            heal_above_s=STITCH_EXPORT_NORM_AV_MAX_DRIFT_S,
+        )
+    except Exception as _heal_exc:  # noqa: BLE001
+        print(f"[magic_video] WARN timeline-authority heal failed: {_heal_exc}", flush=True)
 
     # MAGIC_PREVIEW_HOT_SERVE_V1 — warm APFS before UI Preview Magic can race Dropbox.
     _warm_magic_delivery_hot_serve(out_path, log_tag="magic_video")
@@ -3909,7 +3941,12 @@ def handle_bg_update_beat(h, body: dict)-> None:
 
 
 def handle_bg_align_element_ref(h, body: dict) -> None:
-    """POST /api/bg/align-element-ref {beat_id} -> canonical Element pose for speaker."""
+    """POST /api/bg/align-element-ref {beat_id} -> canonical Element pose for speaker.
+
+    This is the operator **Use Element pose** recovery button. Locked library
+    uploads are the state that shows the red gate — do not 409; unlock and
+    replace @Image1 with the registered frontal pose.
+    """
     if not h._assert_event_scope(h._scope_body(body), allow_missing=False):
         return
     beat_id = body.get("beat_id")
@@ -3931,17 +3968,13 @@ def handle_bg_align_element_ref(h, body: dict) -> None:
             error_message=f"beat {beat_id} not found",
             retry_safe=False,
         )
-    if beat_probe.get("reference_image_locked") and body.get("force") is not True:
-        return h._send_error_v59(
-            409,
-            error_code="REFERENCE_IMAGE_LOCKED",
-            error_message=(
-                "Char ref is locked to your library upload. Clear the ref first, "
-                "then use Use Element pose — or reconcile will run automatically on O3 submit."
-            ),
-            retry_safe=False,
-        )
     speaker = str(beat_probe.get("speaker") or "").strip()
+    try:
+        from tools import kling_character_registry as _reg
+
+        speaker = _reg.normalize_beat_speaker_for_sidecar(speaker) or speaker
+    except Exception:
+        pass
     try:
         from credentials import load_credentials  # type: ignore
     except ImportError:
@@ -4047,6 +4080,12 @@ def handle_bg_add_element_pose(h, body: dict) -> None:
             )
         if not speaker:
             speaker = (beat.get("speaker") or "").strip()
+    try:
+        from tools import kling_character_registry as _reg
+
+        speaker = _reg.normalize_beat_speaker_for_sidecar(speaker) or speaker
+    except Exception:
+        pass
     if beat:
         from operator_workbench_contract import materialize_char_ref_abs_path
 
@@ -4148,6 +4187,12 @@ def handle_bg_set_element_identity(h, body: dict) -> None:
             )
         if not speaker:
             speaker = (beat.get("speaker") or "").strip()
+    try:
+        from tools import kling_character_registry as _reg
+
+        speaker = _reg.normalize_beat_speaker_for_sidecar(speaker) or speaker
+    except Exception:
+        pass
     if beat:
         from operator_workbench_contract import materialize_char_ref_abs_path
 
@@ -4229,6 +4274,8 @@ def handle_bg_set_element_identity(h, body: dict) -> None:
 
         def _identity_patch(b: dict, _sc: dict) -> None:
             nonlocal thumb_b64, element_char_ref_ok
+            if speaker and b.get("speaker") != speaker:
+                b["speaker"] = speaker
             b["reference_image_locked"] = True
             ref = b.get("reference_image")
             if isinstance(ref, dict) and (ref.get("abs_path") or "") == abs_path:
@@ -7100,7 +7147,8 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
     trim_mode = (
         "option_trim" if use_option_trim else ("cut" if use_cut else "beat_trim")
     )
-    event_label = Path(str(getattr(h.app, "event_dir", "") or "")).name or "unknown"
+    event_dir = _handler_event_dir(h)
+    event_label = event_dir.name or "unknown"
     _bg_o3_trim_audit(
         h,
         "REQUEST",
@@ -7574,6 +7622,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
     try:
         with production_bg_scope_lock():
             rebind_bg_paths_from_app(h.app)
+            event_dir = _handler_event_dir(h)
             sidecar = bg.read_sidecar_for_poll_snapshot(lock_timeout_s=10)
         sidecar = bg._migrate_sidecar(sidecar, heavy_heal=False)
         _, beat = bg.find_beat(sidecar, beat_id)
@@ -7644,6 +7693,7 @@ def handle_bg_kling_o3_trim(h, body: dict) -> None:
                         cut_start_s=cut_start,
                         cut_end_s=cut_end,
                         video_path=req_video_path,
+                        event_dir=event_dir,
                     )
                 except ValueError as exc:
                     _bg_o3_trim_audit(

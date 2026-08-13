@@ -183,10 +183,26 @@ def load_voice_catalog() -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+# Screenplay / prompt labels: ``Arlo:`` ``Lorelai :`` — never registry keys.
+_SPEAKER_SCRIPT_LABEL_RE = re.compile(r"[\s:：.;,]+$")
+
+
+def strip_speaker_script_label(speaker: str) -> str:
+    """Strip trailing script punctuation from a speaker token (``Arlo:`` → ``Arlo``)."""
+    raw = (speaker or "").strip()
+    if not raw:
+        return ""
+    if raw.startswith("[") and raw.endswith("]"):
+        return raw
+    return _SPEAKER_SCRIPT_LABEL_RE.sub("", raw).strip()
+
+
 def _resolve_char_entry(chars: dict, speaker: str) -> dict | None:
     if not speaker:
         return None
-    raw = speaker.strip()
+    raw = strip_speaker_script_label(speaker)
+    if not raw:
+        return None
     alias = _SPEAKER_REGISTRY_ALIAS.get(raw.lower())
     if alias and alias in chars:
         return chars[alias]
@@ -216,8 +232,9 @@ def normalize_beat_speaker_for_sidecar(speaker: str) -> str:
 
     Beat sidecar stores ``Lorelai``; Kling prompts/Elements use ``Loral``.
     Display names must not reach TTS (_resolve_voice_profile) or sidecar rows.
+    Script labels (``Arlo:``) strip to the registry key before lookup.
     """
-    raw = (speaker or "").strip()
+    raw = strip_speaker_script_label(speaker)
     if not raw:
         return ""
     if raw.startswith("[") and raw.endswith("]"):
@@ -737,12 +754,7 @@ def reconcile_char_ref_with_element(
 def assign_voice(character: str, voice_id: str, voice_label: str | None = None) -> dict:
     data = load_character_subjects()
     chars = data.get("characters") or {}
-    key = character
-    if key not in chars:
-        matches = [k for k in chars if k.lower() == character.lower()]
-        if not matches:
-            raise KeyError(f"Unknown character: {character!r}")
-        key = matches[0]
+    key = _resolve_char_key(character, chars)
     catalog = {v["voice_id"]: v for v in load_voice_catalog().get("voices", [])}
     if voice_id in catalog:
         label = voice_label or catalog[voice_id].get("label") or voice_id
@@ -948,9 +960,11 @@ def resolve_frontal_abs_path(speaker: str, *, strict: bool = False) -> str | Non
 
 
 def _resolve_char_key(character: str, chars: dict) -> str:
-    char_key = character
+    char_key = normalize_beat_speaker_for_sidecar(character) or strip_speaker_script_label(
+        character,
+    )
     if char_key not in chars:
-        matches = [k for k in chars if k.lower() == character.lower()]
+        matches = [k for k in chars if k.lower() == char_key.lower()]
         if not matches:
             raise KeyError(f"Unknown character: {character!r}")
         char_key = matches[0]

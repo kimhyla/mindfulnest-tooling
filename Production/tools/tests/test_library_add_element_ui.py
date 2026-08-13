@@ -54,6 +54,10 @@ def test_bg_tab_set_element_identity_confirm_modal():
     assert "set-element-identity" in text
     assert "Set as Element identity" in text
     assert "executeSetElementIdentity" in text
+    assert "canonBeatSpeaker(beat?.speaker)" in text
+    assert r"replace(/[\s:：.;,]+$/" in text
+    assert "Setting identity" in text
+    assert "submitting: true" in text
 
 
 def test_library_add_element_pose_binds_prod_root_via_init_bg_paths():

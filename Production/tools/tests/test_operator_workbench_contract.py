@@ -259,3 +259,18 @@ def test_session_enrich_recomputes_stale_o3_pipeline_mismatch():
     row = rows[0]
     assert row.get("kling_o3_selection_pipeline_mismatch") is None
     assert row.get("kling_o3_active_clip_pipeline") == bg.O3_GENERATE_MODE_ELEMENT_NATIVE
+
+
+def test_migrate_heals_script_colon_speaker_and_image1_header():
+    beat = {
+        "beat_id": "bg_arc1_event6_post_beat_04",
+        "speaker": "Arlo:",
+        "kling_o3_prompt": (
+            "@Image1 (Arlo:). Scene from @Image2.\n\n"
+            "Arlo stands in the glow.\n"
+        ),
+        "generation_mode": "element_native",
+    }
+    assert owc.migrate_operator_workbench_beat(beat, heal_char_ref=False) is True
+    assert beat["speaker"] == "Arlo"
+    assert beat["kling_o3_prompt"].startswith("@Image1 (Arlo).")

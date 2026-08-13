@@ -33,24 +33,13 @@ def _heal_delivery_timeline_authority(delivery_mp4: Path) -> None:
     """STITCH_EXPORT_TIMELINE_AUTHORITY_V1 — harvest remux must pass stitch export gates."""
     from credentials_lib.ffmpeg_stitch import (
         STITCH_EXPORT_NORM_AV_MAX_DRIFT_S,
-        av_duration_drift_s,
-        remux_mp4_video_timeline_authority,
+        heal_mp4_video_timeline_authority_if_needed,
     )
 
-    delivery_mp4 = delivery_mp4.resolve()
-    drift = av_duration_drift_s(delivery_mp4)
-    if drift <= STITCH_EXPORT_NORM_AV_MAX_DRIFT_S:
-        return
-    tmp = delivery_mp4.parent / f"{delivery_mp4.stem}.timeline.{os.getpid()}{delivery_mp4.suffix}"
-    try:
-        remux_mp4_video_timeline_authority(delivery_mp4, tmp, re_encode_video=False)
-        os.replace(tmp, delivery_mp4)
-    finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
+    heal_mp4_video_timeline_authority_if_needed(
+        Path(delivery_mp4).resolve(),
+        heal_above_s=STITCH_EXPORT_NORM_AV_MAX_DRIFT_S,
+    )
 
 
 def _audit(event_dir: Path, row: dict) -> None:

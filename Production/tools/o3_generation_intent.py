@@ -1325,6 +1325,10 @@ def build_generation_intent(
             "Beat has no speaker.",
             http_status=400,
         )
+    canon = reg.normalize_beat_speaker_for_sidecar(speaker) or speaker
+    if canon != speaker:
+        beat["speaker"] = canon
+        speaker = canon
     if not reg.is_speaker_voice_ready(speaker):
         raise IntentCommitError(
             "SPEAKER_NOT_VOICE_READY",

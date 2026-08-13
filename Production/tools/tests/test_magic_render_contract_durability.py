@@ -190,6 +190,15 @@ class MagicHandlerWiringTests(unittest.TestCase):
         self.assertIn("composite_screen_rgb", body)
         self.assertIn("set_path_luminance_from_array", body)
 
+    def test_magic_video_heals_aac_timeline_before_hot_serve(self):
+        """STITCH_EXPORT_HEAL_AAC_DRIFT_V1 — do not ship ~50ms magic mux drift to export."""
+        text = (TOOLS / "server_handlers" / "background.py").read_text()
+        block = text.split("def handle_magic_video", 1)[1].split("\ndef handle_", 1)[0]
+        self.assertIn("heal_mp4_video_timeline_authority_if_needed", block)
+        heal_idx = block.index("heal_mp4_video_timeline_authority_if_needed")
+        hot_idx = block.index("_warm_magic_delivery_hot_serve")
+        self.assertLess(heal_idx, hot_idx)
+
 
 class MagicBrightStoneBehaviorTests(unittest.TestCase):
     def test_sparkle_strength_fades_on_midtones(self):

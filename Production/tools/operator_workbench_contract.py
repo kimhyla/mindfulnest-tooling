@@ -195,6 +195,8 @@ def migrate_operator_workbench_beat(beat: dict, *, heal_char_ref: bool = True) -
         mode = bg.resolve_beat_generation_mode(beat, {})
         beat["generation_mode"] = mode
         changed = True
+    if bg.heal_script_label_speaker(beat):
+        changed = True
     if heal_char_ref and bg.heal_speaker_char_ref_mismatch(beat):
         changed = True
     return changed

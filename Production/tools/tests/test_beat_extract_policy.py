@@ -13,6 +13,7 @@ from beat_extract_policy import (  # noqa: E402
     classify_beat_type,
     humanize_kling_body_parts,
     humanize_kling_body_parts_on_beat,
+    normalize_dialogue_speaker,
     normalize_plan_row,
     postprocess_beats_plan,
     postprocess_plan_result,
@@ -39,6 +40,16 @@ def test_canon_plan_speaker_legacy_aliases():
     assert canon_plan_speaker("laurel") == "Lorelai"
     assert canon_plan_speaker("Chipper") == "Arlo"
     assert canon_plan_speaker("Guide Bird") == "Arlo"
+
+
+def test_canon_plan_speaker_strips_script_colon():
+    assert canon_plan_speaker("Arlo:") == "Arlo"
+    assert canon_plan_speaker("Lorelai :") == "Lorelai"
+
+
+def test_normalize_dialogue_speaker_strips_colon_and_says():
+    assert normalize_dialogue_speaker("Arlo:") == "Arlo"
+    assert normalize_dialogue_speaker("Lorelai says:") == "Lorelai"
 
 
 def test_classify_beat_type_inscription_is_stage_still():

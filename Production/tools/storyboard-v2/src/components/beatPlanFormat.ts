@@ -90,7 +90,7 @@ function parseBeatPlanLine(line: string, beatIndex: number): BeatPlanRow {
     };
   }
 
-  const speakerRaw = headerMatch[1].trim();
+  const speakerRaw = headerMatch[1].trim().replace(/[\s:：.;,]+$/, '').trim();
   const emotion = (headerMatch[2] || headerMatch[3] || 'neutral').trim();
   let tail = headerMatch[4].trim();
 

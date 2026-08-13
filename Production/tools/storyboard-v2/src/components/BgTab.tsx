@@ -206,7 +206,7 @@ const RETIRED_SPEAKER_CANON: Readonly<Record<string, string>> = {
 };
 
 function canonBeatSpeaker(raw?: string): string {
-  const s = (raw ?? '').trim();
+  const s = (raw ?? '').trim().replace(/[\s:：.;,]+$/, '').trim();
   if (!s) return '';
   return RETIRED_SPEAKER_CANON[s] ?? RETIRED_SPEAKER_CANON[s.toLowerCase()] ?? s;
 }
@@ -471,7 +471,7 @@ type BgModalState =
   | { kind: 'extract-overwrite-confirm'; beatCount: number }
   | { kind: 'edit-chip'; beatId: string; oldChipText: string; draftText: string }
   | { kind: 'remove-ref'; beatId: string; refField: 'reference_image' | 'bg_ref_image'; label: string }
-  | { kind: 'set-element-identity'; beatId: string; speaker: string; absPath: string }
+  | { kind: 'set-element-identity'; beatId: string; speaker: string; absPath: string; submitting?: boolean }
   | {
       kind: 'voice-drift-confirm';
       beatId: string;
@@ -1770,7 +1770,7 @@ export function BgTab() {
       thumb_b64?: string;
       element_char_ref_ok?: boolean;
       element_char_ref_error?: string | null;
-    }>(activeScope.value, 'bg_align_element_ref', { beat_id: beatId });
+    }>(activeScope.value, 'bg_align_element_ref', { beat_id: beatId, force: true });
     if (!result.ok) {
       if (isBeatNotFoundResult(result)) {
         await handleBeatMissingOnSave(beatId);
@@ -1824,7 +1824,7 @@ export function BgTab() {
     const beat = beats.find((b) => b.beat_id === beatId);
     const charRef = beat ? displayCharRef(beat) : null;
     const absPath = (charRef?.abs_path ?? '').trim();
-    const speaker = (beat?.speaker ?? '').trim();
+    const speaker = canonBeatSpeaker(beat?.speaker);
     if (!absPath) {
       pushToast({
         kind: 'error',
@@ -1868,12 +1868,22 @@ export function BgTab() {
         return next;
       }));
     }
-    pushToast({
-      kind: 'success',
-      message: `Pose registered on ${beat?.speaker ?? 'speaker'} Element`
-        + (data?.pose_rel ? ` (${data.pose_rel})` : ''),
-      source: 'bg-add-element-pose',
-    });
+    if (gateOk === false) {
+      pushToast({
+        kind: 'warning',
+        message: data?.element_char_ref_error
+          ?? 'Pose added, but Generate still needs Set as Element identity — Add to Element does not change the frontal pose.',
+        source: 'bg-add-element-pose-warn',
+        ttlMs: 16000,
+      });
+    } else {
+      pushToast({
+        kind: 'success',
+        message: `Pose registered on ${beat?.speaker ?? 'speaker'} Element`
+          + (data?.pose_rel ? ` (${data.pose_rel})` : ''),
+        source: 'bg-add-element-pose',
+      });
+    }
     await refreshState();
   };
 
@@ -1881,7 +1891,7 @@ export function BgTab() {
     const beat = beats.find((b) => b.beat_id === beatId);
     const charRef = beat ? displayCharRef(beat) : null;
     const absPath = (charRef?.abs_path ?? '').trim();
-    const speaker = (beat?.speaker ?? '').trim();
+    const speaker = canonBeatSpeaker(beat?.speaker);
     if (!absPath || !speaker) {
       pushToast({
         kind: 'error',
@@ -1895,8 +1905,9 @@ export function BgTab() {
 
   const executeSetElementIdentity = async () => {
     if (modalState.kind !== 'set-element-identity') return;
+    if (modalState.submitting) return;
     const { beatId, speaker, absPath } = modalState;
-    closeModal();
+    setModalState({ kind: 'set-element-identity', beatId, speaker, absPath, submitting: true });
     const result = await pathappPatch<{
       ok: boolean;
       pose_rel?: string;
@@ -1912,9 +1923,11 @@ export function BgTab() {
     });
     if (!result.ok) {
       if (isBeatNotFoundResult(result)) {
+        closeModal();
         await handleBeatMissingOnSave(beatId);
         return;
       }
+      setModalState({ kind: 'set-element-identity', beatId, speaker, absPath });
       pushToast({
         kind: 'error',
         message: result.error ?? 'Could not set Element identity',
@@ -1922,6 +1935,7 @@ export function BgTab() {
       });
       return;
     }
+    closeModal();
     const data = result.data;
     const gateOk = data?.element_char_ref_ok;
     if (typeof gateOk === 'boolean') {
@@ -3617,19 +3631,33 @@ export function BgTab() {
         id="bg-set-element-identity"
         title="Set as Element identity?"
         open={modalState.kind === 'set-element-identity'}
-        onClose={closeModal}
+        onClose={() => {
+          if (modalState.kind === 'set-element-identity' && modalState.submitting) return;
+          closeModal();
+        }}
         footer={
           <>
-            <button type="button" class="mn-btn" data-testid="bg-set-element-identity-cancel" onClick={closeModal}>
+            <button
+              type="button"
+              class="mn-btn"
+              data-testid="bg-set-element-identity-cancel"
+              disabled={modalState.kind === 'set-element-identity' && !!modalState.submitting}
+              onClick={closeModal}
+            >
               Cancel
             </button>
             <button
               type="button"
               class="mn-btn mn-btn-primary"
               data-testid="bg-set-element-identity-confirm"
+              disabled={modalState.kind === 'set-element-identity' && !!modalState.submitting}
               onClick={() => { void executeSetElementIdentity(); }}
             >
-              Set identity
+              {modalState.kind === 'set-element-identity' && modalState.submitting ? (
+                <><Spinner size="sm" inline /> Setting identity…</>
+              ) : (
+                'Set identity'
+              )}
             </button>
           </>
         }
