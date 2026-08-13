@@ -108,10 +108,10 @@ def pin_milestone_standalone_final(
 ) -> dict:
     """Pin lean bake to milestone assembled/{id}_standalone_final.mp4 + state lineage."""
     import os
-    import shutil
     from datetime import datetime, timezone
 
     from lib.atomic_json_write import atomic_json_write  # noqa: PLC0415
+    from lib.ffmpeg_io import copy_file_durable  # noqa: PLC0415
     from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
 
     milestone_dir = milestone_dir.resolve()
@@ -128,9 +128,11 @@ def pin_milestone_standalone_final(
     if canonical_path.is_file():
         backup_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        shutil.copy2(canonical_path, backup_dir / f"{canonical_name}.{ts}.bak")
+        copy_file_durable(
+            canonical_path, backup_dir / f"{canonical_name}.{ts}.bak",
+        )
 
-    shutil.copy2(source_bake, canonical_path)
+    copy_file_durable(source_bake, canonical_path)
     ensure_mp4_playback_timestamps(canonical_path, delivery_profile=delivery_profile)
     dur_ms = _ffprobe_duration_ms(canonical_path)
     digest = _sha256_file(canonical_path)

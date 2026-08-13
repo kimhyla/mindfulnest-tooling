@@ -83,6 +83,28 @@ def test_bake_playback_never_shutil_copy2_onto_dest() -> None:
     assert "STITCH_PLAYBACK_BAKE_LOCAL_COMMIT_V1" in text
 
 
+def test_assembled_media_commits_never_use_shutil_copy2() -> None:
+    """Send-to-Stitcher + canonical pin: Dropbox assembled writes must retry errno 11."""
+    tools = Path(__file__).resolve().parents[1]
+    files = (
+        tools / "server_handlers" / "stitch_slot_playback.py",
+        tools / "stitch_bake_finalize.py",
+        tools / "pin_event_canonical_module.py",
+        tools / "credentials_lib" / "ffmpeg_stitch.py",
+    )
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        if path.name == "ffmpeg_stitch.py":
+            block = text.split("def remux_mp4_video_timeline_authority", 1)[1].split(
+                "\ndef ", 1,
+            )[0]
+            assert "shutil.copy2" not in block, path.name
+            assert "copy_file_durable" in block, path.name
+            continue
+        assert "shutil.copy2(" not in text, path.name
+        assert "copy_file_durable" in text, path.name
+
+
 def test_bake_slot_playback_commits_cloud_dest(tmp_path: Path) -> None:
     """Event_6 job 58c02a2d: concat ok, shutil.copy2 onto Dropbox assembled → EDEADLK."""
     dry = tmp_path / "dry.mp4"

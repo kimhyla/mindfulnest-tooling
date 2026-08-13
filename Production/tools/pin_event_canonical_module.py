@@ -10,7 +10,6 @@ import argparse
 import hashlib
 import json
 import os
-import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -24,6 +23,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(1, str(TOOLS))
 
 from lib.atomic_json_write import atomic_json_write  # noqa: E402
+from lib.ffmpeg_io import copy_file_durable  # noqa: E402
 from lib.paths import runtime_production_root  # noqa: E402
 
 EVENT_1_CANONICAL_MODULE_V1 = "EVENT_1_CANONICAL_MODULE_V1"
@@ -73,9 +73,11 @@ def pin_canonical_module(
     if canonical_path.is_file():
         backup_dir.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        shutil.copy2(canonical_path, backup_dir / f"{canonical_name}.{ts}.bak")
+        copy_file_durable(
+            canonical_path, backup_dir / f"{canonical_name}.{ts}.bak",
+        )
 
-    shutil.copy2(source_bake, canonical_path)
+    copy_file_durable(source_bake, canonical_path)
     from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
 
     ensure_mp4_playback_timestamps(canonical_path, delivery_profile=delivery_profile)
