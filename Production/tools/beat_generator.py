@@ -14325,15 +14325,37 @@ def resolve_bg_beat_tts_audio_path(
     if not sb_id:
         sb_id = storyboard_beat_id_from_bg_beat(beat.get("beat_id") or "") or ""
 
+    def _tts_search_roots() -> list[Path]:
+        from media_hot_root import still_tts_hot_dir
+
+        roots: list[Path] = []
+        try:
+            hot = still_tts_hot_dir(event_dir, create=False)
+            roots.append(hot)
+            if hot.name != "story_scene_tts_v2":
+                roots.append(hot.parent)
+        except Exception:
+            pass
+        roots.append(event_dir / "story_scene_tts_v2")
+        seen: set[str] = set()
+        out: list[Path] = []
+        for base in roots:
+            key = str(base)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(base)
+        return out
+
     def _resolve_named_file(name: str) -> Path | None:
         p = Path(name)
         if p.is_file():
             return p.resolve()
-        for base in (event_dir / "story_scene_tts_v2", event_dir):
+        for base in (*_tts_search_roots(), event_dir):
             direct = base / name
             if direct.is_file():
                 return direct.resolve()
-            if base.is_dir():
+            if base.is_dir() and base != event_dir:
                 for hit in sorted(base.rglob(name)):
                     if hit.is_file() and "_archive" not in str(hit):
                         return hit.resolve()
@@ -14348,15 +14370,16 @@ def resolve_bg_beat_tts_audio_path(
             beat_num = int(sb_id.split("_")[1])
         except (IndexError, ValueError):
             return None
-        tts_root = event_dir / "story_scene_tts_v2"
-        if not tts_root.is_dir():
-            return None
-        matches = sorted(
-            p for p in tts_root.rglob(f"line_{beat_num:02d}_*.mp3")
-            if p.is_file() and "_archive" not in str(p)
-        )
-        if matches:
-            return matches[-1].resolve()
+        pat = f"line_{beat_num:02d}_*.mp3"
+        for tts_root in _tts_search_roots():
+            if not tts_root.is_dir():
+                continue
+            matches = sorted(
+                p for p in tts_root.rglob(pat)
+                if p.is_file() and "_archive" not in str(p)
+            )
+            if matches:
+                return matches[-1].resolve()
     return None
 
 

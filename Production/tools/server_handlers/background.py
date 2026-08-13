@@ -8533,6 +8533,7 @@ def _ensure_still_insert_tts(h, beat: dict, sidecar: dict, production_state: dic
         speaker_override=tts_info["speaker"],
         storyboard_beat_id=sb_id,
         voice_profile_override=voice_profile,
+        persist_production_state=False,
     )
     if result.get("ok") and result.get("audio_file"):
         beat["audio_file"] = result["audio_file"]
@@ -8739,6 +8740,16 @@ def handle_bg_render_still_clip(h, body: dict) -> None:
             error_code="STILL_SOURCE_MISSING",
             error_message="No still image — drop a library image in option 1 or set char/BG ref first",
             retry_safe=False,
+        )
+    if beat_id in _STILL_RENDER_BUSY:
+        return h._send_error_v59(
+            409,
+            error_code="STILL_RENDER_IN_PROGRESS",
+            error_message=(
+                "Still clip is already building for this beat — wait for it to finish "
+                "(do not click Build still video again)."
+            ),
+            retry_safe=True,
         )
     _STILL_RENDER_BUSY.add(beat_id)
     try:

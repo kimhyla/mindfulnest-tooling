@@ -99,6 +99,22 @@ def kling_o3_trim_scratch_dir(event_dir: str | Path) -> Path:
     return d
 
 
+def still_tts_hot_dir(
+    event_dir: str | Path,
+    storyboard_stem: str = "",
+    *,
+    create: bool = True,
+) -> Path:
+    """APFS (or in-tree) TTS dir — never mkdir Dropbox on the still+TTS request path."""
+    d = resolve_media_workspace(event_dir) / "story_scene_tts_v2"
+    stem = Path(str(storyboard_stem or "").strip()).name
+    if stem and stem not in (".", ".."):
+        d = d / stem
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def media_hot_serve_roots() -> list[str]:
     """Realpath roots allowed for /files of hot media outside Dropbox."""
     roots: list[str] = []
