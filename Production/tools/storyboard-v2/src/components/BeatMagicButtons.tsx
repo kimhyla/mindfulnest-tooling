@@ -269,12 +269,22 @@ export function resolveBgMagicStillSourcePath(
   return null;
 }
 
-function magicPathToPreviewUrl(
+/** Disk path for playback_resolve / hot-serve (basename or Production/Event_N/…). */
+export function resolveBgMagicPreviewDiskPath(
   rel: string | null | undefined,
   eventId: string,
 ): string | null {
   if (!rel) return null;
-  const path = rel.startsWith('/') ? rel : `Production/${eventId}/${rel}`;
+  if (rel.startsWith('/') || rel.startsWith('Production/')) return rel;
+  return `Production/${eventId}/${rel}`;
+}
+
+function magicPathToPreviewUrl(
+  rel: string | null | undefined,
+  eventId: string,
+): string | null {
+  const path = resolveBgMagicPreviewDiskPath(rel, eventId);
+  if (!path) return null;
   return `${SERVER_BASE}/files?path=${encodeURIComponent(path)}`;
 }
 

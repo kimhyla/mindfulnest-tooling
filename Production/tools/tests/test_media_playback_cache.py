@@ -305,7 +305,7 @@ def test_materialize_warm_hit_never_probes_dropbox(
 def test_ensure_hot_serve_never_probe_raises_without_cache(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Thumbs fail-fast: dropbox_probe=never must not touch File Provider."""
+    """dropbox_probe=never must not touch File Provider (fail-fast callers)."""
     import media_playback_cache as mpc
 
     hot = tmp_path / "hot-media"
@@ -330,6 +330,43 @@ def test_ensure_hot_serve_never_probe_raises_without_cache(
         ensure_hot_serve_file(src, event_dir=event, dropbox_probe="never")
     assert ei.value.errno == 11
     assert "Dropbox probe skipped" in str(ei.value)
+
+
+def test_short_dropbox_probe_returns_within_budget_when_worker_hangs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hung File Provider must not pin the request thread past the budget."""
+    import time
+
+    import media_playback_cache as mpc
+
+    hot = tmp_path / "hot-media"
+    monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))
+    monkeypatch.setenv("MN_MEDIA_PATH_ROOTS", str(tmp_path))
+    event = (
+        tmp_path / "Library" / "CloudStorage" / "Dropbox" / "x"
+        / "Production" / "Event_6"
+    )
+    src = event / "library" / "hung.png"
+    src.parent.mkdir(parents=True)
+    src.write_bytes(b"\x89PNG\r\n\x1a\n" + b"hung" * 20)
+
+    def hang_copy(*_a, **_k):
+        time.sleep(30)
+
+    monkeypatch.setattr(mpc, "copy_file_durable", hang_copy)
+    t0 = time.monotonic()
+    with pytest.raises(OSError) as ei:
+        ensure_hot_serve_file(
+            src,
+            event_dir=event,
+            dropbox_probe="short",
+            dropbox_probe_timeout_s=0.3,
+        )
+    elapsed = time.monotonic() - t0
+    assert ei.value.errno == 11
+    assert "timed out" in str(ei.value)
+    assert elapsed < 2.0, f"short probe leaked hang to caller ({elapsed:.2f}s)"
 
 
 @pytest.mark.parametrize("transient_errno", [11, 35])

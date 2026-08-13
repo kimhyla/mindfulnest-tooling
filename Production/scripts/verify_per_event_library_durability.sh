@@ -36,6 +36,25 @@ grep -q 'CR_THUMB_HOT_SERVE_V1' "$CROPPER" \
   || fail "cropper thumb must hot-serve before PIL decode (CR_THUMB_HOT_SERVE_V1)"
 grep -q 'ensure_hot_serve_file' "$CROPPER" \
   || fail "cropper thumb must call ensure_hot_serve_file"
+# Cold-miss must short-materialize (same class as /files). ``never`` → permanent
+# 503 broken Library tiles for uncached Dropbox stills.
+thumb_block="$(python3 - "$CROPPER" <<'PY'
+from pathlib import Path
+import sys
+text = Path(sys.argv[1]).read_text(encoding="utf-8")
+thumb = text.split("def handle_cr_thumb", 1)[1].split("def handle_cr_library", 1)[0]
+print(thumb)
+PY
+)"
+echo "$thumb_block" | grep -q 'dropbox_probe="short"' \
+  || fail "handle_cr_thumb cold miss must use dropbox_probe=short"
+if echo "$thumb_block" | grep -q 'dropbox_probe="never"'; then
+  fail "handle_cr_thumb must not use dropbox_probe=never (broken Library tiles)"
+fi
+grep -q 'CR_LIBRARY_THUMB_WARM_V1' "$CROPPER" \
+  || fail "library list must schedule APFS thumb warm (CR_LIBRARY_THUMB_WARM_V1)"
+grep -q 'def _schedule_library_thumb_warm' "$CROPPER" \
+  || fail "cropper missing _schedule_library_thumb_warm"
 grep -q 'Canonical registry images are intentionally excluded' "$CROPPER" \
   || fail "cropper must exclude canonical registry from library grid"
 grep -q 'apply_to_all_events' "${REPO_ROOT}/Production/canonical_image_registry.json" \

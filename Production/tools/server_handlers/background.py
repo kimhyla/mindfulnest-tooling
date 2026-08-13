@@ -775,6 +775,32 @@ def _magic_production_intent(body: dict | None) -> bool:
     )
 
 
+def _warm_magic_delivery_hot_serve(out_path: Path, *, log_tag: str = "magic") -> None:
+    """Copy magic MP4 into APFS .playback_cache before first Preview Magic click.
+
+    MAGIC_PREVIEW_HOT_SERVE_V1 — Preview Magic must not bind <video> to a cold
+    Dropbox File Provider path (same gray-player class as O3 tiles before
+    playback_resolve). Warm here so media_playback_resolve is a cache hit.
+    """
+    try:
+        from media_playback_cache import ensure_hot_serve_file  # noqa: PLC0415
+        from media_playback_cache import event_dir_from_media_path  # noqa: PLC0415
+
+        ed = event_dir_from_media_path(out_path) or out_path.parent
+        local = ensure_hot_serve_file(
+            out_path, event_dir=ed, dropbox_probe="when_needed",
+        )
+        print(
+            f"[{log_tag}] hot-serve warm ✓ {out_path.name} → {Path(local).name}",
+            flush=True,
+        )
+    except Exception as exc:  # noqa: BLE001 — never fail magic write on cache warm
+        print(
+            f"[{log_tag}] hot-serve warm failed (non-fatal): {out_path.name}: {exc}",
+            flush=True,
+        )
+
+
 def write_magic_delivery(
     h,
     *,
@@ -1191,6 +1217,9 @@ def handle_magic_still(h, body: dict)-> None:
                    retry_safe=False,
                    extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_output": str(rendered)},
                )
+
+    # MAGIC_PREVIEW_HOT_SERVE_V1 — warm APFS before UI Preview Magic can race Dropbox.
+    _warm_magic_delivery_hot_serve(Path(rendered), log_tag="magic_still")
 
     registered_id: int | None = None
     try:
@@ -1739,6 +1768,9 @@ def handle_magic_video(h, body: dict)-> None:
                    retry_safe=False,
                    extra={"code": "ASYNC_JOB_GENERATION_PIN_V1", "orphaned_output": str(out_path)},
                )
+
+    # MAGIC_PREVIEW_HOT_SERVE_V1 — warm APFS before UI Preview Magic can race Dropbox.
+    _warm_magic_delivery_hot_serve(out_path, log_tag="magic_video")
 
     registered_id: int | None = None
     try:

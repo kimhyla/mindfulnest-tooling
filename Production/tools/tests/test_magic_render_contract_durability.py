@@ -538,6 +538,21 @@ class MagicStyleResolverTests(unittest.TestCase):
         self.assertIn("magic_video_path_exists === false", text)
         self.assertIn("magic_still_path_exists === false", text)
 
+    def test_bg_magic_preview_uses_playback_resolve_before_video_bind(self):
+        """MAGIC_PREVIEW_HOT_SERVE_V1 — Preview Magic must not bind cold /files."""
+        text = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text()
+        self.assertIn("MAGIC_PREVIEW_HOT_SERVE_V1", text)
+        self.assertIn("resolveMagicHotPreviewUrl", text)
+        self.assertIn("resolveClipPlaybackTruth", text)
+        self.assertIn("magicStillHotUrl", text)
+        self.assertIn("Warming magic preview", text)
+        # Must resolve before binding the preview <video> src.
+        resolve_idx = text.index("resolveMagicHotPreviewUrl('still')")
+        bind_idx = text.index("videoUrl={magicStillHotUrl}")
+        self.assertLess(resolve_idx, bind_idx)
+        magic_btn = BEAT_MAGIC_TSX.read_text()
+        self.assertIn("resolveBgMagicPreviewDiskPath", magic_btn)
+
     def test_stitch_export_uses_magic_on_beat_contract(self):
         text = (TOOLS / "beat_generator.py").read_text()
         block = text.split("def resolve_beat_stitch_export_clip_path", 1)[1].split("\ndef ", 1)[0]

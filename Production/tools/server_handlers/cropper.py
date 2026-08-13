@@ -346,14 +346,20 @@ def _enrich_library_items_prod_assets(images: list, *, library_event_dir: str | 
     def _run() -> None:
         _enrich_library_items_prod_assets_inner(images)
 
+    # Same class as hot-serve short probe: ``with ThreadPoolExecutor`` waits on
+    # shutdown even after fut.result(timeout=…) — Dropbox/Directus hangs would
+    # pin the /api/cr/library worker. Detach on timeout.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            fut = pool.submit(_run)
+        fut = pool.submit(_run)
+        try:
             fut.result(timeout=10.0)
-    except concurrent.futures.TimeoutError:
-        print("[library] WARN: Directus enrich skipped — timed out after 10s", flush=True)
+        except concurrent.futures.TimeoutError:
+            print("[library] WARN: Directus enrich skipped — timed out after 10s", flush=True)
     except Exception as e:
         print(f"[library] WARN: Directus enrich skipped: {e}", flush=True)
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
     if library_event_dir is not None:
         _enrich_has_crop_from_disk(images, library_event_dir)
 
@@ -484,6 +490,85 @@ def _cr_thumb_url(abs_path: str) -> str:
     return "/api/cr/thumb?abs_path=" + urllib.parse.quote(abs_path, safe="")
 
 
+# One background warmer per library event dir — avoids Dropbox File Provider
+# storms when the browser fires 50+ cold /api/cr/thumb GETs at once.
+_LIBRARY_THUMB_WARM_LOCKS: dict[str, threading.Lock] = {}
+_LIBRARY_THUMB_WARM_LOCKS_GUARD = threading.Lock()
+
+
+def _schedule_library_thumb_warm(
+    library_event_dir: Path | str | None,
+    images: list,
+) -> None:
+    """CR_LIBRARY_THUMB_WARM_V1 — APFS-warm stills after list; thumbs hit cache.
+
+    Audit: migrate-media-preempt — \"Local catalog; APFS thumbs only\". List stays
+    metadata-only; this daemon thread open-first copies abs_path rows so the
+    Library panel does not pin HTTP workers on parallel cold Dropbox opens.
+    """
+    if library_event_dir is None or not images:
+        return
+    ed = Path(library_event_dir)
+    # Pytest tmp event dirs keep .playback_cache in-tree — a daemon warm after
+    # TemporaryDirectory cleanup raises OSError 66 (Directory not empty).
+    try:
+        from lib.ffmpeg_io import path_is_cloud_storage_backed
+
+        if not path_is_cloud_storage_backed(ed):
+            return
+    except Exception:
+        return
+    paths = [
+        str(i.get("abs_path") or "").strip()
+        for i in images
+        if isinstance(i, dict) and i.get("abs_path")
+    ]
+    paths = [p for p in paths if p]
+    if not paths:
+        return
+    key = str(ed)
+    with _LIBRARY_THUMB_WARM_LOCKS_GUARD:
+        lock = _LIBRARY_THUMB_WARM_LOCKS.setdefault(key, threading.Lock())
+
+    def _run() -> None:
+        if not lock.acquire(blocking=False):
+            return
+        try:
+            from media_playback_cache import (
+                LIBRARY_THUMB_DROPBOX_PROBE_S,
+                ensure_hot_serve_file,
+                find_cached_by_basename,
+            )
+
+            warmed = 0
+            for ap in paths:
+                try:
+                    if find_cached_by_basename(ed, ap) is not None:
+                        continue
+                    ensure_hot_serve_file(
+                        ap,
+                        event_dir=ed,
+                        dropbox_probe="short",
+                        dropbox_probe_timeout_s=LIBRARY_THUMB_DROPBOX_PROBE_S,
+                    )
+                    warmed += 1
+                except OSError:
+                    continue
+            if warmed:
+                print(
+                    f"[library] thumb-warm APFS ready count={warmed} event={ed.name}",
+                    flush=True,
+                )
+        finally:
+            lock.release()
+
+    threading.Thread(
+        target=_run,
+        name=f"cr-lib-thumb-warm-{ed.name}",
+        daemon=True,
+    ).start()
+
+
 def _materialize_cr_thumb_jpeg(safe_path: str) -> bytes | None:
     """200×150 JPEG for one library tile — used by GET /api/cr/thumb only.
 
@@ -581,19 +666,26 @@ def handle_cr_thumb(h) -> None:
     local: Path | None = None
     # CR_THUMB_HOT_SERVE_V1 + HOT_SERVE_TRUE_CACHE_FIRST_V2 — warm APFS first.
     try:
-        from media_playback_cache import ensure_hot_serve_file, find_cached_by_basename
+        from media_playback_cache import (
+            LIBRARY_THUMB_DROPBOX_PROBE_S,
+            ensure_hot_serve_file,
+            find_cached_by_basename,
+        )
 
         if ed is not None and leaf:
             hit = find_cached_by_basename(ed, leaf)
             if hit is not None:
                 local = hit
         if local is None:
-            # Cold miss: short Dropbox budget (never hang the HTTP worker forever).
-            # Prefer abs_norm string (no realpath) so probe timeout owns the budget.
+            # Cold miss: open-first short probe (not ``never``). ``never`` left
+            # uncached library stills on permanent 503 → broken tiles
+            # (Event_6: 36/58). Thumbs get ~12s hydration budget; /files keeps ~2s.
+            # Warm hits still skip Dropbox (HOT_SERVE_TRUE_CACHE_FIRST_V2).
             local = ensure_hot_serve_file(
                 abs_norm,
                 event_dir=ed,
-                dropbox_probe="never",
+                dropbox_probe="short",
+                dropbox_probe_timeout_s=LIBRARY_THUMB_DROPBOX_PROBE_S,
             )
     except OSError:
         return h._send_error_v59(
@@ -660,6 +752,7 @@ def handle_cr_library(h)-> None:
         payload["images"] = _cr_library_response_images(payload.get("images") or [], panel_filter)
         if panel_filter:
             payload["panel_filter"] = panel_filter
+        _schedule_library_thumb_warm(library_event_dir, payload.get("images") or [])
         return h._send_json(200, payload)
     skel_arc = (ctx.skeleton_ref or {}).get("arc_number")
     arc_number = int(skel_arc) if skel_arc is not None else arc_number_from_event_id(library_event_dir.name)
@@ -853,6 +946,7 @@ def handle_cr_library(h)-> None:
         "library_event_id": library_event_dir.name,
         "scope_type": ctx.scope_type,
     }
+    _schedule_library_thumb_warm(library_event_dir, images)
     return h._send_json(200, _store_cr_library_cache(cache_key, fp, cache_payload, payload))
 
 

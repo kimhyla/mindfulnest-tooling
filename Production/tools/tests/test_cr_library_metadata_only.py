@@ -187,6 +187,44 @@ class CrLibraryMetadataOnlyTests(unittest.TestCase):
                 "THUMB_MATERIALIZE_FAILED",
             )
 
+    def test_cr_thumb_cold_miss_uses_short_dropbox_probe(self):
+        """Uncached Dropbox library stills must short-materialize, not never.
+
+        Cousin of /files HOT_SERVE_TRUE_CACHE_FIRST_V2 short probe — ``never``
+        made Library tiles permanently broken until something else warmed cache.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            prod = Path(tmp) / "Production"
+            ev, app = _event_app(prod)
+            fp = ev / "library" / "images" / "sources" / "cold.png"
+            fp.write_bytes(_MIN_PNG)
+            local = Path(tmp) / "local_hot.png"
+            local.write_bytes(_MIN_PNG)
+            import urllib.parse
+            from unittest.mock import patch
+
+            q = urllib.parse.quote(str(fp), safe="")
+            h = _CaptureHandler(app, f"/api/cr/thumb?abs_path={q}")
+            with patch.object(
+                cropper,
+                "require_realpath_under_project",
+                side_effect=lambda p: os.path.realpath(p),
+            ), patch(
+                "media_playback_cache.find_cached_by_basename",
+                return_value=None,
+            ), patch(
+                "media_playback_cache.ensure_hot_serve_file",
+                return_value=local,
+            ) as ensure:
+                cropper.handle_cr_thumb(h)
+
+            self.assertEqual(h.status, 200, h.payload)
+            ensure.assert_called()
+            kwargs = ensure.call_args.kwargs
+            self.assertEqual(kwargs.get("dropbox_probe"), "short")
+            self.assertGreaterEqual(float(kwargs.get("dropbox_probe_timeout_s") or 0), 10.0)
+            self.assertTrue(h.body_bytes and h.body_bytes[:2] == b"\xff\xd8")
+
 
 if __name__ == "__main__":
     unittest.main()
