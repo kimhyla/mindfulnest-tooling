@@ -57,6 +57,7 @@ python3 -m pytest \
   Production/tools/tests/test_bg_job_truth_gallery.py \
   Production/tools/tests/test_bg_export_live_beat_order.py \
   Production/tools/tests/test_milestone_o3_job_busy.py \
+  Production/tools/tests/test_stitch_four_files_playback_authority.py \
   -q
 echo "[o3-intro-contract] SQLite sidecar cutover gate..."
 bash Production/scripts/verify_sidecar_sqlite_cutover_gate.sh

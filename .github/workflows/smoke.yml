@@ -100,6 +100,7 @@ jobs:
             tests/test_bg_export_live_beat_order.py \
             tests/test_milestone_scope.py \
             tests/test_milestone_o3_job_busy.py \
+            tests/test_stitch_four_files_playback_authority.py \
             -q
       - name: O3 intro contract shell gate
         run: bash Production/scripts/verify_o3_intro_contract.sh
