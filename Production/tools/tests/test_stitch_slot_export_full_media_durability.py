@@ -93,9 +93,6 @@ class StitchSlotExportFullMediaTests(unittest.TestCase):
             ), mock.patch(
                 "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
                 return_value=False,
-            ), mock.patch(
-                "server_handlers.stitch_slot_playback._prepare_dry_concat_for_slot_bake",
-                return_value=video,
             ):
                 job_name, probed_ms, _warnings, _playback = stitch_upsert_event_slot(
                     h,
@@ -105,11 +102,12 @@ class StitchSlotExportFullMediaTests(unittest.TestCase):
                 )
 
             slot = store.state["jobs"][job_name]["slots"]["intro"]
-            self.assertEqual(slot["dry_export_path"], rel)
-            self.assertIn("_playback_", slot["video_path"])
+            self.assertEqual(slot["video_path"], rel)
+            self.assertNotIn("dry_export_path", slot)
+            self.assertNotIn("_playback_", slot["video_path"])
             self.assertEqual(
                 slot.get("playback_recipe_version"),
-                "STITCH_FOUR_FILES_V1",
+                "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1",
             )
             self.assertGreater(probed_ms, 35_000)
             self.assertEqual(slot["video_dur_ms"], probed_ms)

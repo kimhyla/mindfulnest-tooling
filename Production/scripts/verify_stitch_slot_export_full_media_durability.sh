@@ -42,8 +42,8 @@ grep -q 'stitch_upsert_event_slot' "$KLING" \
   || fail "Beat Gen must call stitch_upsert_event_slot"
 grep -q 'stitch_upsert_event_slot' "$PHASES" \
   || fail "Phase export must call stitch_upsert_event_slot"
-grep -q 'bake_and_persist_slot_playback_mp4' "$EDITOR" \
-  || fail "event slots must use four-files bake (FF-036)"
+grep -q 'persist_dry_authority_slot_export' "$EDITOR" \
+  || fail "event slots must persist dry concat (FF-042)"
 grep -q 'STITCH_EXPORT_FOUR_FILES_SLOT_APPLY_V1' "$REPO_ROOT/Production/tools/server_handlers/stitch_slot_playback.py" \
   || fail "STITCH_EXPORT_FOUR_FILES_SLOT_APPLY_V1 marker missing"
 
