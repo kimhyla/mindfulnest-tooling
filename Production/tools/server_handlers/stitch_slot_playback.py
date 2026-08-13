@@ -9,7 +9,6 @@ video_path; client Web Audio preview (superseded for event slots by FF-036).
 from __future__ import annotations
 
 import os
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -34,6 +33,8 @@ STITCH_DRY_AUTHORITY_PLAYBACK_RECIPE = STITCH_DRY_AUTHORITY_CLIENT_MIX_V1
 STITCH_FOUR_FILES_MIGRATE_V1 = "STITCH_FOUR_FILES_MIGRATE_V1"
 # FF-036 — Send to Stitcher must persist baked playback on slot JSON + disk (fail loud).
 STITCH_EXPORT_FOUR_FILES_SLOT_APPLY_V1 = "STITCH_EXPORT_FOUR_FILES_SLOT_APPLY_V1"
+# Playback bake must not shutil.copy2 onto Dropbox (errno 11 EDEADLK).
+STITCH_PLAYBACK_BAKE_LOCAL_COMMIT_V1 = "STITCH_PLAYBACK_BAKE_LOCAL_COMMIT_V1"
 
 _LEGACY_ARTIFACT_FIELDS = (
     "ambient_mix_hash",
@@ -359,6 +360,42 @@ def _prepare_dry_concat_for_slot_bake(h, dry_video_path: Path, cache_dir: Path) 
     return leveled
 
 
+def _hot_serve_dry_concat(h, dry_video_path: Path) -> Path:
+    """APFS copy of the dry concat — ffmpeg/normalize must not ffprobe Dropbox."""
+    event_dir = getattr(getattr(h, "app", None), "event_dir", None)
+    if not isinstance(event_dir, (str, os.PathLike)):
+        return Path(dry_video_path)
+    from media_playback_cache import ensure_hot_serve_file  # noqa: PLC0415
+
+    return Path(
+        ensure_hot_serve_file(
+            dry_video_path, event_dir=event_dir, dropbox_probe="when_needed",
+        )
+    )
+
+
+def _playback_work_path(dest: Path) -> Path:
+    """APFS staging file when dest is Dropbox File Provider."""
+    from lib.ffmpeg_io import local_staging_temp_path, path_is_cloud_storage_backed  # noqa: PLC0415
+
+    dest = Path(dest)
+    if not path_is_cloud_storage_backed(dest):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        return dest
+    return local_staging_temp_path(suffix=dest.suffix or ".mp4", prefix="mn_playback_")
+
+
+def _commit_playback_file(src: Path, dest: Path) -> None:
+    """STITCH_PLAYBACK_BAKE_LOCAL_COMMIT_V1 — never shutil.copy2 onto Dropbox."""
+    from lib.ffmpeg_io import copy_file_durable  # noqa: PLC0415
+
+    src = Path(src)
+    dest = Path(dest)
+    if src.resolve() == dest.resolve():
+        return
+    copy_file_durable(src, dest)
+
+
 def bake_slot_playback_mp4(
     h,
     slot: dict,
@@ -374,51 +411,49 @@ def bake_slot_playback_mp4(
     )
     from video_delivery import ensure_mp4_playback_timestamps  # noqa: PLC0415
 
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest = Path(dest)
+    dry_video_path = _hot_serve_dry_concat(h, Path(dry_video_path))
     if not dry_video_path.is_file():
         raise FileNotFoundError(f"dry export missing: {dry_video_path}")
 
     cache_dir = h._stitch_cache_dir()
     speech_src = _prepare_dry_concat_for_slot_bake(h, dry_video_path, cache_dir)
-
+    baked_src = speech_src
     if slot_has_playback_mix_layers(slot):
-        mixed = h._stitch_mix_slot_audio(
+        baked_src = h._stitch_mix_slot_audio(
             speech_src,
             slot,
             cache_dir,
             force_rebuild=True,
         )
-        if mixed.resolve() != dest.resolve():
-            shutil.copy2(mixed, dest)
-    else:
-        if speech_src.resolve() != dest.resolve():
-            shutil.copy2(speech_src, dest)
-        elif not dest.is_file():
-            shutil.copy2(speech_src, dest)
+
+    work = _playback_work_path(dest)
+    _commit_playback_file(baked_src, work)
 
     # Timestamp heal is the final pass. Copy-remux after heal reintroduces ~23ms
     # video start_time vs audio@0 and lengthens audio past video (lipsync drift).
-    ensure_mp4_playback_timestamps(dest)
-    if not mp4_operator_playback_timestamps_safe(dest):
+    ensure_mp4_playback_timestamps(work)
+    if not mp4_operator_playback_timestamps_safe(work):
         try:
-            dest.unlink()
+            work.unlink()
         except OSError:
             pass
         raise RuntimeError(
             f"{STITCH_PLAYBACK_LIPSYNC_TIMESTAMP_AUTHORITY_V1}: playback bake "
             f"stream start misaligned ({dest.name})",
         )
-    drift = av_duration_drift_s(dest)
+    drift = av_duration_drift_s(work)
     if drift > STITCH_EXPORT_AV_MAX_DRIFT_S:
         try:
-            dest.unlink()
+            work.unlink()
         except OSError:
             pass
         raise RuntimeError(
             f"{STITCH_FOUR_FILES_V1}: playback bake A/V drift {drift:.3f}s "
             f"> {STITCH_EXPORT_AV_MAX_DRIFT_S}s ({dest.name})",
         )
-    return h._ffprobe_duration_ms(dest) / 1000.0
+    _commit_playback_file(work, dest)
+    return h._ffprobe_duration_ms(work) / 1000.0
 
 
 def _assembled_playback_dest(h, slot_key: str) -> tuple[Path, str]:
