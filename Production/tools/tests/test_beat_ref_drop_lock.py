@@ -798,6 +798,20 @@ def test_bg_align_element_ref_handler_registered():
     assert "/api/bg/align-element-ref" in server
 
 
+def test_bg_align_element_ref_does_not_409_locked_library_upload():
+    """Use Element pose is the recovery click — locked refs must still align."""
+    text = (TOOLS / "server_handlers" / "background.py").read_text(encoding="utf-8")
+    block = text.split("def handle_bg_align_element_ref")[1].split(
+        "def handle_bg_add_element_pose",
+    )[0]
+    assert "REFERENCE_IMAGE_LOCKED" not in block
+    assert 'b["reference_image_locked"] = False' in block
+    ui = (TOOLS / "storyboard-v2" / "src" / "components" / "BgTab.tsx").read_text(
+        encoding="utf-8",
+    )
+    assert "bg_align_element_ref', { beat_id: beatId, force: true }" in ui
+
+
 def test_add_element_pose_appends_refer_and_reregisters(tmp_path: Path, monkeypatch):
     from tools import kling_character_registry as reg
 

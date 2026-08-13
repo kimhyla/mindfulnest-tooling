@@ -69,6 +69,37 @@ def test_bake_slot_playback_mp4_copy_when_no_mix_layers(tmp_path: Path) -> None:
     assert dur_s == pytest.approx(1.0, abs=0.05)
 
 
+def test_bake_playback_never_shutil_copy2_onto_dest() -> None:
+    text = (
+        Path(__file__).resolve().parents[1]
+        / "server_handlers"
+        / "stitch_slot_playback.py"
+    ).read_text(encoding="utf-8")
+    block = text.split("def bake_slot_playback_mp4", 1)[1].split(
+        "\ndef _assembled_playback_dest", 1,
+    )[0]
+    assert "shutil.copy2" not in block
+    assert "copy_file_durable" in text
+    assert "STITCH_PLAYBACK_BAKE_LOCAL_COMMIT_V1" in text
+
+
+def test_bake_slot_playback_commits_cloud_dest(tmp_path: Path) -> None:
+    """Event_6 job 58c02a2d: concat ok, shutil.copy2 onto Dropbox assembled → EDEADLK."""
+    dry = tmp_path / "dry.mp4"
+    dest = tmp_path / "CloudStorage" / "Dropbox" / "assembled" / "resolution_playback.mp4"
+    dest.parent.mkdir(parents=True)
+    _make_dry_mp4(dry)
+    h = MagicMock()
+    h._ffprobe_duration_ms.return_value = 1000
+    with patch(
+        "server_handlers.stitch_slot_playback._prepare_dry_concat_for_slot_bake",
+        return_value=dry,
+    ):
+        bake_slot_playback_mp4(h, {}, dry_video_path=dry, dest=dest)
+    assert dest.is_file()
+    assert dest.stat().st_size > 1000
+
+
 def test_stitch_upsert_event_slot_uses_four_files_bake_branch() -> None:
     src = Path(__file__).resolve().parents[1] / "server_handlers" / "stitch_editor.py"
     text = src.read_text(encoding="utf-8")

@@ -91,9 +91,10 @@ def test_set_element_identity_stamps_sha_and_updates_frontal(prod_root: Path):
     source = prod_root / "library" / "baseline_char_rabbit_gardener.png"
     _write_png(source, b"tan-gardener-bytes")
 
-    out = reg.set_element_identity("Benson", source, "ws-key")
+    out = reg.set_element_identity("Benson:", source, "ws-key")
     saved = json.loads((prod_root / "character_subjects.json").read_text(encoding="utf-8"))
     cfg = saved["characters"]["Benson"]
+    assert out["character"] == "Benson"
     assert cfg["frontal_image"] == out["pose_rel"]
     assert cfg["frontal_sha256"] == out["frontal_sha256"]
     assert cfg["visual_canonical_locked"] is True
@@ -262,6 +263,21 @@ def test_heal_event_beats_to_canonical_frontal(prod_root: Path):
                 "reference_image": {"abs_path": str(baseline)},
             },
         ],
+        "arcs": {
+            "arc_1": {
+                "segments": {
+                    "event_6_post": {
+                        "beats": [
+                            {
+                                "beat_id": "bg_arc1_event6_post_beat_04",
+                                "speaker": "Benson:",
+                                "reference_image": {"abs_path": str(baseline)},
+                            },
+                        ],
+                    },
+                },
+            },
+        },
     }
     healed = bg.heal_event_beats_to_canonical_frontal(
         sidecar,
@@ -269,7 +285,13 @@ def test_heal_event_beats_to_canonical_frontal(prod_root: Path):
         str(frontal),
         pose_rel="Benson/poses/front.png",
     )
-    assert healed == ["bg_arc1_event5_pre_beat_01", "bg_arc1_event5_pre_beat_03"]
+    assert healed == [
+        "bg_arc1_event5_pre_beat_01",
+        "bg_arc1_event5_pre_beat_03",
+        "bg_arc1_event6_post_beat_04",
+    ]
     assert sidecar["beats"][0]["reference_image"]["abs_path"] == str(frontal)
     assert sidecar["beats"][0]["reference_image_locked"] is True
     assert sidecar["beats"][2]["reference_image"]["abs_path"] == str(baseline)
+    nested = sidecar["arcs"]["arc_1"]["segments"]["event_6_post"]["beats"][0]
+    assert nested["reference_image"]["abs_path"] == str(frontal)

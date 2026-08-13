@@ -1825,6 +1825,32 @@ def remux_mp4_video_timeline_authority(
                 pass
 
 
+def heal_mp4_video_timeline_authority_if_needed(
+    path: Path,
+    *,
+    heal_above_s: float = STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S,
+    heal_max_s: float = STITCH_EXPORT_AV_MAX_DRIFT_S,
+) -> float:
+    """Remux audio onto the video timeline when A/V drift is healable.
+
+    STITCH_EXPORT_HEAL_AAC_DRIFT_V1 — magic-on-video / harvest / dissolve muxes
+    often land ~50ms off (video re-encode + audio copy, ~2 AAC frames). That
+    exceeds the concat 50ms budget but is far under the 250ms broken-clip gate.
+    Heal those; leave genuinely broken files (e.g. 3s audio / 6s video) alone
+    so Send to Stitcher still fails loud.
+
+    Returns post-heal (or original) drift in seconds.
+    """
+    clip = Path(path)
+    drift = av_duration_drift_s(clip)
+    if drift <= heal_above_s:
+        return drift
+    if drift > heal_max_s:
+        return drift
+    remux_mp4_video_timeline_authority(clip, clip, re_encode_video=False)
+    return av_duration_drift_s(clip)
+
+
 def assert_stitch_export_clips_av_aligned(
     clip_paths: list[Path],
     *,

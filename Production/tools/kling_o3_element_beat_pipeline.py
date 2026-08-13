@@ -531,6 +531,10 @@ def run_pipeline(
     speaker = (beat.get("speaker") or "").strip()
     if not speaker:
         raise RuntimeError(f"{beat_id} has no speaker")
+    canon = reg.normalize_beat_speaker_for_sidecar(speaker) or speaker
+    if canon != speaker:
+        beat["speaker"] = canon
+        speaker = canon
     if not reg.is_speaker_voice_ready(speaker):
         raise RuntimeError(
             f"{speaker!r} has no active Element + bound voice. "

@@ -142,8 +142,20 @@ def apply_cast_text(text: str) -> str:
     return out
 
 
-def canon_plan_speaker(raw: str) -> str:
+_SPEAKER_SCRIPT_LABEL_RE = re.compile(r"[\s:：.;,]+$")
+
+
+def _strip_speaker_script_label(raw: str) -> str:
     key = (raw or "").strip()
+    if not key:
+        return ""
+    if key.startswith("[") and key.endswith("]"):
+        return key
+    return _SPEAKER_SCRIPT_LABEL_RE.sub("", key).strip()
+
+
+def canon_plan_speaker(raw: str) -> str:
+    key = _strip_speaker_script_label(raw)
     if not key:
         return "Character"
     return _SPEAKER_CANON.get(key.lower(), key)
@@ -154,10 +166,11 @@ _SPEAKER_WEAK_SUFFIX_RE = re.compile(r"\s+(?:says|speaks)\s*$", re.I)
 
 def normalize_dialogue_speaker(raw: str) -> str:
     """Strip trailing ``says``/``speaks`` from parsed speaker labels (``Lorelai says:``)."""
-    key = (raw or "").strip()
+    key = _strip_speaker_script_label(raw)
     if not key:
         return "Character"
     key = _SPEAKER_WEAK_SUFFIX_RE.sub("", key).strip()
+    key = _strip_speaker_script_label(key)
     return canon_plan_speaker(key)
 
 

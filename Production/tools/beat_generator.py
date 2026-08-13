@@ -10741,6 +10741,51 @@ def realign_beat_char_ref_for_speaker_change(
     return False
 
 
+def heal_script_label_speaker(beat: dict) -> bool:
+    """Rewrite ``Arlo:`` sidecar speakers (and matching @Image1 labels) to registry keys."""
+    raw = str(beat.get("speaker") or "")
+    if not raw.strip():
+        return False
+    try:
+        from tools import kling_character_registry as reg
+    except Exception:
+        return False
+    canon = reg.normalize_beat_speaker_for_sidecar(raw)
+    if not canon:
+        return False
+    dirty_labels = {
+        raw.strip(),
+        reg.strip_speaker_script_label(raw),
+        f"{canon}:",
+    }
+    dirty_labels.discard("")
+    dirty_labels.discard(canon)
+    try:
+        clean_label = reg.kling_image1_speaker_label(canon) or canon
+    except Exception:
+        clean_label = canon
+    changed = False
+    if canon != raw:
+        beat["speaker"] = canon
+        changed = True
+    for field in ("kling_o3_prompt", "kling_o3_prompt_still"):
+        text = beat.get(field)
+        if not isinstance(text, str) or not text or not dirty_labels:
+            continue
+        new_text = text
+        for dirty in dirty_labels:
+            new_text = re.sub(
+                rf"(@Image1\s*\()\s*{re.escape(dirty)}\s*(\))",
+                rf"\g<1>{clean_label}\2",
+                new_text,
+                flags=re.I,
+            )
+        if new_text != text:
+            beat[field] = new_text
+            changed = True
+    return changed
+
+
 def heal_speaker_char_ref_mismatch(beat: dict) -> bool:
     """Persist heal when sidecar speaker and @Image1 bytes name different characters."""
     speaker = str(beat.get("speaker") or "").strip()
@@ -10784,9 +10829,25 @@ def heal_event_beats_to_canonical_frontal(
     if not speaker_key or not frontal_abs or not os.path.isfile(frontal_abs):
         return []
     healed: list[str] = []
+    seen: set[int] = set()
+    candidates: list[dict] = []
     for b in sidecar.get("beats") or []:
-        if not isinstance(b, dict):
+        if isinstance(b, dict):
+            candidates.append(b)
+    for arc in (sidecar.get("arcs") or {}).values():
+        if not isinstance(arc, dict):
             continue
+        for seg in (arc.get("segments") or {}).values():
+            if not isinstance(seg, dict):
+                continue
+            for b in seg.get("beats") or []:
+                if isinstance(b, dict):
+                    candidates.append(b)
+    for b in candidates:
+        marker = id(b)
+        if marker in seen:
+            continue
+        seen.add(marker)
         beat_speaker = reg.normalize_beat_speaker_for_sidecar(str(b.get("speaker") or ""))
         if beat_speaker != speaker_key:
             continue
@@ -15349,6 +15410,8 @@ def resolve_segment_stitch_export_clip_paths(
             local_tail = ensure_local_media(
                 canonical_tail, event_dir=event_dir, dropbox_probe="short",
             )
+            # STITCH_EXPORT_HEAL_AAC_DRIFT_V1 — APFS copy only; never mutate Dropbox master.
+            _ffmpeg_stitch_module().heal_mp4_video_timeline_authority_if_needed(local_tail)
             clip_paths.append(local_tail.resolve())
             still_insert_flags.append(False)
         else:
@@ -15366,6 +15429,10 @@ def resolve_segment_stitch_export_clip_paths(
             from o3_gallery_option_identity import assert_beat_export_audio_contract  # noqa: PLC0415
 
             assert_beat_export_audio_contract(beat, local_clip)
+            # STITCH_EXPORT_HEAL_AAC_DRIFT_V1 — magic-on-video (~52ms) and harvest
+            # leftovers must remux onto video timeline before the 50ms concat gate.
+            # Broken clips (>250ms) are left for assert_stitch_export_clips_av_aligned.
+            _ffmpeg_stitch_module().heal_mp4_video_timeline_authority_if_needed(local_clip)
             # FF-042 / KLING_O3_EXPORT_BG_PASSTHROUGH_V1 — Send to Stitcher concat uses the
             # same per-beat MP4 authority as Beat Gen preview (approved delivery or trim
             # bake). No per-beat loudnorm, normalize, or ambient — those run at Bake Final.
