@@ -10,6 +10,8 @@ CROPPER="${REPO_ROOT}/Production/tools/server_handlers/cropper.py"
 META_TEST="${REPO_ROOT}/Production/tools/tests/test_cr_library_metadata_only.py"
 TEST="${REPO_ROOT}/Production/tools/tests/test_event_library_scoping.py"
 APP_CTX_TEST="${REPO_ROOT}/Production/tools/tests/test_app_context_library_roots.py"
+HOT_SERVE_TEST="${REPO_ROOT}/Production/tools/tests/test_media_hot_serve_dropbox_durability.py"
+PLAYBACK_CACHE_TEST="${REPO_ROOT}/Production/tools/tests/test_media_playback_cache.py"
 SMOKE="${SCRIPT_DIR}/smoke_per_event_library.sh"
 
 fail() { echo "[per-event-library-durability] FAIL: $1" >&2; exit 1; }
@@ -20,6 +22,8 @@ fail() { echo "[per-event-library-durability] FAIL: $1" >&2; exit 1; }
 [[ -f "$META_TEST" ]] || fail "missing test_cr_library_metadata_only.py"
 [[ -f "$TEST" ]] || fail "missing test_event_library_scoping.py"
 [[ -f "$APP_CTX_TEST" ]] || fail "missing test_app_context_library_roots.py"
+[[ -f "$HOT_SERVE_TEST" ]] || fail "missing test_media_hot_serve_dropbox_durability.py"
+[[ -f "$PLAYBACK_CACHE_TEST" ]] || fail "missing test_media_playback_cache.py"
 [[ -x "$SMOKE" ]] || fail "missing smoke_per_event_library.sh"
 
 grep -q 'library/images' "$PATHS" \
@@ -62,7 +66,16 @@ grep -q 'apply_to_all_events' "${REPO_ROOT}/Production/canonical_image_registry.
 grep -q 'apply_to_all_events' "$EVENT_LIB" \
   || fail "event_library canonical_meta_for_arc must honor apply_to_all_events"
 
-python3 -m pytest "$TEST" "$APP_CTX_TEST" "$META_TEST" -q
+# HOT_SERVE_TRUE_CACHE_FIRST_V2 + CR_LIBRARY_THUMB_WARM_V1 — lock the class that
+# left Library tiles on permanent 503 when thumbs used dropbox_probe=never, and
+# the ThreadPoolExecutor shutdown hang that pinned HTTP workers on cold miss.
+python3 -m pytest \
+  "$TEST" \
+  "$APP_CTX_TEST" \
+  "$META_TEST" \
+  "$HOT_SERVE_TEST" \
+  "$PLAYBACK_CACHE_TEST" \
+  -q
 
 if curl -sf --max-time 5 "http://localhost:${MN_SERVER_PORT:-5111}/api/event/current" >/dev/null 2>&1; then
   export MN_SERVER_PORT="${MN_SERVER_PORT:-5111}"
