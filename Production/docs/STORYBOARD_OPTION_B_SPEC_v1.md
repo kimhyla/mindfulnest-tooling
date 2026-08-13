@@ -31,13 +31,13 @@ bash Production/scripts/deploy_option_b.sh --event Event_2
 
 Steps inside (non-skippable):
 
-1. Git-clean gate (committed HEAD = build-sha)
-2. `npm run build` + stale-dist gate + regression guards
+1. Git-clean gate + **DEPLOY_PIN_V1** (freeze `git rev-parse --short HEAD` now; later proofs must not re-read live HEAD)
+2. `npm run build` with the pinned sha — **skipped** when storyboard-v2 UI source is unchanged vs live Dropbox HTML
 3. Rsync `Production/{tools,lib,scripts}` → Dropbox
 4. Copy `dist/index.html` → `Event_*/storyboard_v59_prod.html` fanout
 5. sha256 parity (`verify_tooling_dropbox_parity.py` exit 0)
-6. Restart **only** the target event's dedicated port (`5110 + N`)
-7. Live proof: build-sha on `http://localhost:{port}/` matches `git rev-parse --short HEAD`
+6. Restart the target event's dedicated port (`5110 + N`). Fleet-restart `:5111–:5117` **only** when UI source changed (`STORYBOARD_FLEET_RESTART_SKIP_WHEN_BUNDLE_UNCHANGED_V1`)
+7. Live proof: HTML build-sha matches the **baked dist bundle sha**; `X-Tooling-Sha` matches the **deploy pin**
 8. API smoke: `/api/event/load`, O3 capabilities
 9. Write `.last_deploy` sentinel
 
@@ -64,9 +64,10 @@ All must pass after deploy:
 | Check | Evidence |
 |-------|----------|
 | Parity | `verify_tooling_dropbox_parity.py` exit 0 |
-| Bundle sha | Dropbox `Event_N/storyboard_v59_prod.html` build-sha == git HEAD |
-| Live sha | curl `http://localhost:{port}/` build-sha == git HEAD |
-| UI marker | Served HTML contains `data-testid="app-build-sha"` with HEAD |
+| Bundle sha | Dropbox `Event_N/storyboard_v59_prod.html` build-sha == dist `index.html` meta (not live `git HEAD`) |
+| Live sha | curl `http://localhost:{port}/` build-sha == dist bundle sha |
+| Python sha | `X-Tooling-Sha` == deploy pin (`MN_EXPECT_BUILD_SHA` / `.deploy_pin`) |
+| UI marker | Served HTML contains `data-testid="app-build-sha"` |
 | Server HTTP | GET / → 200 |
 | Event pin | POST `/api/event/load` → 200 |
 

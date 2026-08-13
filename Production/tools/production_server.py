@@ -14260,15 +14260,24 @@ def run_server(
 
     app = AppContext(event_dir, storyboard_path, event_id, state, client)
     app.server_port = port
-    try:
-        _repo_root = Path(__file__).resolve().parent.parent.parent
-        app.tooling_sha = subprocess.check_output(
-            ["git", "rev-parse", "--short", "HEAD"],
-            cwd=_repo_root,
-            text=True,
-        ).strip()
-    except Exception:
-        app.tooling_sha = "unknown"
+    # DEPLOY_PIN_V1 — prefer the frozen deploy sha so X-Tooling-Sha does not
+    # follow a later checkout theft on the same tooling tree.
+    _pinned = (
+        (os.environ.get("MN_EXPECT_BUILD_SHA") or os.environ.get("BUILD_SHA") or "")
+        .strip()
+    )
+    if _pinned:
+        app.tooling_sha = _pinned
+    else:
+        try:
+            _repo_root = Path(__file__).resolve().parent.parent.parent
+            app.tooling_sha = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"],
+                cwd=_repo_root,
+                text=True,
+            ).strip()
+        except Exception:
+            app.tooling_sha = "unknown"
 
     # DIRECTUS_LOCK_WARMUP_V1 (2026-05-14): warm the cross-machine lock
     # client singleton + JWT auth at startup so the first user-triggered
