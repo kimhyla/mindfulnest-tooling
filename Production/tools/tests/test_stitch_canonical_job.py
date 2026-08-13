@@ -141,8 +141,16 @@ class StitchCanonicalJobTests(unittest.TestCase):
             slots = h.app.stitch_state.state["jobs"]["Event_1_stitch"]["slots"]
             self.assertIn("resolution", slots)
             self.assertIn("phase_b", slots)
-            self.assertEqual(slots["phase_b"]["dry_export_path"], dry_rel)
-            self.assertIn("_playback_", Path(slots["phase_b"]["video_path"]).name)
+            self.assertEqual(slots["phase_b"]["video_path"], dry_rel)
+            self.assertNotIn("dry_export_path", slots["phase_b"])
+            self.assertEqual(
+                slots["phase_b"].get("playback_recipe_version"),
+                "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1",
+            )
+            self.assertEqual(
+                slots["resolution"]["video_path"],
+                "/proj/scene_resolution.mp4",
+            )
 
     def test_slot_order_constant(self):
         self.assertEqual(
