@@ -92,7 +92,11 @@ export function StitchComposerVideoPool({
         const isActive = slot === activeSlot;
         return (
           <video
-            key={`${slot}:${url}`}
+            // STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1 — stable element per slot.
+            // key={slot:url} remounted on hot-serve URL swap and left the
+            // displayOnly waveform listening to a dead <video> (Resolution-only
+            // playhead lag after Send / dry hot bind).
+            key={slot}
             ref={(el) => {
               videoRefs.current[slot] = el;
             }}

@@ -47,6 +47,33 @@ def test_waveform_timeline_display_only_mode() -> None:
     assert "waveform-display-only-label" in src
 
 
+def test_composer_master_video_sync_rebinds_on_src_change() -> None:
+    """STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1 — deps must include masterVideoSrc.
+
+    Regression: 91cc21f7 dropped masterVideoSrc from the displayOnly sync effect;
+    Resolution playhead lagged after hot-serve URL remount while intro/A/B worked
+    (slot switch rebinding).
+    """
+    src = WAVEFORM.read_text(encoding="utf-8")
+    marker = "if (!displayOnly) return;"
+    # First displayOnly sync effect (master video playhead), before linked-media sync.
+    block = src.split(marker, 1)[1].split("// Shared lipsync <video>", 1)[0]
+    assert "masterVideoSrc" in block
+    assert "masterVideoSrc," in block or "masterVideoSrc]" in block
+    assert "mediaDurS" in block
+    assert "video.duration" in block
+    assert "STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1" in src
+
+
+def test_composer_video_pool_stable_slot_key() -> None:
+    """Pool must not remount <video> on URL swap — that orphans waveform listeners."""
+    pool = (
+        REPO / "tools" / "storyboard-v2" / "src" / "components" / "StitchComposerVideoPool.tsx"
+    ).read_text(encoding="utf-8")
+    assert "key={slot}" in pool
+    assert "key={`${slot}:${url}`}" not in pool
+
+
 def test_composer_passes_master_video_src_for_playhead_rebind() -> None:
     src = STITCHER.read_text(encoding="utf-8")
     assert "masterVideoSrc: composerVideoUrl" in src
