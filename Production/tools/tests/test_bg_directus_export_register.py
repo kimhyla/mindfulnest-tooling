@@ -55,6 +55,7 @@ def test_resolve_segment_export_clip_paths_matches_concat_inputs(tmp_path, monke
             "assert_stitch_export_cumulative_av_aligned": staticmethod(lambda _c, **k: None),
             "assert_stitch_export_assembled_av_drift": staticmethod(lambda _p, **k: None),
             "export_clip_timeline_duration_s": staticmethod(lambda _p: 2.0),
+            "heal_mp4_video_timeline_authority_if_needed": staticmethod(lambda _p, **k: 0.0),
             "STITCH_EXPORT_CUMULATIVE_AV_MAX_DRIFT_S": 0.05,
         })(),
     )
