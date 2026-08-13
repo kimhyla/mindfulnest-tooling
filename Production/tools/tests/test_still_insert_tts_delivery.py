@@ -26,6 +26,7 @@ def test_ensure_still_insert_tts_sends_delivery_payload(monkeypatch) -> None:
 
     def _fake_regen(_app, _beat_id, text, _key, **kwargs):
         captured["text"] = text
+        captured["persist_production_state"] = kwargs.get("persist_production_state")
         return {"ok": True, "audio_file": "line_02_lorelai.mp3"}
 
     monkeypatch.setattr("tools.production_server._tts_regenerate_for_beat", _fake_regen)
@@ -46,6 +47,7 @@ def test_ensure_still_insert_tts_sends_delivery_payload(monkeypatch) -> None:
     result = bg_handler._ensure_still_insert_tts(h, beat, {}, {}, "resolution")
     assert result["ok"] is True
     assert captured["text"] == tts_info["tts_text"]
+    assert captured["persist_production_state"] is False
     assert beat["still_tts_source_text"] == tts_info["fingerprint"]
 
 

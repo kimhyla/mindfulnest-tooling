@@ -4211,7 +4211,8 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
                              *,
                              speaker_override: str | None = None,
                              storyboard_beat_id: str | None = None,
-                             voice_profile_override: dict | None = None) -> dict:
+                             voice_profile_override: dict | None = None,
+                             persist_production_state: bool = True) -> dict:
     """Synchronously regenerate TTS audio for a beat via ElevenLabs v3.
 
     Rule 11 source fidelity: text preserved verbatim, voice profile locked
@@ -4241,30 +4242,35 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
 
     state_beat_id = storyboard_beat_id or beat_id
 
-    # Resolve speaker -> voice profile. Read from the caller's actual partition.
-    beats = app.state.get_beats(video_role)
-    beat_state = beats.get(state_beat_id) or beats.get(beat_id) or {}
-    speaker = (speaker_override or beat_state.get("speaker") or "").strip()
-    if not speaker:
-        # Fallback: parse from storyboard L[] s: field
-        try:
-            html = app.storyboard_path.read_text(encoding="utf-8")
-            marker = f'a:"line_{beat_num_s}"'
-            idx = html.find(marker)
-            if idx >= 0:
-                ob = html.rfind("{", 0, idx)
-                cb = html.find("}", idx)
-                entry = html[ob:cb + 1]
-                m = re.search(r's:"([^"]+)"', entry)
-                if m:
-                    speaker = m.group(1)
-        except Exception:  # noqa: BLE001
-            pass
+    # Still-insert (and any caller with both overrides) must not read Dropbox
+    # production_state.json or storyboard HTML on the UI request path.
+    speaker = (speaker_override or "").strip()
+    profile = voice_profile_override if voice_profile_override else None
+    if not speaker or not (profile and profile.get("voice_id")):
+        beats = app.state.get_beats(video_role)
+        beat_state = beats.get(state_beat_id) or beats.get(beat_id) or {}
+        if not speaker:
+            speaker = (beat_state.get("speaker") or "").strip()
+        if not speaker:
+            # Fallback: parse from storyboard L[] s: field
+            try:
+                html = app.storyboard_path.read_text(encoding="utf-8")
+                marker = f'a:"line_{beat_num_s}"'
+                idx = html.find(marker)
+                if idx >= 0:
+                    ob = html.rfind("{", 0, idx)
+                    cb = html.find("}", idx)
+                    entry = html[ob:cb + 1]
+                    m = re.search(r's:"([^"]+)"', entry)
+                    if m:
+                        speaker = m.group(1)
+            except Exception:  # noqa: BLE001
+                pass
+        if not profile or not profile.get("voice_id"):
+            profile = _resolve_voice_profile(speaker) if speaker else None
 
     if not speaker:
         return {"ok": False, "error": f"could not resolve speaker for {beat_id}"}
-
-    profile = voice_profile_override if voice_profile_override else _resolve_voice_profile(speaker)
     if not profile or not profile.get("voice_id"):
         # Surface all currently-registered + missing speakers so Kim can
         # see the gap shape (not just the one beat's failure).
@@ -4292,13 +4298,15 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
     # Canonicalize: Guide Bird -> guide_bird, Tessa -> tessa, Pip -> pip.
     speaker_slug = re.sub(r"[^a-z_]", "", speaker_slug)
 
-    tts_dir = app.event_dir / "story_scene_tts_v2"
-    # Write to storyboard-namespaced subdir to prevent TTS collision across storyboards
-    _sb_stem = getattr(app, "storyboard_stem", "")
+    from media_hot_root import still_tts_hot_dir
+
+    _sb_stem = getattr(app, "storyboard_stem", "") or ""
+    tts_dir = still_tts_hot_dir(app.event_dir, _sb_stem, create=True)
+    dropbox_tts_dir = Path(app.event_dir) / "story_scene_tts_v2"
     if _sb_stem:
-        tts_dir = tts_dir / _sb_stem
-    tts_dir.mkdir(parents=True, exist_ok=True)
+        dropbox_tts_dir = dropbox_tts_dir / _sb_stem
     out_path = tts_dir / f"line_{beat_num_s}_{speaker_slug}.mp3"
+    dropbox_out_path = dropbox_tts_dir / out_path.name
 
     # Strip stage-direction markup before sending to ElevenLabs per
     # TTS_STRIP_STAGE_DIRECTION_V1 (2026-05-14). beat.text is the
@@ -4326,6 +4334,11 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
         "voice_settings": voice_settings,
     }).encode("utf-8")
     t0 = time.time()
+    print(
+        f"[tts-regen] {beat_id} ElevenLabs start voice={profile['voice_id']} "
+        f"model={model_id} chars={len(tts_text)}",
+        flush=True,
+    )
     try:
         status_code, audio_bytes = robust_https_request(
             host="api.elevenlabs.io",
@@ -4339,17 +4352,45 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
             max_retries=3,
         )
     except Exception as e:
+        print(
+            f"[tts-regen] {beat_id} ElevenLabs failed: {type(e).__name__}: {e}",
+            flush=True,
+        )
         return {"ok": False,
                 "error": f"ElevenLabs network (after retries): {type(e).__name__}: {e}",
                 "speaker": speaker, "voice_id": profile["voice_id"]}
     if status_code >= 400:
         detail = audio_bytes[:400].decode("utf-8", errors="replace")
+        print(
+            f"[tts-regen] {beat_id} ElevenLabs HTTP {status_code}: {detail[:240]}",
+            flush=True,
+        )
+        friendly = detail
+        try:
+            parsed = json.loads(detail)
+            msg = str(((parsed.get("detail") or {}) if isinstance(parsed, dict) else {}).get("message") or "")
+            code = str(((parsed.get("detail") or {}) if isinstance(parsed, dict) else {}).get("code") or "")
+            if code == "invalid_api_key" or "API key ID used as API key" in msg:
+                friendly = (
+                    "ElevenLabs voice key is invalid (stored value is a key ID, not the "
+                    "secret). Put the real key (starts with sk_) in Doppler / credentials "
+                    "and retry Build still video."
+                )
+            elif msg:
+                friendly = f"ElevenLabs HTTP {status_code}: {msg}"
+        except Exception:
+            friendly = f"ElevenLabs HTTP {status_code}: {detail[:200]}"
         return {"ok": False,
-                "error": f"ElevenLabs HTTP {status_code}: {detail}",
+                "error": friendly,
                 "speaker": speaker, "voice_id": profile["voice_id"]}
     elapsed_call = time.time() - t0
+    print(
+        f"[tts-regen] {beat_id} ElevenLabs done HTTP {status_code} "
+        f"{len(audio_bytes)}b in {elapsed_call:.1f}s → {out_path}",
+        flush=True,
+    )
 
-    # Archive any prior line_NN_*.mp3 before writing new.
+    # Archive any prior local line_NN_*.mp3 before writing new.
     archive_dir = tts_dir / "_archive_superseded"
     archive_dir.mkdir(exist_ok=True)
     ts_archive = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -4360,9 +4401,9 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
         try:
             shutil.move(str(prior), str(dst))
         except OSError as e:
-            print(f"[tts-regen] archive failed for {prior.name}: {e}")
+            print(f"[tts-regen] archive failed for {prior.name}: {e}", flush=True)
 
-    # Atomic write of new audio.
+    # Atomic write of new audio on APFS (or in-tree pytest workspace).
     tmp = out_path.with_suffix(f".mp3.tmp.{os.getpid()}")
     try:
         tmp.write_bytes(audio_bytes)
@@ -4373,6 +4414,23 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
         except Exception:  # noqa: BLE001
             pass
         return {"ok": False, "error": f"atomic write failed: {e}"}
+
+    def _copy_tts_to_dropbox() -> None:
+        try:
+            dropbox_tts_dir.mkdir(parents=True, exist_ok=True)
+            dt = dropbox_out_path.with_suffix(f".mp3.tmp.{os.getpid()}")
+            dt.write_bytes(out_path.read_bytes())
+            os.replace(dt, dropbox_out_path)
+            print(f"[tts-regen] {beat_id} dropbox copy ok {dropbox_out_path.name}", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[tts-regen] {beat_id} dropbox copy skipped: {exc}", flush=True)
+
+    if Path(out_path).resolve() != Path(dropbox_out_path).resolve():
+        threading.Thread(
+            target=_copy_tts_to_dropbox,
+            daemon=True,
+            name=f"tts-dropbox-{beat_id}",
+        ).start()
 
     # Measure duration (ffprobe).
     try:
@@ -4393,7 +4451,19 @@ def _tts_regenerate_for_beat(app, beat_id: str, text: str,
         ls = b.get("lipsync") or {}
         if ls.get("status") == "completed":
             ls["audio_changed"] = True
-    app.state.mutate_video_state(video_role, _update)
+    if persist_production_state:
+        try:
+            app.state.mutate_video_state(video_role, _update)
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[tts-regen] {beat_id} production_state persist skipped: {exc}",
+                flush=True,
+            )
+    else:
+        print(
+            f"[tts-regen] {beat_id} skip production_state persist (sidecar owns still+TTS)",
+            flush=True,
+        )
 
     result = {
         "ok": True,

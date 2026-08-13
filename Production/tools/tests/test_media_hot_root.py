@@ -55,6 +55,18 @@ def test_env_zero_disables_redirect(tmp_path: Path, monkeypatch):
     assert mhr.resolve_media_workspace(fake_cloud) == fake_cloud
 
 
+def test_still_tts_hot_dir_is_under_media_workspace(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(tmp_path / "hot"))
+    cloud_event = Path(
+        "/Users/kimberlysmith/Library/CloudStorage/Dropbox/"
+        "Claude Mindfulnest Project Files/Production/Event_6"
+    )
+    d = mhr.still_tts_hot_dir(cloud_event, "storyboard_v59_prod")
+    assert d == tmp_path / "hot" / "Event_6" / "story_scene_tts_v2" / "storyboard_v59_prod"
+    assert d.is_dir()
+    assert "Dropbox" not in str(d)
+
+
 def test_media_hot_serve_roots_include_configured_root(tmp_path: Path, monkeypatch):
     hot = tmp_path / "hot_root"
     monkeypatch.setenv("MN_MEDIA_HOT_ROOT", str(hot))

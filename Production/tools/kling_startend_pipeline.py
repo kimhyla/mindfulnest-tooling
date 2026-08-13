@@ -373,55 +373,105 @@ def robust_https_request(
     error — retrying won't help).
 
     Backoff: 3s, 9s, 27s between attempts.
+
+    Socket timeout alone does not always abort SSL handshake ``sendall``
+    (observed: Event_6 still+TTS worker stuck in ``__sendto`` with no
+    ElevenLabs TCP conn while ``timeout=90``). Each attempt also has a
+    wall-clock deadline that closes the connection.
     """
     import http.client as _http
     import ssl as _ssl
+    import threading
     import time as _time
     headers = headers or {}
     last_exc: Exception | None = None
     last_status: int | None = None
     last_body: bytes = b""
+    timeout_s = max(1, int(timeout))
 
     for attempt in range(max_retries):
-        try:
-            ctx = _ssl.create_default_context()
-            ctx.options |= _ssl.OP_NO_TICKET | _ssl.OP_NO_COMPRESSION
-            conn = _http.HTTPSConnection(host, timeout=timeout, context=ctx)
+        holder: dict = {"conn": None, "status": None, "body": b"", "exc": None}
+
+        def _one_attempt() -> None:
             try:
-                full_headers = dict(headers)
-                if body is not None and "Content-Length" not in full_headers:
-                    full_headers["Content-Length"] = str(len(body))
-                conn.request(method, path, body=body, headers=full_headers)
-                resp = conn.getresponse()
-                raw = resp.read()
-                last_status = resp.status
-                last_body = raw
-            finally:
-                conn.close()
+                ctx = _ssl.create_default_context()
+                ctx.options |= _ssl.OP_NO_TICKET | _ssl.OP_NO_COMPRESSION
+                conn = _http.HTTPSConnection(host, timeout=timeout_s, context=ctx)
+                holder["conn"] = conn
+                try:
+                    full_headers = dict(headers)
+                    if body is not None and "Content-Length" not in full_headers:
+                        full_headers["Content-Length"] = str(len(body))
+                    conn.request(method, path, body=body, headers=full_headers)
+                    resp = conn.getresponse()
+                    holder["body"] = resp.read()
+                    holder["status"] = resp.status
+                finally:
+                    conn.close()
+            except Exception as exc:  # noqa: BLE001
+                holder["exc"] = exc
 
-            if last_status < 400:
-                if attempt > 0:
-                    print(f"[robust-https] {method} {host}{path[:40]} — succeeded on retry {attempt+1}")
-                return last_status, last_body
-
-            if last_status in retry_on_status:
-                # 5xx — retry
-                last_exc = Exception(f"HTTP {last_status}: {raw[:200].decode('utf-8', 'replace')}")
-                print(f"[robust-https] {method} {host}{path[:40]} attempt {attempt+1}/{max_retries}: HTTP {last_status} — retrying")
+        worker = threading.Thread(
+            target=_one_attempt,
+            daemon=True,
+            name=f"robust-https-{host[:24]}",
+        )
+        worker.start()
+        worker.join(timeout_s + 2)
+        if worker.is_alive():
+            conn = holder.get("conn")
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            last_exc = TimeoutError(
+                f"wall-clock {timeout_s}s exceeded for {method} {host}{path[:40]}"
+            )
+            print(
+                f"[robust-https] {method} {host}{path[:40]} attempt {attempt+1}/{max_retries}: "
+                f"TimeoutError: {last_exc} — retrying",
+                flush=True,
+            )
+        elif holder["exc"] is not None:
+            exc = holder["exc"]
+            if isinstance(exc, (TimeoutError, _http.HTTPException, OSError)):
+                last_exc = exc
+                print(
+                    f"[robust-https] {method} {host}{path[:40]} attempt {attempt+1}/{max_retries}: "
+                    f"{type(exc).__name__}: {exc} — retrying",
+                    flush=True,
+                )
             else:
-                # 4xx — client error, don't retry
+                raise exc
+        else:
+            last_status = holder["status"]
+            last_body = holder["body"] or b""
+            raw = last_body
+            if last_status is not None and last_status < 400:
+                if attempt > 0:
+                    print(
+                        f"[robust-https] {method} {host}{path[:40]} — succeeded on retry {attempt+1}",
+                        flush=True,
+                    )
                 return last_status, last_body
-
-        except (TimeoutError, _http.HTTPException, OSError) as exc:
-            last_exc = exc
-            print(f"[robust-https] {method} {host}{path[:40]} attempt {attempt+1}/{max_retries}: {type(exc).__name__}: {exc} — retrying")
+            if last_status in retry_on_status:
+                last_exc = Exception(
+                    f"HTTP {last_status}: {raw[:200].decode('utf-8', 'replace')}"
+                )
+                print(
+                    f"[robust-https] {method} {host}{path[:40]} attempt {attempt+1}/{max_retries}: "
+                    f"HTTP {last_status} — retrying",
+                    flush=True,
+                )
+            else:
+                return last_status or 0, last_body
 
         if attempt < max_retries - 1:
             _time.sleep(3 * (3 ** attempt))
 
     if last_exc:
         raise last_exc
-    # Non-retryable HTTP error or exhausted retries on 5xx
     return last_status or 0, last_body
 
 

@@ -571,6 +571,18 @@ def test_render_still_clip_handler_initializes_bg_before_use():
     )
 
 
+def test_render_still_clip_handler_skips_dropbox_production_state():
+    """Still+TTS click path must not lock Dropbox production_state.json."""
+    text = (
+        Path(__file__).resolve().parent.parent / "server_handlers" / "background.py"
+    ).read_text(encoding="utf-8")
+    start = text.index("def handle_bg_render_still_clip(")
+    end = text.index("\ndef handle_bg_accept_option", start)
+    block = text[start:end]
+    assert "h.app.state.read_state()" not in block
+    assert "production_state: dict = {}" in block
+
+
 def test_normalize_still_insert_approval_status_demotes_legacy_auto_approve():
     beat = {
         "pipeline": "still_insert",

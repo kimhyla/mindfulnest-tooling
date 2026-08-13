@@ -55,6 +55,9 @@ def test_still_clip_response_beat_snapshot_job_busy_false() -> None:
     src = BACKGROUND.read_text(encoding="utf-8")
     fn = src.split("def handle_bg_render_still_clip", 1)[1].split("\ndef handle_bg_accept_option", 1)[0]
     assert 'snap["job_busy"] = False' in fn
+    assert "STILL_RENDER_IN_PROGRESS" in fn
+    assert "if beat_id in _STILL_RENDER_BUSY" in fn
+    assert fn.index("if beat_id in _STILL_RENDER_BUSY") < fn.index("_STILL_RENDER_BUSY.add")
 
 
 def test_shared_session_job_busy_includes_still_render_set() -> None:
