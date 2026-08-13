@@ -1786,7 +1786,8 @@ def handle_magic_video(h, body: dict)-> None:
     # A/V drift (Event_6 resolution Container 1 = 0.052s). Heal the delivery
     # master before hot-serve so Send to Stitcher does not fail the 50ms gate.
     try:
-        _libdir = str(Path(__file__).resolve().parent.parent / "credentials_lib")
+        # CODE tree — credentials_lib sibling under Production/tools/
+        _libdir = str(_PSERVER_TOOLS_DIR / "credentials_lib")
         if _libdir not in sys.path:
             sys.path.insert(0, _libdir)
         from ffmpeg_stitch import (  # noqa: PLC0415
