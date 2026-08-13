@@ -124,6 +124,11 @@ import {
   STITCH_MUX_REBUILD_QUEUE_V1,
   STITCH_SFX_PLAYBACK_TRUTH_V1,
 } from '../utils/stitchJobMediaHydrate';
+import {
+  STITCH_DRY_HOT_SERVE_PLAYBACK_V1,
+  resolveStitchDrySlotHotPlaybackUrl,
+  stitchSlotRequiresHotServeComposerUrl,
+} from '../utils/stitchDryHotServePlayback';
 import { syncActiveVideoRoleFromUrl } from '../state/videoRole';
 import {
   clearStitchComposerPreviewUrls,
@@ -538,7 +543,14 @@ export function StitcherTab() {
     return moduleFinalRevision > 0 ? `${base}?v=${moduleFinalRevision}` : base;
   }, [job?.bake_path, job?.module_final_cache_key, moduleFinalRevision]);
 
-  // STITCH_COMPOSER_DRY_PLAYBACK_V1 — one playback path; video_path always resolves to a URL.
+  // STITCH_DRY_HOT_SERVE_PLAYBACK_V1 — dry/four-files bind only after playback_resolve (APFS).
+  const [dryHotUrls, setDryHotUrls] = useState<Partial<Record<SlotKey, string>>>({});
+  const [dryHotStatus, setDryHotStatus] = useState<
+    Partial<Record<SlotKey, 'resolving' | 'ready' | 'failed'>>
+  >({});
+  const [dryHotRetryTick, setDryHotRetryTick] = useState(0);
+
+  // STITCH_COMPOSER_DRY_PLAYBACK_V1 — one playback path; dry slots wait for hot URL.
   const composerSlotUrls = useMemo(() => {
     const out: Partial<Record<SlotKey, string>> = {};
     if (!job?.slots) return out;
@@ -546,14 +558,10 @@ export function StitcherTab() {
     for (const sd of defs) {
       const slotData = job.slots[sd.key];
       if (!slotData?.video_path) continue;
-      // FF-042 — composer always tracks job.video_path for dry authority (never stale session URL).
-      if (
-        stitchSlotUsesDryAuthorityClientMix(slotData)
-        || stitchSlotUsesFourFilesPlayback(slotData)
-      ) {
-        const dryPath = resolveSlotWaveformVideoPath(slotData) ?? slotData.video_path;
-        const dryUrl = resolveDrySlotSourceVideoUrl(dryPath);
-        if (dryUrl) out[sd.key] = dryUrl;
+      // FF-042 + hot-serve — never bind cold /files for dry authority / four-files.
+      if (stitchSlotRequiresHotServeComposerUrl(slotData)) {
+        const hot = dryHotUrls[sd.key];
+        if (hot) out[sd.key] = hot;
         continue;
       }
       const url = resolveSlotPlaybackPreviewUrl(
@@ -568,6 +576,7 @@ export function StitcherTab() {
   }, [
     job?.slots,
     previewUrls,
+    dryHotUrls,
     stitchSessionKey,
     standaloneMode,
     job?.slots?.['intro']?.video_path,
@@ -1233,7 +1242,23 @@ export function StitcherTab() {
     && isStitchMuxPlaybackUrl(resolvedComposerUrl),
   );
   const composerMuxRefreshing = previewLoadingSlot === viewerSlot && composerUsingMux;
-  const composerPreviewBuilding = previewLoadingSlot === viewerSlot && !resolvedComposerUrl;
+  const dryHotViewerStatus = dryHotStatus[viewerSlot];
+  const dryHotViewerResolving = Boolean(
+    viewerSlotData?.video_path
+    && stitchSlotRequiresHotServeComposerUrl(viewerSlotData)
+    && !composerVideoUrl
+    && dryHotViewerStatus !== 'failed',
+  );
+  const dryHotViewerFailed = Boolean(
+    viewerSlotData?.video_path
+    && stitchSlotRequiresHotServeComposerUrl(viewerSlotData)
+    && !composerVideoUrl
+    && dryHotViewerStatus === 'failed',
+  );
+  const composerPreviewBuilding = (
+    (previewLoadingSlot === viewerSlot && !resolvedComposerUrl)
+    || dryHotViewerResolving
+  );
   const composerAmbientBuilding = busySlot?.slot === viewerSlot && busySlot.action === 'ambient';
 
   useEffect(() => {
@@ -1249,9 +1274,119 @@ export function StitcherTab() {
         delete next[sessionSlot];
         return next;
       });
+      setDryHotUrls((prev) => {
+        if (!(sessionSlot in prev)) return prev;
+        const next = { ...prev };
+        delete next[sessionSlot];
+        return next;
+      });
+      setDryHotStatus((prev) => {
+        if (!(sessionSlot in prev)) return prev;
+        const next = { ...prev };
+        delete next[sessionSlot];
+        return next;
+      });
     }
     lastViewerVideoPathBySlotRef.current[sessionSlot] = path;
   }, [viewerSlot, viewerSlotData?.video_path, stitchSessionKey]);
+
+  // STITCH_DRY_HOT_SERVE_PLAYBACK_V1 — resolve APFS playback URLs for dry/four-files slots.
+  useEffect(() => {
+    if (!job?.slots) return;
+    let cancelled = false;
+    const defs = standaloneMode ? STANDALONE_SLOT_DEFS : SLOT_DEFS;
+    const targets = defs
+      .map((sd) => {
+        const slotData = job.slots?.[sd.key];
+        if (!slotData?.video_path || !stitchSlotRequiresHotServeComposerUrl(slotData)) {
+          return null;
+        }
+        const disk = resolveSlotWaveformVideoPath(slotData) ?? slotData.video_path;
+        return { key: sd.key as SlotKey, disk: (disk || '').trim() };
+      })
+      .filter((x): x is { key: SlotKey; disk: string } => Boolean(x?.disk));
+
+    const keep = new Set(targets.map((t) => t.key));
+    setDryHotUrls((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const k of Object.keys(next) as SlotKey[]) {
+        if (!keep.has(k)) {
+          delete next[k];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+    setDryHotStatus((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const k of Object.keys(next) as SlotKey[]) {
+        if (!keep.has(k)) {
+          delete next[k];
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+
+    void (async () => {
+      await Promise.all(targets.map(async (t) => {
+        setDryHotStatus((prev) => (
+          prev[t.key] === 'ready' ? prev : { ...prev, [t.key]: 'resolving' }
+        ));
+        const hot = await resolveStitchDrySlotHotPlaybackUrl(t.disk);
+        if (cancelled) return;
+        if (hot) {
+          setDryHotUrls((prev) => (
+            prev[t.key] === hot ? prev : { ...prev, [t.key]: hot }
+          ));
+          setDryHotStatus((prev) => ({ ...prev, [t.key]: 'ready' }));
+          stitchClientPreviewAudit('DRY_HOT_SERVE_READY', {
+            slot_key: t.key,
+            disk_path: t.disk,
+            playback_url: hot,
+            marker: STITCH_DRY_HOT_SERVE_PLAYBACK_V1,
+          });
+          return;
+        }
+        setDryHotUrls((prev) => {
+          if (!(t.key in prev)) return prev;
+          const next = { ...prev };
+          delete next[t.key];
+          return next;
+        });
+        setDryHotStatus((prev) => ({ ...prev, [t.key]: 'failed' }));
+        stitchClientPreviewAudit('DRY_HOT_SERVE_FAILED', {
+          slot_key: t.key,
+          disk_path: t.disk,
+          marker: STITCH_DRY_HOT_SERVE_PLAYBACK_V1,
+        });
+      }));
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    standaloneMode,
+    dryHotRetryTick,
+    job?.slots?.['intro']?.video_path,
+    job?.slots?.['phase_a']?.video_path,
+    job?.slots?.['phase_b']?.video_path,
+    job?.slots?.['resolution']?.video_path,
+    job?.slots?.['standalone']?.video_path,
+    job?.slots?.['intro']?.dry_export_path,
+    job?.slots?.['phase_a']?.dry_export_path,
+    job?.slots?.['phase_b']?.dry_export_path,
+    job?.slots?.['resolution']?.dry_export_path,
+    job?.slots?.['standalone']?.dry_export_path,
+    job?.slots?.['intro']?.playback_recipe_version,
+    job?.slots?.['phase_a']?.playback_recipe_version,
+    job?.slots?.['phase_b']?.playback_recipe_version,
+    job?.slots?.['resolution']?.playback_recipe_version,
+    job?.slots?.['standalone']?.playback_recipe_version,
+  ]);
 
   useLayoutEffect(() => {
     const video = composerPoolRef.current?.getVideo(viewerSlot) ?? null;
@@ -1623,20 +1758,30 @@ export function StitcherTab() {
       return false;
     }
     if (stitchSlotUsesFourFilesPlayback(slotData) || stitchSlotUsesDryAuthorityClientMix(slotData)) {
-      const flatUrl = resolveDrySlotSourceVideoUrl(slotData.video_path);
-      if (!flatUrl) return false;
+      // STITCH_DRY_HOT_SERVE_PLAYBACK_V1 — bind APFS hot URL only; never /files.
+      const disk = resolveSlotWaveformVideoPath(slotData) ?? slotData.video_path;
+      const hotUrl = await resolveStitchDrySlotHotPlaybackUrl(disk || '');
+      if (!hotUrl) {
+        if (!opts?.quiet) {
+          setStatusMsg(`Slot ${slot} video is warming — retry Review in a moment.`);
+        }
+        setDryHotStatus((prev) => ({ ...prev, [slot]: 'failed' }));
+        return false;
+      }
+      setDryHotUrls((prev) => ({ ...prev, [slot]: hotUrl }));
+      setDryHotStatus((prev) => ({ ...prev, [slot]: 'ready' }));
       const audioSig = stitchSlotSessionExpectedSig(slotData);
-      bindSlotPreviewUrl(slot, flatUrl, 'hydrate');
+      bindSlotPreviewUrl(slot, hotUrl, 'hydrate');
       const cacheEntry: CachedStitcherPreviewLs = {
         video_path: slotData.video_path,
-        preview_url: flatUrl,
+        preview_url: hotUrl,
         audio_sig: audioSig,
       };
       const recipe = (slotData.playback_recipe_version ?? '').trim();
       if (recipe) cacheEntry.playback_recipe_version = recipe;
       writeCachedStitcherPreviewLs(stitchSessionKey, slot, cacheEntry);
       commitMuxSession(stitchSessionKey, slot, {
-        previewUrl: flatUrl,
+        previewUrl: hotUrl,
         videoPath: slotData.video_path,
         audioSig,
       });
@@ -1823,6 +1968,20 @@ export function StitcherTab() {
     setComposerVideoLoading(false);
     const slotData = job?.slots?.[slot];
     const usingMux = stitchSlotRequiresMuxedPreview(slotData);
+    // STITCH_DRY_HOT_SERVE_PLAYBACK_V1 — never fall back to cold /files (gray Format error).
+    if (stitchSlotRequiresHotServeComposerUrl(slotData)) {
+      setDryHotUrls((prev) => {
+        if (!(slot in prev)) return prev;
+        const next = { ...prev };
+        delete next[slot];
+        return next;
+      });
+      setDryHotStatus((prev) => ({ ...prev, [slot]: 'failed' }));
+      setComposerVideoError(
+        `Video load failed (${msg}). Slot stays assigned — click Retry warm serve.`,
+      );
+      return;
+    }
     const dryUrl = slotData?.video_path
       ? resolveDrySlotSourceVideoUrl(slotData.video_path)
       : undefined;
@@ -2566,6 +2725,7 @@ export function StitcherTab() {
               data-stitch-mux-pause-on-geometry={STITCH_MUX_PAUSE_ON_GEOMETRY_V1}
               data-stitch-track-focus-session-key={stitchSessionKey}
               data-stitch-composer-dry-playback="STITCH_COMPOSER_DRY_PLAYBACK_V1"
+              data-stitch-dry-hot-serve-playback={STITCH_DRY_HOT_SERVE_PLAYBACK_V1}
               data-stitch-ambient-preview="STITCH_AMBIENT_PREVIEW_V1"
               data-stitch-composer-mux-fallback="STITCH_COMPOSER_MUX_FALLBACK_V1"
               data-stitch-slot-mux-audio-sig={STITCH_SLOT_MUX_AUDIO_SIG_V1}
@@ -2625,11 +2785,29 @@ export function StitcherTab() {
                       class="mn-stitcher-composer-video-status mn-stitcher-composer-video-loading"
                       data-testid="stitcher-composer-video-waiting-mux"
                     >
-                      {composerPreviewBuilding
-                        ? 'Building muxed preview…'
-                        : 'Assign slot video to preview'}
+                      {dryHotViewerFailed
+                        ? 'Warm serve failed — slot stays assigned'
+                        : dryHotViewerResolving
+                          ? 'Warming APFS playback…'
+                          : composerPreviewBuilding
+                            ? 'Building muxed preview…'
+                            : 'Assign slot video to preview'}
                     </div>
                   )}
+                  {dryHotViewerFailed ? (
+                    <button
+                      type="button"
+                      class="mn-btn mn-btn-secondary"
+                      data-testid="stitcher-dry-hot-serve-retry"
+                      onClick={() => {
+                        setComposerVideoError(null);
+                        setDryHotStatus((prev) => ({ ...prev, [viewerSlot]: 'resolving' }));
+                        setDryHotRetryTick((n) => n + 1);
+                      }}
+                    >
+                      Retry warm serve
+                    </button>
+                  ) : null}
                   {composerVideoLoading ? (
                     <div
                       class="mn-stitcher-composer-video-status mn-stitcher-composer-video-loading"
