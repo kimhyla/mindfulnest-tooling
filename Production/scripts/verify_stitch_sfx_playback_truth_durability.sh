@@ -7,20 +7,33 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 SB="${REPO_ROOT}/Production/tools/storyboard-v2"
 TAB="${SB}/src/components/StitcherTab.tsx"
 HYDRATE="${SB}/src/utils/stitchJobMediaHydrate.ts"
+ENGINE="${SB}/src/audio/StitchSlotAudioMixEngine.ts"
+SFX_FETCH="${SB}/src/utils/stitchSfxFetch.ts"
 LIVE_SPEC="${SB}/e2e/stitch_sfx_playback_truth_live.spec.ts"
 LIVE_CFG="${SB}/playwright.live.config.ts"
 TEST="${REPO_ROOT}/Production/tools/tests/test_stitch_mux_pause_geometry.py"
 TEST2="${REPO_ROOT}/Production/tools/tests/test_stitch_slot_timeline_atomic.py"
+TEST3="${REPO_ROOT}/Production/tools/tests/test_stitch_sfx_hot_serve_prefetch.py"
 
 fail() { echo "[stitch-sfx-playback-truth] FAIL: $1" >&2; exit 1; }
 
 [[ -f "$TAB" ]] || fail "missing StitcherTab.tsx"
 [[ -f "$HYDRATE" ]] || fail "missing stitchJobMediaHydrate.ts"
+[[ -f "$ENGINE" ]] || fail "missing StitchSlotAudioMixEngine.ts"
+[[ -f "$SFX_FETCH" ]] || fail "missing stitchSfxFetch.ts"
 [[ -f "$LIVE_SPEC" ]] || fail "missing stitch_sfx_playback_truth_live.spec.ts"
 [[ -f "$LIVE_CFG" ]] || fail "missing playwright.live.config.ts"
 
 grep -q 'STITCH_SFX_PLAYBACK_TRUTH_V1' "$TAB" \
   || fail "STITCH_SFX_PLAYBACK_TRUTH_V1 marker missing"
+grep -q 'STITCH_SFX_HOT_SERVE_PREFETCH_V1' "$ENGINE" \
+  || fail "STITCH_SFX_HOT_SERVE_PREFETCH_V1 marker missing"
+grep -q 'prefetchAllSfx' "$ENGINE" \
+  || fail "SFX prefetchAllSfx missing"
+grep -q 'SFX_LOAD_FAILED' "$ENGINE" \
+  || fail "SFX_LOAD_FAILED audit missing"
+grep -q 'fetchStitchSfxArrayBuffer' "$SFX_FETCH" \
+  || fail "fetchStitchSfxArrayBuffer missing"
 grep -q 'STITCH_MUX_PAUSE_ON_GEOMETRY_V1' "$TAB" \
   || fail "STITCH_MUX_PAUSE_ON_GEOMETRY_V1 marker missing"
 grep -q 'Paused — updating SFX preview (video stays loaded)' "$TAB" \
@@ -47,8 +60,9 @@ python3 -m pytest "${REPO_ROOT}/Production/tools/tests/test_stitch_ambient_previ
   cd "$SB"
   node --experimental-strip-types --test \
     src/utils/__tests__/stitchSlotTimelineAtomic.test.ts \
-    src/utils/__tests__/stitchSfxCueSchedule.test.ts
+    src/utils/__tests__/stitchSfxCueSchedule.test.ts \
+    src/utils/__tests__/stitchSfxFetch.test.ts
 ) || fail "node unit tests failed"
 
-python3 -m pytest "$TEST" "$TEST2" -q
+python3 -m pytest "$TEST" "$TEST2" "$TEST3" -q
 echo "[stitch-sfx-playback-truth] OK — source guards + unit + pytest passed"
