@@ -54,3 +54,22 @@ def test_pool_error_does_not_fallback_to_files_for_dry_slots() -> None:
     dry_return = block.index("return;", dry_gate)
     files_fallback = block.index("resolveDrySlotSourceVideoUrl", dry_return)
     assert dry_return < files_fallback
+
+
+def test_pool_error_reresolves_hot_playback_token() -> None:
+    """STITCH_HOT_PLAYBACK_RERESOLVE_V1 — demux/cache-miss must re-warm, not permanent fail banner."""
+    src = STITCHER.read_text(encoding="utf-8")
+    block = src.split("const onPoolSlotError = ", 1)[1].split(
+        "const onPreviewSlot = ", 1
+    )[0]
+    assert "STITCH_HOT_PLAYBACK_RERESOLVE_V1" in block or "COMPOSER_HOT_PLAYBACK_ERROR" in block
+    assert "COMPOSER_HOT_PLAYBACK_ERROR" in block
+    assert "dryHotAutoRetryRef" in src
+    assert "setDryHotRetryTick" in block
+    assert "Re-warming APFS cache" in block
+    # Must not jump straight to failed without retry attempt gate.
+    assert "attempts <= 2" in block
+    # User-visible empty-state copy (not comment prose).
+    assert "Playback cache failed — slot stays assigned" in src
+    assert "? 'Warm serve failed — slot stays assigned'" not in src
+    assert "Warm serve failed — slot stays assigned'" not in src

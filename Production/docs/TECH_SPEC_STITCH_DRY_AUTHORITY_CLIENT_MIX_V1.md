@@ -75,6 +75,7 @@
 | Layer | Marker | Rule |
 |-------|--------|------|
 | Dry / four-files video | `STITCH_DRY_HOT_SERVE_PLAYBACK_V1` | Composer `<video>` binds only `/api/media/playback/…` after `playback_resolve`. Cold `/files` for those slots is forbidden (Dropbox File Provider gray / Format Error). |
+| Hot token death mid-play | `STITCH_HOT_PLAYBACK_RERESOLVE_V1` | On composer `error` for hot-serve slots: audit `COMPOSER_HOT_PLAYBACK_ERROR`, clear stale URL, bounded auto re-resolve — do not strand UI on “Warm serve failed” after demux/`PLAYBACK_CACHE_MISS`. |
 | Default start/finish SFX | `STITCH_SFX_HOT_SERVE_PREFETCH_V1` | `prefetchAllSfx` on attach; `/files` fetch retries 503/429; audit `SFX_PREFETCH` / `SFX_LOAD_FAILED` / `SFX_SCHEDULE`. Play must schedule from warm cache (`sfx_scheduled` matches remaining cues). |
 
 **Forbidden regressions**
