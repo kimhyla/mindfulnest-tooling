@@ -1,15 +1,24 @@
 /**
  * FF-042 STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 — SFX layered on dry <video>.
  * Speech bytes come from the dry MP4; ambient bed uses StitchSlotAmbientBedAudio.
+ *
+ * STITCH_SFX_HOT_SERVE_PREFETCH_V1 — prefetch cue bytes on attach (with /files 503
+ * retry) so play→schedule is cache-hit fast. Loading on the play critical path left
+ * a multi-second Dropbox materialize window that raced attach/epoch and left
+ * sfx_scheduled=0 (Event_6 audit Aug 2026).
  */
 
 import { resolveStitchSfxFetchUrl } from '../utils/stitchSlotVideo';
 import { stitchSfxCuesToSchedule } from '../utils/stitchSfxCueSchedule';
+import { fetchStitchSfxArrayBuffer } from '../utils/stitchSfxFetch';
 import {
   stitchClientPreviewAudit,
   videoPlaybackSnapshot,
 } from '../utils/stitchClientPreviewAudit';
 import { STITCH_DRY_AUTHORITY_CLIENT_MIX_V1 } from '../utils/stitchSlotMuxAudioSig';
+
+/** Durability marker — grep lock for client-mix SFX prefetch. */
+export const STITCH_SFX_HOT_SERVE_PREFETCH_V1 = 'STITCH_SFX_HOT_SERVE_PREFETCH_V1';
 
 export interface StitchClientMixSfxCue {
   id?: string;
@@ -181,6 +190,9 @@ export class StitchSlotAudioMixEngine {
 
   private jobCtx: StitchClientMixJobContext | null = null;
 
+  /** In-flight attach prefetch — play waits so schedule hits warm cache. */
+  private prefetchPromise: Promise<void> | null = null;
+
   private onPlay = () => {
     void this.handlePlay();
   };
@@ -226,7 +238,9 @@ export class StitchSlotAudioMixEngine {
     }
     this.bindVideoEvents();
     activeMixEngines.add(this);
+    this.prefetchPromise = this.prefetchAllSfx();
     if (!video.paused) {
+      await this.prefetchPromise;
       await this.handlePlay();
     }
   }
@@ -235,7 +249,9 @@ export class StitchSlotAudioMixEngine {
     if (!this.video || !this.ctx) return;
     this.slotInput = slot;
     this.stopSfx();
+    this.prefetchPromise = this.prefetchAllSfx();
     if (!this.video.paused) {
+      await this.prefetchPromise;
       await this.resyncFromVideo();
     }
   }
@@ -255,6 +271,8 @@ export class StitchSlotAudioMixEngine {
     this.video = null;
     this.slotInput = null;
     this.ctx = null;
+    this.sfxBufferCache.clear();
+    this.prefetchPromise = null;
   }
 
   /** Stop SFX + pause slot video without tearing down the speech chain. */
@@ -291,6 +309,9 @@ export class StitchSlotAudioMixEngine {
     if (this.ctx.state === 'suspended') {
       await this.ctx.resume();
     }
+    if (this.prefetchPromise) {
+      await this.prefetchPromise;
+    }
     this.playEpoch += 1;
     await this.resyncFromVideo();
     stitchClientPreviewAudit('SFX_RESYNC', {
@@ -298,6 +319,8 @@ export class StitchSlotAudioMixEngine {
       slot_key: this.jobCtx?.slotKey,
       speech_ctx_state: this.ctx.state,
       sfx_scheduled: this.sfxSources.length,
+      sfx_cache_size: this.sfxBufferCache.size,
+      code_prefetch: STITCH_SFX_HOT_SERVE_PREFETCH_V1,
       ...videoPlaybackSnapshot(this.video),
     });
   }
@@ -308,18 +331,68 @@ export class StitchSlotAudioMixEngine {
     await this.scheduleSfxFromCurrentTime();
   }
 
+  private async prefetchAllSfx(): Promise<void> {
+    if (!this.ctx || !this.slotInput) return;
+    const cues = this.slotInput.sfx_cues ?? [];
+    let loaded = 0;
+    let failed = 0;
+    await Promise.all(
+      cues.map(async (cue) => {
+        const srcPath = (cue.source_path ?? '').trim();
+        if (!srcPath) return;
+        try {
+          await this.loadSfxBuffer(srcPath);
+          loaded += 1;
+        } catch (err) {
+          failed += 1;
+          console.warn('[StitchSlotAudioMixEngine] SFX prefetch failed:', srcPath, err);
+          stitchClientPreviewAudit('SFX_LOAD_FAILED', {
+            job_name: this.jobCtx?.jobName,
+            slot_key: this.jobCtx?.slotKey,
+            source_path: srcPath,
+            phase: 'prefetch',
+            error: err instanceof Error ? err.message : String(err),
+            code_prefetch: STITCH_SFX_HOT_SERVE_PREFETCH_V1,
+          });
+        }
+      }),
+    );
+    stitchClientPreviewAudit('SFX_PREFETCH', {
+      job_name: this.jobCtx?.jobName,
+      slot_key: this.jobCtx?.slotKey,
+      sfx_cue_count: cues.length,
+      sfx_loaded: loaded,
+      sfx_failed: failed,
+      sfx_cache_size: this.sfxBufferCache.size,
+      code_prefetch: STITCH_SFX_HOT_SERVE_PREFETCH_V1,
+    });
+  }
+
   private async scheduleSfxFromCurrentTime(): Promise<void> {
     if (!this.ctx || !this.video || !this.slotInput) return;
+    // Sample playhead once up front — after prefetch this is near play start, not
+    // after multi-second /files materialize (which skipped start whoosh).
     const videoT = this.video.currentTime;
     const epoch = this.playEpoch;
     const toSchedule = stitchSfxCuesToSchedule(this.slotInput.sfx_cues ?? [], videoT);
+    let loadFailed = 0;
     for (const { cue, delayS } of toSchedule) {
       const srcPath = (cue.source_path ?? '').trim();
       let buffer: AudioBuffer;
       try {
         buffer = await this.loadSfxBuffer(srcPath);
       } catch (err) {
+        loadFailed += 1;
         console.warn('[StitchSlotAudioMixEngine] SFX load failed:', srcPath, err);
+        stitchClientPreviewAudit('SFX_LOAD_FAILED', {
+          job_name: this.jobCtx?.jobName,
+          slot_key: this.jobCtx?.slotKey,
+          source_path: srcPath,
+          phase: 'schedule',
+          error: err instanceof Error ? err.message : String(err),
+          code_prefetch: STITCH_SFX_HOT_SERVE_PREFETCH_V1,
+        });
+        // Continue — do not abort remaining cues (exit must still arm if whoosh fails).
         continue;
       }
       if (!this.ctx || epoch !== this.playEpoch || this.video.paused) return;
@@ -335,15 +408,24 @@ export class StitchSlotAudioMixEngine {
       source.start(when, 0, playS);
       this.sfxSources.push(source);
     }
+    if (loadFailed > 0 || toSchedule.length > 0) {
+      stitchClientPreviewAudit('SFX_SCHEDULE', {
+        job_name: this.jobCtx?.jobName,
+        slot_key: this.jobCtx?.slotKey,
+        sfx_attempted: toSchedule.length,
+        sfx_scheduled: this.sfxSources.length,
+        sfx_load_failed: loadFailed,
+        schedule_video_t: videoT,
+        code_prefetch: STITCH_SFX_HOT_SERVE_PREFETCH_V1,
+      });
+    }
   }
 
   private async loadSfxBuffer(sourcePath: string): Promise<AudioBuffer> {
     const cached = this.sfxBufferCache.get(sourcePath);
     if (cached) return cached;
     const url = resolveStitchSfxFetchUrl(sourcePath);
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`SFX fetch failed: ${sourcePath}`);
-    const buf = await res.arrayBuffer();
+    const buf = await fetchStitchSfxArrayBuffer(url);
     if (!this.ctx) throw new Error('AudioContext missing');
     const decoded = await this.ctx.decodeAudioData(buf.slice(0));
     this.sfxBufferCache.set(sourcePath, decoded);
