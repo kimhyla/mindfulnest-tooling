@@ -30,6 +30,10 @@ def test_dry_authority_playback_module_not_passthrough() -> None:
 def test_client_mix_engine_marker() -> None:
     src = (TOOLS / "storyboard-v2/src/audio/StitchSlotAudioMixEngine.ts").read_text(encoding="utf-8")
     assert "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1" in src
+    assert "STITCH_SFX_HOT_SERVE_PREFETCH_V1" in src
+    assert "prefetchAllSfx" in src
+    assert "SFX_PREFETCH" in src
+    assert "SFX_LOAD_FAILED" in src
     assert "createMediaElementSource" in src
     assert "videoSpeechChains" in src
     assert "ctx.close()" not in src

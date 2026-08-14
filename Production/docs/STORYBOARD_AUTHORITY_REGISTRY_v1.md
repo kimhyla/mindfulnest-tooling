@@ -77,6 +77,8 @@ This registry is the **concept index** — not a function audit. Each row names 
 | **stitch_export_timeline_duration** — BG export concat duration | derived | `export_clip_timeline_duration_s` | `normalize_for_concat` | shipped | same |
 | **stitch_mux_preview_lineage** — post-export playback artifact | disk | `stitch_slot_needs_playback_artifact_bake` | `ensure_stitch_slot_playback_artifacts_on_export` | partial | same |
 | **stitch_slot_playback_mp4** — dry speech authority per slot (FF-042) | disk | `resolve_slot_playback_path` | `persist_dry_authority_slot_export` | shipped | `TECH_SPEC_STITCH_DRY_AUTHORITY_CLIENT_MIX_V1.md` |
+| **stitch_dry_hot_serve_playback** — dry composer video via APFS hot-serve | derived | `resolveStitchDrySlotHotPlaybackUrl` | `playback_resolve` bind | shipped | same |
+| **stitch_client_mix_sfx_prefetch** — start/finish SFX cue bytes before play | derived | `prefetchAllSfx` | `/files` + 503 retry | shipped | same |
 | **stitch_ambient_loop_seam_budget** — ambient loop seams | derived | `build_ambient_bed_filter_lane` | `STITCH_AMBIENT_FULL_PERIOD_TILE_V2` | shipped | same |
 | **stitch_export_truth** — concat join fade + speech waveform + playback remux | disk | `_kling_export_audio_lane_filter` / `resolveSlotWaveformVideoPath` | `concat_kling_o3_approved_beats` / `bake_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V1.md` |
 | **stitch_export_truth_v2** — still-insert video fade + ambient tile concat + peaks invalidate | disk | `_still_insert_exit_at_join` / `build_ambient_explicit_tile_concat_loop` | `concat_kling_o3_approved_beats` / `bake_and_persist_slot_playback_mp4` | shipped | `TECH_SPEC_STITCH_INTRO_EXPORT_TRUTH_V2.md` |
