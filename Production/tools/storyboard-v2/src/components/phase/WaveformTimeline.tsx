@@ -850,17 +850,23 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     let rafId = 0;
     let boundVideo: HTMLVideoElement | null = null;
 
-    const resolveDurMs = (): number => {
+    const resolveSlotDurMs = (): number => {
       const slotClockMs = slotTimelineDurMs ?? fallbackDurationMs ?? 0;
       return durationMs ?? (slotClockMs > 0 ? slotClockMs : (displayDurationS ? displayDurationS * 1000 : 0));
     };
 
-    const applyPlayheadMs = (ms: number) => {
+    /** Cursor ratio must use the same <video> clock as currentTime (not a stale slot durationMs). */
+    const applyPlayheadMs = (ms: number, video?: HTMLVideoElement | null) => {
       setCurrentMs(ms);
       const ws = wsRef.current;
-      const durMs = resolveDurMs();
-      if (ws && durMs > 0) {
-        ws.seekTo(Math.min(1, ms / durMs));
+      if (ws) {
+        const mediaDurS = video && Number.isFinite(video.duration) && video.duration > 0
+          ? video.duration
+          : 0;
+        const durMs = mediaDurS > 0 ? mediaDurS * 1000 : resolveSlotDurMs();
+        if (durMs > 0) {
+          ws.seekTo(Math.min(1, ms / durMs));
+        }
       }
       onTimeUpdate?.(ms);
     };
@@ -870,15 +876,38 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
       if (isDraggingSeekRef.current || timeAuthorityRef.current.isDraggingSeek()) return;
       if (!video.paused && !video.ended) {
         lastScrubMsRef.current = null;
-        applyPlayheadMs(Math.max(0, video.currentTime * 1000));
+        applyPlayheadMs(Math.max(0, video.currentTime * 1000), video);
         setIsPlaying(true);
         return;
       }
       const mediaMs = Math.max(0, video.currentTime * 1000);
       const ms = resolvePausedPlayheadMs(mediaMs);
       if (ms > 0) lastScrubMsRef.current = ms;
-      applyPlayheadMs(ms);
+      applyPlayheadMs(ms, video);
       setIsPlaying(false);
+    };
+
+    const detachBound = () => {
+      if (!boundVideo) return;
+      boundVideo.removeEventListener('play', onVideoPlay);
+      boundVideo.removeEventListener('pause', onVideoPause);
+      boundVideo.removeEventListener('timeupdate', onVideoTimeUpdate);
+      boundVideo.removeEventListener('seeked', onVideoSeeked);
+      boundVideo = null;
+    };
+
+    const attachBound = (video: HTMLVideoElement) => {
+      if (boundVideo === video) return;
+      detachBound();
+      boundVideo = video;
+      video.addEventListener('play', onVideoPlay);
+      video.addEventListener('pause', onVideoPause);
+      video.addEventListener('timeupdate', onVideoTimeUpdate);
+      video.addEventListener('seeked', onVideoSeeked);
+      syncFromVideo(video);
+      if (!video.paused && !video.ended && !rafId) {
+        rafId = requestAnimationFrame(tick);
+      }
     };
 
     const tick = () => {
@@ -887,14 +916,16 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
         rafId = 0;
         return;
       }
-      syncFromVideo(video);
+      // Re-bind if pool swapped the active element without a React dep change.
+      if (video !== boundVideo) attachBound(video);
+      else syncFromVideo(video);
       rafId = requestAnimationFrame(tick);
     };
 
     const onVideoPlay = () => {
       const video = masterVideo?.current;
       if (!video) return;
-      syncFromVideo(video);
+      attachBound(video);
       if (!rafId) rafId = requestAnimationFrame(tick);
     };
     const onVideoPause = () => {
@@ -905,39 +936,27 @@ export function WaveformTimeline(props: WaveformTimelineProps) {
     };
     const onVideoTimeUpdate = () => {
       const video = masterVideo?.current;
-      if (video) syncFromVideo(video);
+      if (video) {
+        if (video !== boundVideo) attachBound(video);
+        else syncFromVideo(video);
+      }
     };
     const onVideoSeeked = () => {
       const video = masterVideo?.current;
       if (video) syncFromVideo(video);
     };
 
-    const detach = () => {
+    const video = masterVideo?.current;
+    if (video) attachBound(video);
+
+    return () => {
       cancelAnimationFrame(rafId);
       rafId = 0;
-      if (!boundVideo) return;
-      boundVideo.removeEventListener('play', onVideoPlay);
-      boundVideo.removeEventListener('pause', onVideoPause);
-      boundVideo.removeEventListener('timeupdate', onVideoTimeUpdate);
-      boundVideo.removeEventListener('seeked', onVideoSeeked);
-      boundVideo = null;
+      detachBound();
     };
-
-    const video = masterVideo?.current;
-    if (video) {
-      boundVideo = video;
-      video.addEventListener('play', onVideoPlay);
-      video.addEventListener('pause', onVideoPause);
-      video.addEventListener('timeupdate', onVideoTimeUpdate);
-      video.addEventListener('seeked', onVideoSeeked);
-      syncFromVideo(video);
-      if (!video.paused && !video.ended) {
-        rafId = requestAnimationFrame(tick);
-      }
-    }
-
-    return detach;
-  }, [displayOnly, masterVideo, displayDurationS, durationMs, slotTimelineDurMs, fallbackDurationMs, onTimeUpdate, resolvePausedPlayheadMs]);
+    // masterVideoSrc: STITCH_COMPOSER_MASTER_VIDEO_SYNC_V1 — re-bind when composer URL
+    // swaps (hot-serve / mux). Dropped once in 91cc21f7 and caused Resolution playhead lag.
+  }, [displayOnly, masterVideo, masterVideoSrc, displayDurationS, durationMs, slotTimelineDurMs, fallbackDurationMs, onTimeUpdate, resolvePausedPlayheadMs]);
 
   // Shared lipsync <video> + WaveSurfer media: drive overlay cue timing from the
   // video clock (audioprocess alone can lag when WS uses the same element).

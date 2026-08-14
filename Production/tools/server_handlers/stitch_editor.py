@@ -2057,29 +2057,31 @@ def stitch_upsert_event_slot(
     patched = dict(slot_patch)
     patched["video_dur_ms"] = probed_ms
 
-    # FF-036 — event slots: passthrough dry concat → normalize/loudnorm → playback bake.
+    # FF-042 — event slots: dry concat IS video_path; client mix in Stitcher.
     if not is_milestone_stitch_job_name(job_name):
         from server_handlers.stitch_slot_playback import (  # noqa: PLC0415
-            STITCH_FOUR_FILES_V1,
-            bake_and_persist_slot_playback_mp4,
+            STITCH_DRY_AUTHORITY_CLIENT_MIX_V1,
+            persist_dry_authority_slot_export,
         )
 
         def _migrate(state: dict) -> None:
             stitch_migrate_legacy_to_canonical(state, event_id)
 
         stitch_store.mutate_state(_migrate)
-        playback_rel, probed_ms, export_artifacts = bake_and_persist_slot_playback_mp4(
+        playback_rel, probed_ms, export_artifacts = persist_dry_authority_slot_export(
             h,
             job_name,
             slot_key,
             dry_video_rel=dry_video_rel,
-            slot_patch={k: v for k, v in patched.items() if k != "video_dur_ms"},
+            slot_patch=patched,
             beat_boundaries=beat_boundaries,
             stitch_store=stitch_store,
             peek_slot=peek_slot if isinstance(peek_slot, dict) else None,
         )
         export_warnings = list(export_warnings or [])
-        export_warnings.append(f"{slot_key}: four-files playback bake ({STITCH_FOUR_FILES_V1})")
+        export_warnings.append(
+            f"{slot_key}: dry-authority export ({STITCH_DRY_AUTHORITY_CLIENT_MIX_V1})"
+        )
         return job_name, probed_ms, export_warnings, export_artifacts
 
     now_iso = datetime.now(timezone.utc).isoformat()

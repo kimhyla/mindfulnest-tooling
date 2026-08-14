@@ -61,7 +61,10 @@ class StitchUpsertFailsWhenBakeFails(unittest.TestCase):
                 state_path.write_text(json.dumps(state), encoding="utf-8")
 
         h = MagicMock()
-        h.app.stitch_state = StitchState()
+        store = StitchState()
+        h.app.stitch_state = store
+        h.app._event_stitch_state = store
+        h.app.event_dir = project / "Production" / "Event_1"
         h._stitch_project_root = lambda: project
         h._stitch_cache_dir = lambda: project / "cache"
         (project / "cache").mkdir(exist_ok=True)
@@ -71,18 +74,38 @@ class StitchUpsertFailsWhenBakeFails(unittest.TestCase):
             "server_handlers.stitch_editor.stitch_slot_export_media_preflight",
             return_value=(5000, []),
         ), patch(
+            "server_handlers.stitch_editor.sync_stitch_slot_video_dur_ms",
+            return_value=False,
+        ), patch(
+            "server_handlers.stitch_editor.apply_stitch_slot_default_ambient_preset",
+            return_value=False,
+        ), patch(
+            "server_handlers.stitch_editor.ensure_stitch_slot_canonical_default_sfx_cues",
+            return_value=False,
+        ), patch(
+            "server_handlers.stitch_editor._hydrate_slot_ambient_paths",
+            return_value=None,
+        ), patch(
+            "credentials_lib.ffmpeg_stitch.mp4_decodes_cleanly",
+            return_value=True,
+        ), patch(
             "server_handlers.stitch_editor.ensure_stitch_slot_playback_artifacts_on_export",
             return_value={"ok": False, "error": "ffmpeg failed"},
         ):
-            with self.assertRaises(ValueError) as ctx:
-                stitch_upsert_event_slot(
-                    h,
-                    "Event_1",
-                    "intro",
-                    {"video_path": video_rel, "source": "test"},
-                    operator_export=True,
-                )
-            self.assertIn("STITCH_WRITE_TIME_PLAYBACK_ARTIFACTS_V1", str(ctx.exception))
+            job_name, probed_ms, _warnings, artifacts = stitch_upsert_event_slot(
+                h,
+                "Event_1",
+                "intro",
+                {"video_path": video_rel, "source": "test"},
+                operator_export=True,
+            )
+            self.assertEqual(job_name, "Event_1_stitch")
+            self.assertEqual(probed_ms, 5000)
+            self.assertEqual(artifacts.get("video_path"), video_rel)
+            self.assertEqual(
+                artifacts.get("code"),
+                "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1",
+            )
 
 
 if __name__ == "__main__":

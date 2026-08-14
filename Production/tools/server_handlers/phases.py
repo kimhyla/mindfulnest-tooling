@@ -4748,10 +4748,10 @@ def handle_phase_export_stitcher(h, body: dict) -> None:
             },
         )
 
-    from server_handlers.stitch_slot_playback import verify_event_slot_four_files_export_applied  # noqa: PLC0415
+    from server_handlers.stitch_slot_playback import verify_event_slot_dry_authority_export_applied  # noqa: PLC0415
 
     try:
-        verify_event_slot_four_files_export_applied(
+        verify_event_slot_dry_authority_export_applied(
             h,
             job_name=job_name,
             slot_key=slot_key,

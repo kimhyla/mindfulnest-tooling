@@ -1240,11 +1240,11 @@ def _run_bg_export_to_stitcher_core(
         _event_stitch_state_store,
         is_milestone_stitch_job_name,
     )
-    from server_handlers.stitch_slot_playback import verify_event_slot_four_files_export_applied  # noqa: PLC0415
+    from server_handlers.stitch_slot_playback import verify_event_slot_dry_authority_export_applied  # noqa: PLC0415
 
     if not is_milestone_stitch_job_name(job_name):
         try:
-            verify_event_slot_four_files_export_applied(
+            verify_event_slot_dry_authority_export_applied(
                 h,
                 job_name=job_name,
                 slot_key=slot_key,

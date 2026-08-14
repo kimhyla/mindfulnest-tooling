@@ -50,15 +50,42 @@ def _copy_file_chunked(src: str, dst: str, *, chunk_size: int = 1024 * 1024) -> 
 
 
 def copy_file_durable(src: str | Path, dst: str | Path, *, chunk_size: int = 1024 * 1024) -> None:
-    """Copy bytes onto cloud-backed paths with errno 11/35 retry."""
+    """Copy bytes onto cloud-backed paths with errno 11/35 retry.
+
+    Dropbox File Provider EDEADLK (errno 11) on os.replace/rename and on
+    shutil.copy2/fcopyfile. Event_6 job 94b7e1f4: concat landed, then
+    replace of the playback bake onto assembled/ failed the same way.
+    Cloud dests get an in-place chunked write (open wb), never replace.
+    """
     src_path = os.path.abspath(str(src))
     dst_path = os.path.abspath(str(dst))
-    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
-    tmp_dir: str | None = os.path.dirname(dst_path) or None
-    if path_is_cloud_storage_backed(dst_path):
-        tmp_dir = str(Path(tempfile.gettempdir()) / "mn_ffmpeg_scratch")
-        Path(tmp_dir).mkdir(parents=True, exist_ok=True)
+    parent = os.path.dirname(dst_path)
     last_err: OSError | None = None
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            break
+        except OSError as exc:
+            last_err = exc
+            if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                raise
+            time.sleep(_backoff_s(attempt))
+    if path_is_cloud_storage_backed(dst_path):
+        for attempt in range(_MAX_ATTEMPTS):
+            try:
+                _copy_file_chunked(src_path, dst_path, chunk_size=chunk_size)
+                return
+            except OSError as exc:
+                last_err = exc
+                if exc.errno not in _TRANSIENT_ERRNOS or attempt >= _MAX_ATTEMPTS - 1:
+                    raise
+                time.sleep(_backoff_s(attempt))
+        if last_err:
+            raise last_err
+        return
+    tmp_dir: str | None = parent or None
+    last_err = None
     for attempt in range(_MAX_ATTEMPTS):
         tmp_path: str | None = None
         try:

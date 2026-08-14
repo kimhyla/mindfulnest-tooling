@@ -34,8 +34,8 @@ def test_playback_bake_timestamp_authority_final_heal() -> None:
     bake = src.split("def bake_slot_playback_mp4", 1)[1].split("\ndef _assembled_playback_dest", 1)[0]
     assert "STITCH_EXPORT_TRUTH_PLAYBACK_REMUX_V1" in src
     assert "STITCH_PLAYBACK_LIPSYNC_TIMESTAMP_AUTHORITY_V1" in src
-    assert "ensure_mp4_playback_timestamps(dest)" in bake
-    assert "mp4_operator_playback_timestamps_safe(dest)" in bake
+    assert "ensure_mp4_playback_timestamps(work)" in bake
+    assert "mp4_operator_playback_timestamps_safe(work)" in bake
     assert "_remux_mp4_copy_safe" not in bake
 
 

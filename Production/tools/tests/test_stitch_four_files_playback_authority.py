@@ -105,6 +105,18 @@ def test_assembled_media_commits_never_use_shutil_copy2() -> None:
         assert "copy_file_durable" in text, path.name
 
 
+def test_bake_scratch_dir_leaves_dropbox_cache() -> None:
+    from server_handlers.stitch_slot_playback import _bake_scratch_dir
+
+    h = MagicMock()
+    h._stitch_cache_dir.return_value = Path(
+        "/Users/me/Library/CloudStorage/Dropbox/Production/stitch_editor_cache",
+    )
+    d = _bake_scratch_dir(h)
+    assert "CloudStorage" not in str(d)
+    assert "mn_ffmpeg_scratch" in str(d)
+
+
 def test_bake_slot_playback_commits_cloud_dest(tmp_path: Path) -> None:
     """Event_6 job 58c02a2d: concat ok, shutil.copy2 onto Dropbox assembled → EDEADLK."""
     dry = tmp_path / "dry.mp4"
@@ -122,13 +134,13 @@ def test_bake_slot_playback_commits_cloud_dest(tmp_path: Path) -> None:
     assert dest.stat().st_size > 1000
 
 
-def test_stitch_upsert_event_slot_uses_four_files_bake_branch() -> None:
+def test_stitch_upsert_event_slot_uses_dry_authority_branch() -> None:
     src = Path(__file__).resolve().parents[1] / "server_handlers" / "stitch_editor.py"
     text = src.read_text(encoding="utf-8")
     block = text.split("def stitch_upsert_event_slot", 1)[1].split("\ndef ", 1)[0]
-    assert "STITCH_FOUR_FILES_V1" in block
-    assert "bake_and_persist_slot_playback_mp4" in block
-    assert "persist_dry_authority_slot_export" not in block
+    assert "STITCH_DRY_AUTHORITY_CLIENT_MIX_V1" in block
+    assert "persist_dry_authority_slot_export" in block
+    assert "bake_and_persist_slot_playback_mp4" not in block
 
 
 def test_module_bake_passthrough_branch() -> None:

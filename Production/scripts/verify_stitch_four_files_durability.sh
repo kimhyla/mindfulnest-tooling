@@ -14,8 +14,9 @@ echo "[1/8] pytest four-files authority + client playback"
 python3 -m pytest tests/test_stitch_four_files_playback_authority.py -v --tb=short
 python3 -m pytest tests/test_stitch_four_files_client_playback.py -v --tb=short
 
-echo "[2/8] static: upsert branch present"
-grep -q "bake_and_persist_slot_playback_mp4" server_handlers/stitch_editor.py
+echo "[2/8] static: Send uses dry concat; four-files bake kept for rebake"
+grep -q "persist_dry_authority_slot_export" server_handlers/stitch_editor.py
+grep -q "bake_and_persist_slot_playback_mp4" server_handlers/stitch_slot_playback.py
 grep -q "STITCH_FOUR_FILES_V1" server_handlers/stitch_slot_playback.py
 
 echo "[3/8] static: client four-files read gate"
