@@ -549,6 +549,8 @@ export function StitcherTab() {
     Partial<Record<SlotKey, 'resolving' | 'ready' | 'failed'>>
   >({});
   const [dryHotRetryTick, setDryHotRetryTick] = useState(0);
+  /** Auto re-resolve after demux/cache-miss — deploy rematerialize rotates playback tokens. */
+  const dryHotAutoRetryRef = useRef<Partial<Record<SlotKey, number>>>({});
 
   // STITCH_COMPOSER_DRY_PLAYBACK_V1 — one playback path; dry slots wait for hot URL.
   const composerSlotUrls = useMemo(() => {
@@ -1953,6 +1955,7 @@ export function StitcherTab() {
   };
 
   const onPoolSlotCanPlay = (slot: SlotKey, url: string) => {
+    dryHotAutoRetryRef.current[slot] = 0;
     markStitchComposerUrlLoaded(url);
     if (slot === viewerSlotRef.current) {
       setComposerVideoLoading(false);
@@ -1969,16 +1972,40 @@ export function StitcherTab() {
     const slotData = job?.slots?.[slot];
     const usingMux = stitchSlotRequiresMuxedPreview(slotData);
     // STITCH_DRY_HOT_SERVE_PLAYBACK_V1 — never fall back to cold /files (gray Format error).
+    // STITCH_HOT_PLAYBACK_RERESOLVE_V1 — video demux/cache-miss ≠ resolve failure.
+    // Deploy rematerialize rotates pb_* tokens; mid-play then 404s → FFmpegDemuxer error.
+    // Clear stale URL and re-resolve (bounded) instead of a permanent "Warm serve failed".
     if (stitchSlotRequiresHotServeComposerUrl(slotData)) {
+      const src = (video?.currentSrc || video?.src || '').trim();
+      const attempts = (dryHotAutoRetryRef.current[slot] ?? 0) + 1;
+      dryHotAutoRetryRef.current[slot] = attempts;
+      stitchClientPreviewAudit('COMPOSER_HOT_PLAYBACK_ERROR', {
+        slot_key: slot,
+        error_code: code ?? null,
+        error_message: msg,
+        src_tail: src.slice(-120),
+        marker: STITCH_DRY_HOT_SERVE_PLAYBACK_V1,
+        code_reresolve: 'STITCH_HOT_PLAYBACK_RERESOLVE_V1',
+        auto_retry_attempt: attempts,
+        ...videoPlaybackSnapshot(video),
+      });
       setDryHotUrls((prev) => {
         if (!(slot in prev)) return prev;
         const next = { ...prev };
         delete next[slot];
         return next;
       });
+      if (attempts <= 2) {
+        setDryHotStatus((prev) => ({ ...prev, [slot]: 'resolving' }));
+        setComposerVideoError(
+          `Playback read failed (${msg}). Re-warming APFS cache…`,
+        );
+        setDryHotRetryTick((n) => n + 1);
+        return;
+      }
       setDryHotStatus((prev) => ({ ...prev, [slot]: 'failed' }));
       setComposerVideoError(
-        `Video load failed (${msg}). Slot stays assigned — click Retry warm serve.`,
+        `Playback failed after warm retry (${msg}). Slot stays assigned — click Retry warm serve.`,
       );
       return;
     }
@@ -2786,7 +2813,7 @@ export function StitcherTab() {
                       data-testid="stitcher-composer-video-waiting-mux"
                     >
                       {dryHotViewerFailed
-                        ? 'Warm serve failed — slot stays assigned'
+                        ? 'Playback cache failed — slot stays assigned'
                         : dryHotViewerResolving
                           ? 'Warming APFS playback…'
                           : composerPreviewBuilding
@@ -2800,6 +2827,7 @@ export function StitcherTab() {
                       class="mn-btn mn-btn-secondary"
                       data-testid="stitcher-dry-hot-serve-retry"
                       onClick={() => {
+                        dryHotAutoRetryRef.current[viewerSlot] = 0;
                         setComposerVideoError(null);
                         setDryHotStatus((prev) => ({ ...prev, [viewerSlot]: 'resolving' }));
                         setDryHotRetryTick((n) => n + 1);

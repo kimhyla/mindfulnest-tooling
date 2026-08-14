@@ -23,9 +23,11 @@ alwaysApply: true
 - Binding dry-slot video to cold `/files?path=` when hot-serve fails (no silent `/files` fallback)
 - Swallowing SFX load errors with only `console.warn` and no audit
 - timeupdate drift-resync that stop/reschedules SFX every ~250ms
+- Treating mid-play demux / `PLAYBACK_CACHE_MISS` as a permanent “Warm serve failed” without re-resolve (`STITCH_HOT_PLAYBACK_RERESOLVE_V1`)
 
 ## Before marking Stitcher media work done
 
 1. `bash Production/scripts/verify_stitch_sfx_playback_truth_durability.sh` — green  
 2. `bash Production/scripts/verify_stitch_dry_authority_client_mix_durability.sh` — green  
 3. Option B deploy; live audit on Resolution: prefetch loaded=N, play `@t≈0` → `sfx_scheduled` matches cues  
+4. Phase B (and other dry slots): after deploy, playback past ~20s must not strand on a dead `pb_*` token — error audits `COMPOSER_HOT_PLAYBACK_ERROR` and re-warms  
