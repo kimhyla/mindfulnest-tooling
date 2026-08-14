@@ -1,0 +1,31 @@
+---
+description: Stitcher client-mix media — dry video APFS hot-serve + SFX prefetch (never regress)
+alwaysApply: true
+---
+
+# Stitcher client-mix media (forever lock)
+
+**Canon:** `Production/docs/TECH_SPEC_STITCH_DRY_AUTHORITY_CLIENT_MIX_V1.md` §2.1  
+**Markers:** `STITCH_DRY_HOT_SERVE_PLAYBACK_V1` · `STITCH_SFX_HOT_SERVE_PREFETCH_V1`
+
+## Required
+
+| Surface | Must |
+|---------|------|
+| Dry / four-files composer `<video>` | Bind **only** after `playback_resolve` → `/api/media/playback/…` |
+| Default start/finish SFX | `prefetchAllSfx` on **attach**; play schedules from warm cache |
+| SFX `/files` fetch | Retry **503/429**; audit `SFX_LOAD_FAILED` on hard fail |
+| Attach / play forensics | `SFX_PREFETCH` + `SFX_SCHEDULE` / `SFX_RESYNC` with `sfx_scheduled` |
+
+## Forbidden
+
+- First SFX `fetch` only inside play/`scheduleSfxFromCurrentTime` (no attach prefetch)
+- Binding dry-slot video to cold `/files?path=` when hot-serve fails (no silent `/files` fallback)
+- Swallowing SFX load errors with only `console.warn` and no audit
+- timeupdate drift-resync that stop/reschedules SFX every ~250ms
+
+## Before marking Stitcher media work done
+
+1. `bash Production/scripts/verify_stitch_sfx_playback_truth_durability.sh` — green  
+2. `bash Production/scripts/verify_stitch_dry_authority_client_mix_durability.sh` — green  
+3. Option B deploy; live audit on Resolution: prefetch loaded=N, play `@t≈0` → `sfx_scheduled` matches cues  

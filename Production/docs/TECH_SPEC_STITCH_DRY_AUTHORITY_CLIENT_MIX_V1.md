@@ -17,6 +17,8 @@
 | `video_path` | **IS** the dry concat — not `*_playback_*`, not a copy, not a rebake |
 | Stitcher speech | `<video src=dry>` — speech **audio bytes** from that file via `MediaElementSource` |
 | Stitcher ambient + SFX | Layered at playback (client Web Audio) — hear bed + drops while scrubbing |
+| SFX cue bytes | **Prefetch on attach** (`STITCH_SFX_HOT_SERVE_PREFETCH_V1`) via `/files` with 503 retry — never first-load on the play critical path |
+| Dry composer video | Bind only after APFS `playback_resolve` (`STITCH_DRY_HOT_SERVE_PLAYBACK_V1`) — never cold Dropbox `/files` for dry/four-files slots |
 | Ambient loop seams | Server-rendered slot-length ambient asset (FF-039 graph parity) — client plays file, does not synthesize loop |
 | Save ambient/SFX | Geometry persist only — **no** server ffmpeg rebake on save |
 | Bake Final | Server ffmpeg mixes dry slots + ambient + SFX → kid module MP4 |
@@ -56,17 +58,33 @@
   NO per-beat loudnorm · NO per-beat normalize · NO ambient · NO bake_slot_playback_mp4
 
 [Stitcher review]
-  <video src="/files?path={video_path}">   ← dry bytes (video + speech)
+  <video src="/api/media/playback/…">   ← dry bytes after playback_resolve (APFS)
   StitchSlotAudioMixEngine + W9 ambient loop:
-    speech from <video> element
+    speech from <video> element (MediaElementSource)
     ambient bed @ 0.15 via slot_ambient_loop (preview only — not baked into video_path)
-    SFX cues via Web Audio (preview only)
+    SFX cues: prefetch on attach → Web Audio schedule on play (preview only)
   stitch_save_job: persist geometry only — NO server ffmpeg rebake
 
 [Bake Final]  ← normalize · loudnorm · ambient · SFX · transitions happen HERE
   per slot: normalize → loudnorm → _stitch_mix_slot_audio(dry) → concat + transitions
   → kid module MP4
 ```
+
+### 2.1 Client-mix media durability (forever lock)
+
+| Layer | Marker | Rule |
+|-------|--------|------|
+| Dry / four-files video | `STITCH_DRY_HOT_SERVE_PLAYBACK_V1` | Composer `<video>` binds only `/api/media/playback/…` after `playback_resolve`. Cold `/files` for those slots is forbidden (Dropbox File Provider gray / Format Error). |
+| Default start/finish SFX | `STITCH_SFX_HOT_SERVE_PREFETCH_V1` | `prefetchAllSfx` on attach; `/files` fetch retries 503/429; audit `SFX_PREFETCH` / `SFX_LOAD_FAILED` / `SFX_SCHEDULE`. Play must schedule from warm cache (`sfx_scheduled` matches remaining cues). |
+
+**Forbidden regressions**
+
+- Loading SFX buffers only inside `scheduleSfxFromCurrentTime` with no attach prefetch
+- Swallowing SFX fetch failures without `SFX_LOAD_FAILED` audit
+- Binding dry-slot composer video to `/files?path=` when hot-serve resolve fails
+- Re-introducing timeupdate drift-resync that stops/reschedules SFX every ~250ms
+
+**Gates:** `verify_stitch_sfx_playback_truth_durability.sh` · `verify_stitch_dry_authority_client_mix_durability.sh` · session durability aggregate
 
 ---
 
@@ -78,11 +96,13 @@
 | W2 | `handle_stitch_load_job` | `migrate_four_files_slot_to_dry_authority` |
 | W3 | `_stitch_build_pipeline` | Passthrough **only** `STITCH_FOUR_FILES_V1`; dry authority → full mix |
 | W4 | `GET /api/stitch_editor/slot_ambient_loop` | Slot-length ambient audio (FF-039 graph) |
-| W5 | `resolveSlotPlaybackPreviewUrl` | Dry `/files?path=video_path` for dry-authority slots |
+| W5 | `resolveSlotPlaybackPreviewUrl` + `stitchDryHotServePlayback` | Dry path authority; composer bind only after `playback_resolve` |
 | W6 | `resolveSlotWaveformVideoPath` | `video_path` (dry) — drop `dry_export_path` branch |
-| W7 | `StitcherTab` + `StitchSlotAudioMixEngine.ts` | Client mix lifecycle |
+| W7 | `StitcherTab` + `StitchSlotAudioMixEngine.ts` | Client mix lifecycle + `STITCH_SFX_HOT_SERVE_PREFETCH_V1` |
 | W8 | `stitch_save_job` | No rebake for dry-authority event slots |
 | W9 | `authority_registry.py` + doc | FF-042 rows |
+| W10 | `stitchSfxFetch.ts` | `/files` 503/429 retry for cue bytes |
+| W11 | `verify_stitch_*` durability scripts | Prefetch + dry hot-serve markers fail deploy |
 
 ---
 
@@ -110,6 +130,9 @@ For `playback_recipe_version === STITCH_FOUR_FILES_V1` or `video_path` matches `
 | B1 | `data-stitch-client-mix` marker | present when ambient or SFX |
 | B2 | SFX marker position | ±2% of `offset_ms / video_dur_ms` |
 | B3 | Mix clock vs `video.currentTime` @30s | ≤50ms |
+| B4 | `SFX_PREFETCH` after attach | `sfx_loaded` == cue count with paths; `sfx_failed` == 0 when `/files` healthy |
+| B5 | `SFX_RESYNC` after play @ t≈0 | `sfx_scheduled` ≥ start+finish cues still in window (resolution: 2) |
+| B6 | Dry composer `src` | `/api/media/playback/` only for dry/four-files slots |
 | M1 | Module bake output | ambient + SFX present; duration ≈ Σ slots |
 
 ---
@@ -123,3 +146,5 @@ For `playback_recipe_version === STITCH_FOUR_FILES_V1` or `video_path` matches `
 ## 7. Review log
 
 All four agents **APPROVE WITH CONDITIONS** after §1 synthesis. Implementation blocked until W9 + module bake invert + migration land in same PR as client engine.
+
+**2026-08-14 enshrine:** `STITCH_SFX_HOT_SERVE_PREFETCH_V1` + `STITCH_DRY_HOT_SERVE_PLAYBACK_V1` locked into this spec, authority registry, cursor rule, and deploy durability gates after Event_6 audit proved play-critical `/files` SFX loads left `sfx_scheduled: 0`.
