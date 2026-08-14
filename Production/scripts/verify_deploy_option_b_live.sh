@@ -3,11 +3,11 @@
 #
 # Verifies with positive evidence (no assumed state):
 #   1) tooling↔Dropbox parity
-#   2) Dropbox storyboard HTML build-sha == git HEAD
-#   3) live server build-sha == git HEAD on dedicated event port
+#   2) Dropbox storyboard HTML build-sha == dist bundle sha (not live HEAD)
+#   3) live server build-sha == dist bundle sha on dedicated event port
 #   4) HTTP 200 + event/load pin
 #   5) UI-visible app-build-sha marker in served HTML
-#   6) X-Tooling-Sha on API responses == git HEAD
+#   6) X-Tooling-Sha on API responses == deploy pin (not live HEAD)
 #   7) O3 session-state busy inventory (job_busy + job_id contract)
 #
 # Usage:
@@ -58,14 +58,20 @@ PORT="${MN_SERVER_PORT:-$(event_id_to_port "$EVENT_ID")}"
 EVENT_DIR="$DEST_DROPBOX/Production/${EVENT_ID}"
 STORYBOARD_HTML="$EVENT_DIR/storyboard_v59_prod.html"
 BASE_URL="http://localhost:${PORT}/"
-HEAD_SHA="$(cd "$SRC_TOOLING" && git rev-parse --short HEAD)"
+PIN_PY="$SRC_TOOLING/Production/tools/deploy_pin.py"
+DIST_HTML="$SRC_TOOLING/Production/tools/storyboard-v2/dist/index.html"
+# DEPLOY_PIN_V1 — never re-read live HEAD (checkout theft fake-parity class).
+# resolve prefers MN_EXPECT_BUILD_SHA / .deploy_pin over git rev-parse.
+HEAD_SHA="$(python3 "$PIN_PY" resolve --tooling "$SRC_TOOLING")"
+BUNDLE_SHA="$(python3 "$PIN_PY" bundle-sha --html "$DIST_HTML")"
+[[ -n "$BUNDLE_SHA" ]] || BUNDLE_SHA="$HEAD_SHA"
 
 fail() {
   echo "[verify_option_b] FATAL: $1" >&2
   exit 1
 }
 
-echo "[verify_option_b] event=$EVENT_ID port=$PORT HEAD=$HEAD_SHA"
+echo "[verify_option_b] event=$EVENT_ID port=$PORT pin=$HEAD_SHA bundle=$BUNDLE_SHA"
 
 echo "[verify_option_b] (1/5) tooling↔Dropbox parity ..."
 MN_TOOLING_ROOT="$SRC_TOOLING" MN_DROPBOX_ROOT="$DEST_DROPBOX" \
@@ -82,7 +88,7 @@ print(m.group(1) if m else "")
 PY
 )"
 [[ -n "$DROPBOX_SHA" ]] || fail "Dropbox HTML missing build-sha meta"
-[[ "$DROPBOX_SHA" == "$HEAD_SHA" ]] || fail "Dropbox build-sha $DROPBOX_SHA != HEAD $HEAD_SHA"
+[[ "$DROPBOX_SHA" == "$BUNDLE_SHA" ]] || fail "Dropbox build-sha $DROPBOX_SHA != bundle $BUNDLE_SHA"
 echo "  Dropbox HTML build-sha=$DROPBOX_SHA OK"
 
 echo "[verify_option_b] (3/5) live server HTTP + build-sha ..."
@@ -96,7 +102,7 @@ print(m.group(1) if m else "")
 PY
 )"
 [[ -n "$LIVE_SHA" ]] || fail "live HTML missing build-sha meta"
-[[ "$LIVE_SHA" == "$HEAD_SHA" ]] || fail "live build-sha $LIVE_SHA != HEAD $HEAD_SHA"
+[[ "$LIVE_SHA" == "$BUNDLE_SHA" ]] || fail "live build-sha $LIVE_SHA != bundle $BUNDLE_SHA"
 MARKER_OK="$(python3 -c "import re,pathlib;html=pathlib.Path('/tmp/mn_option_b_served.html').read_text(encoding='utf-8',errors='replace');pat=re.compile(r'data-testid[\"\\x27]?\\s*[=:]\\s*[\"\\x27]app-build-sha[\"\\x27]');print('1' if pat.search(html) else '0')")"
 [[ "$MARKER_OK" == "1" ]] || fail "served HTML missing data-testid=app-build-sha"
 echo "  live build-sha=$LIVE_SHA app-build-sha marker OK"
@@ -127,7 +133,7 @@ print(m.group(1) if m else "")
 PY
 )"
 [[ -n "$PY_SHA" ]] || fail "missing X-Tooling-Sha response header"
-[[ "$PY_SHA" == "$HEAD_SHA" ]] || fail "X-Tooling-Sha $PY_SHA != HEAD $HEAD_SHA"
+[[ "$PY_SHA" == "$HEAD_SHA" ]] || fail "X-Tooling-Sha $PY_SHA != pin $HEAD_SHA"
 echo "  X-Tooling-Sha=$PY_SHA OK"
 
 echo "[verify_option_b] (7/7) O3 busy inventory post-restart ..."
@@ -154,7 +160,8 @@ echo "=== STORYBOARD_OPTION_B_V1 PROOF ==="
 echo "  event:        $EVENT_ID"
 echo "  url:          ${BASE_URL}?event=${EVENT_ID}"
 echo "  port:         $PORT"
-echo "  git HEAD:     $HEAD_SHA"
+echo "  deploy pin:   $HEAD_SHA"
+echo "  bundle sha:   $BUNDLE_SHA"
 echo "  dropbox sha:  $DROPBOX_SHA"
 echo "  live sha:     $LIVE_SHA"
 echo "  python sha:   $PY_SHA"

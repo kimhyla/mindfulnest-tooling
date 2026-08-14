@@ -71,6 +71,8 @@ grep -q 'SERVER_LAUNCHD_SINGLE_OWNER_V1' "$DEPLOY" \
   || fail "deploy must use launchd-only start (SERVER_LAUNCHD_SINGLE_OWNER_V1)"
 grep -q 'STORYBOARD_FLEET_RESTART_V1' "$DEPLOY" \
   || fail "deploy must restart all dedicated Event_N servers after fanout (STORYBOARD_FLEET_RESTART_V1)"
+grep -q 'STORYBOARD_FLEET_RESTART_SKIP_WHEN_BUNDLE_UNCHANGED_V1' "$DEPLOY" \
+  || fail "deploy must skip fleet restart when UI bundle source is unchanged"
 grep -q 'restart_storyboard_fleet.sh' "$DEPLOY" \
   || fail "deploy must call restart_storyboard_fleet.sh"
 grep -q 'STORYBOARD_FLEET_BUNDLE_PARITY_V1' "$DEPLOY" \

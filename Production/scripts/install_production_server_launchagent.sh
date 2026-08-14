@@ -128,6 +128,7 @@ skip = {
     "MN_LAUNCHD_MANAGED", "MN_TOOLING_ROOT", "MN_DROPBOX_ROOT",
     "MN_O3_GENERATE_MODE", "MN_BEATGEN_AVATAR_DISABLED",
     "MN_SIDECAR_MIRROR_PATH",
+    "MN_EXPECT_BUILD_SHA",
 }
 for k, v in env.items():
     if k in skip or not v:
@@ -149,6 +150,7 @@ skip = {
     "MN_LAUNCHD_MANAGED", "MN_TOOLING_ROOT", "MN_DROPBOX_ROOT",
     "MN_O3_GENERATE_MODE", "MN_BEATGEN_AVATAR_DISABLED",
     "MN_SIDECAR_MIRROR_PATH",
+    "MN_EXPECT_BUILD_SHA",
 }
 merged: dict[str, str] = {}
 for candidate in sorted(agents_dir.glob("com.mindfulnest.production-server-event*.plist")):
@@ -251,7 +253,9 @@ cat > "$PLIST_NEW" <<PLIST
 		<string>${HOME}/.mindfulnest/state/beatgen_${EVENT_SLUG}.db</string>
 		<key>MN_SIDECAR_MIRROR_PATH</key>
 		<string>${HOME}/.mindfulnest/mirror/beatgen_${EVENT_SLUG}.json</string>
-${PRESERVE_ENV}${LIPSYNC_R2_PLIST}	</dict>
+${MN_EXPECT_BUILD_SHA:+		<key>MN_EXPECT_BUILD_SHA</key>
+		<string>${MN_EXPECT_BUILD_SHA}</string>
+}${PRESERVE_ENV}${LIPSYNC_R2_PLIST}	</dict>
 </dict>
 </plist>
 PLIST
